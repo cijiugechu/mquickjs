@@ -15,6 +15,9 @@ members = [
 intrusive-collections = "0.9.7"
 zerocopy = "0.8.31"
 libm = "0.2.15"
+lexical-core = { version = "1.0.6", features = ["format", "radix"] }
+ryu-js = "1.0.2"
+bitflags = "2.10.0"
 
 [build-dependencies]
 mquickjs-build = { path = "crates/mquickjs-build" }

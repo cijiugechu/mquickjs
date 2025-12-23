@@ -4,3 +4,4 @@ pub mod cutils;
 pub mod softfp;
 pub mod stdlib_image;
 pub mod stdlib;
+pub mod dtoa;
