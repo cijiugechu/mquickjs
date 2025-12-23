@@ -1,0 +1,9 @@
+[package]
+name = "mquickjs-build"
+version = "0.0.1"
+edition = "2024"
+description = "Build-time generator for mquickjs stdlib tables"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"

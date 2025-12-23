@@ -5,7 +5,16 @@ edition = "2024"
 description = "mquickjs"
 license = "MIT"
 
+[workspace]
+members = [
+    ".",
+    "crates/mquickjs-build",
+]
+
 [dependencies]
 intrusive-collections = "0.9.7"
 zerocopy = "0.8.31"
 libm = "0.2.15"
+
+[build-dependencies]
+mquickjs-build = { path = "crates/mquickjs-build" }
