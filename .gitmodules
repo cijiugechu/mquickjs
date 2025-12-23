@@ -1,0 +1,3 @@
+[submodule "mquickjs-c"]
+	path = mquickjs-c
+	url = https://github.com/bellard/mquickjs.git
