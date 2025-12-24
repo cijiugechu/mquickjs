@@ -40,6 +40,8 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSFunctionBytecode` layout into `src/function_bytecode.rs` with header/roundtrip tests.
 - Ported parser data structures (`BlockEnv`, `JSSourcePos`, `JSToken`, `JSParsePos`) into `src/parser_types.rs`.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
+- Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.
+- Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.
 
 ## Cutils assessment
 
@@ -68,5 +70,5 @@ Skip/avoid direct port:
 - **Objects & classes**: Model `JSObject` shape (class_id, extra_size, proto, props, union payloads) with typed accessors. Validate size/alignment math via tests; keep creation backed by C for now.
 - **Bytecode metadata**: Use existing opcode port to parse `JSFunctionBytecode` fields (arg_count, stack_size, cpool/ext_vars/pc2line). Test with C-generated sample bytecode for field equality.
 - **Interpreter bridge**: Keep C interpreter as oracle; add Rust wrappers for `JS_Call`/`JS_Eval` to collect outputs/exceptions for diff tests. Defer opcode execution port until data-model steps above are stable.
-- **Builtins surface**: Bridge `c_function_table`/class_count via FFI; keep builtins executed by C. Gradually port builtin families (Function/String/Array/Math/TypedArray) with proptest + C diff.
+- **Builtins surface**: Use Rust stdlib metadata (`stdlib_image` + `BuiltinProto`) to register/dispatch builtins without C tables. Gradually port builtin families (Function/String/Array/Math/TypedArray) with proptest + differential tests.
 - **Validation regimen**: Each increment runs `cargo check --all-features`, `cargo test --all-features`, `cargo clippy`; unsafe-heavy paths also run `cargo miri test`. Differential tests compare C/Rust outputs (incl. NaN/-0, UTF-16 edges, hash collisions).

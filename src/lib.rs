@@ -26,3 +26,4 @@ pub mod object;
 pub mod function_bytecode;
 pub mod parser_types;
 pub mod gc_ref;
+pub mod stdlib_def;
