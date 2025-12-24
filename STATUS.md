@@ -38,6 +38,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added read-only views for `JSFloat64`, `JSByteArray`, and `JSValueArray` in `src/memblock_views.rs` with roundtrip tests.
 - Ported `JSObject` layout plus `JSRegExp`/`JSObjectUserData` into `src/object.rs` with header/payload tests.
 - Ported `JSFunctionBytecode` layout into `src/function_bytecode.rs` with header/roundtrip tests.
+- Ported parser data structures (`BlockEnv`, `JSSourcePos`, `JSToken`, `JSParsePos`) into `src/parser_types.rs`.
 
 ## Cutils assessment
 
