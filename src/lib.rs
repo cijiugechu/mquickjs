@@ -23,3 +23,4 @@ pub mod closure_data;
 pub mod context_shell;
 pub mod memblock_views;
 pub mod object;
+pub mod function_bytecode;

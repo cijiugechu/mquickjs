@@ -37,6 +37,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added a read-only `JSContext` shell (`ContextShell`) capturing memory map fields and invariants in `src/context_shell.rs` with validation tests.
 - Added read-only views for `JSFloat64`, `JSByteArray`, and `JSValueArray` in `src/memblock_views.rs` with roundtrip tests.
 - Ported `JSObject` layout plus `JSRegExp`/`JSObjectUserData` into `src/object.rs` with header/payload tests.
+- Ported `JSFunctionBytecode` layout into `src/function_bytecode.rs` with header/roundtrip tests.
 
 ## Cutils assessment
 
