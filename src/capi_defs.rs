@@ -33,6 +33,14 @@ pub type JSWriteFunc =
 // Return != 0 if the JS code needs to be interrupted.
 pub type JSInterruptHandler = unsafe extern "C" fn(ctx: *mut JSContext, opaque: *mut c_void) -> i32;
 
+// C: `JS_EVAL_*` flags in mquickjs.h.
+pub const JS_EVAL_RETVAL: u32 = 1 << 0;
+pub const JS_EVAL_REPL: u32 = 1 << 1;
+pub const JS_EVAL_STRIP_COL: u32 = 1 << 2;
+pub const JS_EVAL_JSON: u32 = 1 << 3;
+pub const JS_EVAL_REGEXP: u32 = 1 << 4;
+pub const JS_EVAL_REGEXP_FLAGS_SHIFT: u32 = 8;
+
 // C: `typedef enum JSCFunctionDefEnum { ... } JSCFunctionDefEnum;`
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -163,5 +171,15 @@ mod tests {
             offset_of!(JSSTDLibraryDef, c_finalizer_table),
             size_of::<*const JSWord>() + size_of::<*const JSCFunctionDef>()
         );
+    }
+
+    #[test]
+    fn eval_flag_constants_match_c() {
+        assert_eq!(JS_EVAL_RETVAL, 1);
+        assert_eq!(JS_EVAL_REPL, 2);
+        assert_eq!(JS_EVAL_STRIP_COL, 4);
+        assert_eq!(JS_EVAL_JSON, 8);
+        assert_eq!(JS_EVAL_REGEXP, 16);
+        assert_eq!(JS_EVAL_REGEXP_FLAGS_SHIFT, 8);
     }
 }

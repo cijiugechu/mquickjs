@@ -45,6 +45,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.
 - Ported C API layout definitions from `mquickjs.h` into `src/capi_defs.rs` (JSCStringBuf, JSCFunctionDefKind/JSCFunctionType/JSCFunctionDef, JSSTDLibraryDef) with size/align/offset tests and an opaque `JSContext` handle type.
 - Ported `JSWriteFunc` and `JSInterruptHandler` typedefs into `src/capi_defs.rs`.
+- Ported `JS_EVAL_*` flags into `src/capi_defs.rs` with constant-value tests.
 
 ## Cutils assessment
 
