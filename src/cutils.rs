@@ -329,7 +329,7 @@ pub fn uint_as_float(v: u32) -> f32 {
     f32::from_bits(v)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 

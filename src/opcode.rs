@@ -1275,7 +1275,7 @@ pub const RE_OPCODES: [RegExpOpCodeInfo; 38] = [
 
 pub const REOP_COUNT: usize = RE_OPCODES.len();
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 

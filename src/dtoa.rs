@@ -831,7 +831,7 @@ fn digit_value(c: u8) -> Option<u32> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 

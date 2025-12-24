@@ -5,3 +5,5 @@ pub mod softfp;
 pub mod stdlib_image;
 pub mod stdlib;
 pub mod dtoa;
+pub mod jsvalue;
+pub mod tagged_ptr;

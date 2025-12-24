@@ -338,7 +338,7 @@ define_softfp_icvt!(
     cvt_u64_sf64
 );
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::{sf32, sf64, RoundingMode};
 

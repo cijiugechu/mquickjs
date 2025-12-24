@@ -8,7 +8,7 @@
 
 pub use intrusive_collections::{LinkedList, LinkedListLink, UnsafeRef, intrusive_adapter};
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 
