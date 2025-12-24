@@ -15,6 +15,7 @@ pub mod property;
 pub mod array_data;
 pub mod error_data;
 pub mod cfunction_data;
+pub mod capi_defs;
 pub mod typed_array;
 pub mod array_buffer;
 pub mod rom_class;
