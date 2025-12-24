@@ -1,6 +1,9 @@
+pub mod stdlib_def;
+pub mod stdlib_image;
+
 include!(concat!(env!("OUT_DIR"), "/stdlib_image.rs"));
 
-use crate::stdlib_def::BuiltinProto;
+use self::stdlib_def::BuiltinProto;
 
 #[derive(Copy, Clone, Debug)]
 pub struct CFuncWithProto<'a> {

@@ -1,4 +1,4 @@
-use crate::parser_types::SourcePos;
+use super::types::SourcePos;
 
 fn get_line_col_inner(buf: &[u8]) -> (i32, i32) {
     let mut line_num = 0i32;

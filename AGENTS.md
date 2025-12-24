@@ -60,3 +60,47 @@ Use the `memblock` + `containers` refactor as a template for migrating C-style b
 - Update tests alongside the refactor to validate tag extraction and size round-trips.
 
 Reference implementation: `src/memblock.rs` and `src/containers.rs`.
+
+## Rust src tree
+
+```
+src/
+  array_buffer.rs
+  array_data.rs
+  capi_defs.rs
+  cfunction_data.rs
+  closure_data.rs
+  containers.rs
+  context_shell.rs
+  cutils.rs
+  dtoa.rs
+  enums.rs
+  error_data.rs
+  function_bytecode.rs
+  gc_ref.rs
+  js_libm.rs
+  jsvalue.rs
+  lib.rs
+  list.rs
+  memblock.rs
+  memblock_views.rs
+  object.rs
+  opcode.rs
+  parser/
+    mod.rs
+    pos.rs
+    types.rs
+  property.rs
+  rom_class.rs
+  softfp.rs
+  stdlib/
+    mod.rs
+    stdlib_def.rs
+    stdlib_image.rs
+  string/
+    mod.rs
+    string_char_buf.rs
+    string_pos_cache.rs
+  tagged_ptr.rs
+  typed_array.rs
+```
