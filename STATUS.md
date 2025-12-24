@@ -36,6 +36,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSTypedArray` into `src/typed_array.rs` with roundtrip tests.
 - Ported `JSArrayBuffer` into `src/array_buffer.rs` with roundtrip tests.
 - Ported `JSROMClass` and `JSStringCharBuf` into `src/rom_class.rs` and `src/string_char_buf.rs` with tests.
+- Added `JSString` backing storage in `src/string/js_string.rs` (raw bytes + header, no implicit NUL) and wired it into `src/string/mod.rs`.
 - Added full `JSProperty` layout and `JSClosureData` into `src/property.rs` and `src/closure_data.rs` with roundtrip tests.
 - Added a read-only `JSContext` shell (`ContextShell`) capturing memory map fields and invariants in `src/context_shell.rs` with validation tests.
 - Added read-only views for `JSFloat64`, `JSByteArray`, and `JSValueArray` in `src/memblock_views.rs` with roundtrip tests.
@@ -45,6 +46,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported parser line/column helpers (`get_line_col`, `get_line_col_delta`) into `src/parser_pos.rs` with UTF-8 lead-byte counting tests.
 - Ported parser token/keyword constants plus `is_regexp_allowed` into `src/parser/tokens.rs` with ordering/mapping tests.
 - Ported parser escape parsing + identifier ASCII helpers (`js_parse_escape`, `is_ident_first`, `is_ident_next`) into `src/parser/lexer.rs` with tests.
+- Ported core lexer flow (`next_token`, `js_parse_string`, `js_parse_ident`, `js_parse_regexp_token`) plus a `ParseState` harness and sorted interned string table into `src/parser/lexer.rs` with tests.
 - Ported regexp flag parsing (`js_parse_regexp_flags`) plus `LRE_FLAG_*` constants into `src/parser/regexp_flags.rs` with tests.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
 - Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.

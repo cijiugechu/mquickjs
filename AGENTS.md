@@ -12,6 +12,7 @@ The directory where the C version is located is `/mquickjs-c`.
 - When using constants for mathematical operations, give priority to whether rust core provides them.
 
 - Do not port trivial one-line wrappers or renamings that add no semantics; use Rust std/core APIs directly to keep the port lean.
+- For JSString storage in Rust, do not rely on implicit NUL-termination. Store raw bytes and use explicit length; if a C API needs NUL-terminated data, introduce a local/temporary buffer or helper instead of embedding trailing NULs in JSString.
 
 - Run `cargo check --all-features`, `cargo test --all-features` and `cargo clippy` automatically after making code changes, you need to make sure no errors.
 
