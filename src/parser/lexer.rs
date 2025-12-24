@@ -1,13 +1,16 @@
 use crate::cutils::{from_hex, unicode_from_utf8, unicode_to_utf8, utf8_get, UTF8_CHAR_LEN_MAX};
 use crate::dtoa::{js_atod, JS_ATOD_ACCEPT_BIN_OCT, JS_ATOD_ACCEPT_UNDERSCORES};
-use crate::jsvalue::{value_from_ptr, value_make_special, JSValue, JS_NULL, JS_TAG_STRING_CHAR};
+use crate::jsvalue::{
+    value_from_ptr, value_get_special_tag, value_get_special_value, value_make_special,
+    value_to_ptr, JSValue, JS_NULL, JS_TAG_STRING_CHAR,
+};
 use crate::string::js_string::{is_ascii_bytes, JSString};
 use std::pin::Pin;
 use std::ptr::NonNull;
 
 use super::regexp_flags::parse_regexp_flags;
 use super::tokens::*;
-use super::types::{SourcePos, Token, TokenExtra};
+use super::types::{ParsePos, SourcePos, Token, TokenExtra};
 
 const ERR_INVALID_ESCAPE: &str = "invalid escape sequence";
 const ERR_UNEXPECTED_END_OF_STRING: &str = "unexpected end of string";
@@ -18,7 +21,24 @@ const ERR_INVALID_NUMBER: &str = "invalid number literal";
 const ERR_UNEXPECTED_END_OF_COMMENT: &str = "unexpected end of comment";
 const ERR_UNEXPECTED_CHARACTER: &str = "unexpected character";
 const ERR_NO_MEM: &str = "not enough memory";
+const ERR_TOO_MANY_NESTED_BLOCKS: &str = "too many nested blocks";
+const ERR_EXPECTING_CLOSE_PAREN: &str = "expecting ')'";
+const ERR_EXPECTING_CLOSE_BRACKET: &str = "expecting ']'";
+const ERR_EXPECTING_CLOSE_BRACE: &str = "expecting '}'";
+const ERR_EXPECTING_DELIMITER: &str = "expecting closing delimiter";
 const NUL_BYTE: [u8; 1] = [0];
+
+const SKIP_HAS_ARGUMENTS: u32 = 1 << 0;
+const SKIP_HAS_FUNC_NAME: u32 = 1 << 1;
+const SKIP_HAS_SEMI: u32 = 1 << 2;
+
+const TOK_PAREN_OPEN: i32 = b'(' as i32;
+const TOK_PAREN_CLOSE: i32 = b')' as i32;
+const TOK_BRACKET_OPEN: i32 = b'[' as i32;
+const TOK_BRACKET_CLOSE: i32 = b']' as i32;
+const TOK_BRACE_OPEN: i32 = b'{' as i32;
+const TOK_BRACE_CLOSE: i32 = b'}' as i32;
+const TOK_SEMI: i32 = b';' as i32;
 
 fn is_num(c: u8) -> bool {
     c.is_ascii_digit()
@@ -183,6 +203,114 @@ impl<'a> ParseState<'a> {
 
     pub fn buf_pos(&self) -> usize {
         self.buf_pos
+    }
+
+    pub fn get_pos(&self) -> ParsePos {
+        ParsePos::new(
+            self.got_lf,
+            is_regexp_allowed(self.token.val()),
+            self.token.source_pos(),
+        )
+    }
+
+    pub fn seek_token(&mut self, pos: ParsePos) -> Result<(), ParseError> {
+        self.buf_pos = pos.source_pos() as usize;
+        self.got_lf = pos.got_lf();
+        let prev_val = if pos.regexp_allowed() {
+            b' ' as i32
+        } else {
+            b')' as i32
+        };
+        self.token = Token::new(prev_val, pos.source_pos(), TokenExtra::None, JS_NULL);
+        self.next_token()
+    }
+
+    pub fn skip_parens(&mut self, func_name: Option<JSValue>) -> Result<u32, ParseError> {
+        let mut state = [0i32; 128];
+        let mut level = 0usize;
+        let mut bits = 0u32;
+
+        state[level] = 0;
+        level += 1;
+        loop {
+            match self.token.val() {
+                TOK_PAREN_OPEN => {
+                    if level >= state.len() {
+                        return Err(ParseError::new(
+                            ERR_TOO_MANY_NESTED_BLOCKS,
+                            self.token.source_pos() as usize,
+                        ));
+                    }
+                    state[level] = TOK_PAREN_CLOSE;
+                    level += 1;
+                }
+                TOK_BRACKET_OPEN => {
+                    if level >= state.len() {
+                        return Err(ParseError::new(
+                            ERR_TOO_MANY_NESTED_BLOCKS,
+                            self.token.source_pos() as usize,
+                        ));
+                    }
+                    state[level] = TOK_BRACKET_CLOSE;
+                    level += 1;
+                }
+                TOK_BRACE_OPEN => {
+                    if level >= state.len() {
+                        return Err(ParseError::new(
+                            ERR_TOO_MANY_NESTED_BLOCKS,
+                            self.token.source_pos() as usize,
+                        ));
+                    }
+                    state[level] = TOK_BRACE_CLOSE;
+                    level += 1;
+                }
+                TOK_PAREN_CLOSE | TOK_BRACKET_CLOSE | TOK_BRACE_CLOSE => {
+                    level -= 1;
+                    let expected = state[level];
+                    if self.token.val() != expected {
+                        return Err(ParseError::new(
+                            expecting_close_error(expected),
+                            self.token.source_pos() as usize,
+                        ));
+                    }
+                }
+                TOK_EOF => {
+                    let expected = state[level.saturating_sub(1)];
+                    return Err(ParseError::new(
+                        expecting_close_error(expected),
+                        self.token.source_pos() as usize,
+                    ));
+                }
+                TOK_IDENT => {
+                    if value_matches_bytes(self.token.value(), b"arguments") {
+                        bits |= SKIP_HAS_ARGUMENTS;
+                    }
+                    if let Some(name) = func_name
+                        && self.token.value() == name
+                    {
+                        bits |= SKIP_HAS_FUNC_NAME;
+                    }
+                }
+                TOK_SEMI => {
+                    if level == 2 {
+                        bits |= SKIP_HAS_SEMI;
+                    }
+                }
+                _ => {}
+            }
+            self.next_token()?;
+            if level <= 1 {
+                break;
+            }
+        }
+        Ok(bits)
+    }
+
+    pub fn skip_parens_token(&mut self) -> Result<u32, ParseError> {
+        let pos = self.get_pos();
+        let bits = self.skip_parens(None)?;
+        self.seek_token(pos)?;
+        Ok(bits)
     }
 
     pub fn next_token(&mut self) -> Result<(), ParseError> {
@@ -896,12 +1024,36 @@ fn is_utf8_right_surrogate(p: &[u8]) -> bool {
     p.len() >= 3 && p[0] == 0xed && (0xb0..=0xbf).contains(&p[1]) && p[2] >= 0x80
 }
 
+fn expecting_close_error(expected: i32) -> &'static str {
+    match expected {
+        TOK_PAREN_CLOSE => ERR_EXPECTING_CLOSE_PAREN,
+        TOK_BRACKET_CLOSE => ERR_EXPECTING_CLOSE_BRACKET,
+        TOK_BRACE_CLOSE => ERR_EXPECTING_CLOSE_BRACE,
+        _ => ERR_EXPECTING_DELIMITER,
+    }
+}
+
+fn value_matches_bytes(value: JSValue, bytes: &[u8]) -> bool {
+    if value_get_special_tag(value) == JS_TAG_STRING_CHAR {
+        if bytes.len() != 1 {
+            return false;
+        }
+        return value_get_special_value(value) as u32 == bytes[0] as u32;
+    }
+    let Some(ptr) = value_to_ptr::<JSString>(value) else {
+        return false;
+    };
+    // SAFETY: ParseState owns all JSString allocations used in tokens.
+    unsafe { ptr.as_ref().buf() == bytes }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cutils::UTF8_CHAR_LEN_MAX;
     use crate::jsvalue::{value_get_special_tag, value_get_special_value, value_to_ptr};
     use crate::parser::regexp_flags::{LRE_FLAG_GLOBAL, LRE_FLAG_IGNORECASE};
+    use crate::parser::types::ParsePos;
 
     fn string_bytes(val: JSValue) -> Vec<u8> {
         if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
@@ -1074,5 +1226,69 @@ mod tests {
             TokenExtra::Number(value) => assert_eq!(value, 16.0),
             _ => panic!("expected number token"),
         }
+    }
+
+    #[test]
+    fn skip_parens_sets_bits_and_advances_token() {
+        let mut state = ParseState::new(b"(arguments; foo) bar");
+        state.next_token().unwrap();
+        let bits = state.skip_parens(None).unwrap();
+        assert_eq!(bits & SKIP_HAS_ARGUMENTS, SKIP_HAS_ARGUMENTS);
+        assert_eq!(bits & SKIP_HAS_SEMI, SKIP_HAS_SEMI);
+        assert_eq!(bits & SKIP_HAS_FUNC_NAME, 0);
+        let token = state.token();
+        assert_eq!(token.val(), TOK_IDENT);
+        assert_eq!(string_bytes(token.value()), b"bar".to_vec());
+    }
+
+    #[test]
+    fn skip_parens_detects_func_name() {
+        let mut state = ParseState::new(b"foo (foo)");
+        state.next_token().unwrap();
+        let func_name = state.token().value();
+        state.next_token().unwrap();
+        let bits = state.skip_parens(Some(func_name)).unwrap();
+        assert_eq!(bits & SKIP_HAS_FUNC_NAME, SKIP_HAS_FUNC_NAME);
+        assert_eq!(state.token().val(), TOK_EOF);
+    }
+
+    #[test]
+    fn skip_parens_token_restores_state() {
+        let mut state = ParseState::new(b"(a + b) c");
+        state.next_token().unwrap();
+        let pos = state.get_pos();
+        let bits = state.skip_parens_token().unwrap();
+        assert_eq!(bits, 0);
+        assert_eq!(state.token().val(), b'(' as i32);
+        assert_eq!(state.get_pos(), pos);
+    }
+
+    #[test]
+    fn parse_pos_roundtrip_restores_token() {
+        let mut state = ParseState::new(b"foo + bar");
+        state.next_token().unwrap();
+        let first = state.token();
+        let pos = state.get_pos();
+        assert_eq!(pos.regexp_allowed(), is_regexp_allowed(first.val()));
+        state.next_token().unwrap();
+        state.next_token().unwrap();
+        state.seek_token(pos).unwrap();
+        let token = state.token();
+        assert_eq!(token.val(), first.val());
+        assert_eq!(token.value(), first.value());
+        assert_eq!(token.source_pos(), first.source_pos());
+    }
+
+    #[test]
+    fn seek_token_regexp_disambiguates_slash() {
+        let mut state = ParseState::new(b"/a/");
+        let pos = ParsePos::new(false, true, 0);
+        state.seek_token(pos).unwrap();
+        assert_eq!(state.token().val(), TOK_REGEXP);
+
+        let mut state = ParseState::new(b"/a/");
+        let pos = ParsePos::new(false, false, 0);
+        state.seek_token(pos).unwrap();
+        assert_eq!(state.token().val(), b'/' as i32);
     }
 }

@@ -114,7 +114,7 @@ pub struct JSSTDLibraryDef {
     pub class_count: u32,
 }
 
-#[cfg(all(test, not(miri)))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use core::mem::{align_of, offset_of, size_of};
