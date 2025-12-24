@@ -25,6 +25,14 @@ pub type JSCFunction = unsafe extern "C" fn(
 // C: `typedef void (*JSCFinalizer)(JSContext *ctx, void *opaque);`
 pub type JSCFinalizer = unsafe extern "C" fn(ctx: *mut JSContext, opaque: *mut c_void);
 
+// C: `typedef void JSWriteFunc(void *opaque, const void *buf, size_t buf_len);`
+pub type JSWriteFunc =
+    unsafe extern "C" fn(opaque: *mut c_void, buf: *const c_void, buf_len: usize);
+
+// C: `typedef int JSInterruptHandler(JSContext *ctx, void *opaque);`
+// Return != 0 if the JS code needs to be interrupted.
+pub type JSInterruptHandler = unsafe extern "C" fn(ctx: *mut JSContext, opaque: *mut c_void) -> i32;
+
 // C: `typedef enum JSCFunctionDefEnum { ... } JSCFunctionDefEnum;`
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
