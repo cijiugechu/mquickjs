@@ -30,6 +30,8 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSProperty` bitfield metadata into `src/property.rs` with roundtrip tests.
 - Ported `JSArrayData` layout and length invariant into `src/array_data.rs` with tests.
 - Ported `JSErrorData` and `JSCFunctionData` into `src/error_data.rs` and `src/cfunction_data.rs` with roundtrip tests.
+- Ported `JSTypedArray` into `src/typed_array.rs` with roundtrip tests.
+- Ported `JSArrayBuffer` into `src/array_buffer.rs` with roundtrip tests.
 
 ## Cutils assessment
 
