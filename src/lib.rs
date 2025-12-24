@@ -19,3 +19,5 @@ pub mod typed_array;
 pub mod array_buffer;
 pub mod rom_class;
 pub mod string_char_buf;
+pub mod closure_data;
+pub mod context_shell;

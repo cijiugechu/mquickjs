@@ -33,6 +33,8 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSTypedArray` into `src/typed_array.rs` with roundtrip tests.
 - Ported `JSArrayBuffer` into `src/array_buffer.rs` with roundtrip tests.
 - Ported `JSROMClass` and `JSStringCharBuf` into `src/rom_class.rs` and `src/string_char_buf.rs` with tests.
+- Added full `JSProperty` layout and `JSClosureData` into `src/property.rs` and `src/closure_data.rs` with roundtrip tests.
+- Added a read-only `JSContext` shell (`ContextShell`) capturing memory map fields and invariants in `src/context_shell.rs` with validation tests.
 
 ## Cutils assessment
 
