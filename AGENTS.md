@@ -87,8 +87,11 @@ src/
   object.rs
   opcode.rs
   parser/
+    lexer.rs
     mod.rs
     pos.rs
+    regexp_flags.rs
+    tokens.rs
     types.rs
   property.rs
   rom_class.rs
