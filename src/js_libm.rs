@@ -1,6 +1,6 @@
 //! JS-facing math helpers ported from `mquickjs-c/libm.{c,h}`.
 
-use crate::softfp::{sf64, RoundingMode};
+use crate::softfp::{fmod_sf64, sf64, RoundingMode};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RintMode {
@@ -97,6 +97,10 @@ pub fn js_sqrt(x: f64) -> f64 {
 
 pub fn js_lrint(a: f64) -> i32 {
     sf64::cvt_sf64_i32(a.to_bits(), RoundingMode::Rne)
+}
+
+pub fn js_fmod(a: f64, b: f64) -> f64 {
+    f64::from_bits(fmod_sf64(a.to_bits(), b.to_bits()))
 }
 
 pub fn js_scalbn(x: f64, n: i32) -> f64 {
@@ -216,5 +220,22 @@ mod tests {
     fn sqrt_matches_ieee() {
         assert_eq!(js_sqrt(4.0), 2.0);
         assert!(js_sqrt(-1.0).is_nan());
+    }
+
+    #[test]
+    fn fmod_handles_edge_cases() {
+        assert_eq!(js_fmod(5.5, 2.0), 1.5);
+        assert_eq!(js_fmod(-5.5, 2.0), -1.5);
+        assert_eq!(js_fmod(1.25, f64::INFINITY), 1.25);
+
+        let res = js_fmod(-4.0, 2.0);
+        assert_eq!(res.to_bits(), (-0.0f64).to_bits());
+
+        let res = js_fmod(-1.25, 2.0);
+        assert_eq!(res.to_bits(), (-1.25f64).to_bits());
+
+        assert!(js_fmod(f64::INFINITY, 2.0).is_nan());
+        assert!(js_fmod(1.0, 0.0).is_nan());
+        assert!(js_fmod(1.0, f64::NAN).is_nan());
     }
 }

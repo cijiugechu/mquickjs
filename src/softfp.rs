@@ -31,6 +31,132 @@ fn rounding_addend(rm: RoundingMode, sign: u32, rnd_size: u32) -> u64 {
     }
 }
 
+const F64_EXP_SIZE: u32 = 11;
+const F64_MANT_SIZE: u32 = 52;
+const F64_IMANT_SIZE: u32 = 62;
+const F64_RND_SIZE: u32 = F64_IMANT_SIZE - F64_MANT_SIZE;
+const F64_EXP_MASK: u64 = (1u64 << F64_EXP_SIZE) - 1;
+const F64_MANT_MASK: u64 = (1u64 << F64_MANT_SIZE) - 1;
+const F64_SIGN_MASK: u64 = 1u64 << 63;
+const F64_EXP_MASK_SHIFTED: u64 = F64_EXP_MASK << F64_MANT_SIZE;
+const F64_QNAN: u64 = F64_EXP_MASK_SHIFTED | (1u64 << (F64_MANT_SIZE - 1));
+
+fn pack_sf64(sign: u64, exp: i32, mant: u64) -> u64 {
+    (sign << 63) | ((exp as u64) << F64_MANT_SIZE) | (mant & F64_MANT_MASK)
+}
+
+fn rshift_rnd_sf64(a: u64, d: i32) -> u64 {
+    if d <= 0 {
+        return a;
+    }
+    if d >= 64 {
+        return if a != 0 { 1 } else { 0 };
+    }
+    let d = d as u32;
+    let mask = (1u64 << d) - 1;
+    (a >> d) | if (a & mask) != 0 { 1 } else { 0 }
+}
+
+fn round_pack_sf64(sign: u64, mut exp: i32, mut mant: u64, rm: RoundingMode) -> u64 {
+    let rnd_size = F64_RND_SIZE;
+    let addend = rounding_addend(rm, sign as u32, rnd_size);
+    let rnd_mask = (1u64 << rnd_size) - 1;
+
+    let rnd_bits;
+    if exp <= 0 {
+        let diff = 1 - exp;
+        mant = rshift_rnd_sf64(mant, diff);
+        rnd_bits = mant & rnd_mask;
+        exp = 1;
+    } else {
+        rnd_bits = mant & rnd_mask;
+    }
+
+    mant = (mant + addend) >> rnd_size;
+    if rm == RoundingMode::Rne && rnd_bits == (1u64 << (rnd_size - 1)) {
+        mant &= !1;
+    }
+
+    exp += (mant >> (F64_MANT_SIZE + 1)) as i32;
+    if mant <= F64_MANT_MASK {
+        exp = 0;
+    } else if exp >= F64_EXP_MASK as i32 {
+        if addend == 0 {
+            exp = (F64_EXP_MASK - 1) as i32;
+            mant = F64_MANT_MASK;
+        } else {
+            exp = F64_EXP_MASK as i32;
+            mant = 0;
+        }
+    }
+
+    pack_sf64(sign, exp, mant)
+}
+
+fn normalize_sf64(sign: u64, exp: i32, mant: u64, rm: RoundingMode) -> u64 {
+    if mant == 0 {
+        return pack_sf64(sign, 0, 0);
+    }
+    let shift = mant.leading_zeros() as i32 - (64 - 1 - F64_IMANT_SIZE as i32);
+    debug_assert!(shift >= 0);
+    let exp = exp - shift;
+    let mant = mant << shift as u32;
+    round_pack_sf64(sign, exp, mant, rm)
+}
+
+fn normalize_subnormal_sf64(exp: &mut i32, mant: u64) -> u64 {
+    debug_assert!(mant != 0);
+    let shift = F64_MANT_SIZE as i32 - (64 - 1 - mant.leading_zeros() as i32);
+    *exp = 1 - shift;
+    mant << shift as u32
+}
+
+pub fn fmod_sf64(a: u64, b: u64) -> u64 {
+    let a_abs = a & !F64_SIGN_MASK;
+    let b_abs = b & !F64_SIGN_MASK;
+
+    if b_abs == 0 || a_abs >= F64_EXP_MASK_SHIFTED || b_abs > F64_EXP_MASK_SHIFTED {
+        return F64_QNAN;
+    }
+    if a_abs < b_abs {
+        return a;
+    }
+    if a_abs == b_abs {
+        return a & F64_SIGN_MASK;
+    }
+
+    let a_sign = (a >> 63) & 1;
+    let mut a_exp = ((a >> F64_MANT_SIZE) & F64_EXP_MASK) as i32;
+    let mut b_exp = ((b >> F64_MANT_SIZE) & F64_EXP_MASK) as i32;
+    let mut a_mant = a & F64_MANT_MASK;
+    let mut b_mant = b & F64_MANT_MASK;
+
+    if a_exp == 0 {
+        a_mant = normalize_subnormal_sf64(&mut a_exp, a_mant);
+    } else {
+        a_mant |= 1u64 << F64_MANT_SIZE;
+    }
+    if b_exp == 0 {
+        b_mant = normalize_subnormal_sf64(&mut b_exp, b_mant);
+    } else {
+        b_mant |= 1u64 << F64_MANT_SIZE;
+    }
+
+    let mut n = a_exp - b_exp;
+    if a_mant >= b_mant {
+        a_mant -= b_mant;
+    }
+    while n != 0 {
+        a_mant <<= 1;
+        if a_mant >= b_mant {
+            a_mant -= b_mant;
+        }
+        n -= 1;
+    }
+
+    normalize_sf64(a_sign, b_exp, a_mant << F64_RND_SIZE, RoundingMode::Rne)
+}
+
 macro_rules! define_softfp_icvt {
     (
         $mod:ident,
