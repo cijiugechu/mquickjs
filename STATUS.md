@@ -32,6 +32,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSErrorData` and `JSCFunctionData` into `src/error_data.rs` and `src/cfunction_data.rs` with roundtrip tests.
 - Ported `JSTypedArray` into `src/typed_array.rs` with roundtrip tests.
 - Ported `JSArrayBuffer` into `src/array_buffer.rs` with roundtrip tests.
+- Ported `JSROMClass` and `JSStringCharBuf` into `src/rom_class.rs` and `src/string_char_buf.rs` with tests.
 
 ## Cutils assessment
 
