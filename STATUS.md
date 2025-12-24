@@ -49,6 +49,19 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSWriteFunc` and `JSInterruptHandler` typedefs into `src/capi_defs.rs`.
 - Ported `JS_EVAL_*` flags into `src/capi_defs.rs` with constant-value tests.
 
+## Parser port scope (C -> Rust)
+
+- Primary sources: `mquickjs-c/mquickjs.c` (lexer/parser/bytecode emission), `mquickjs-c/mquickjs.h` (`JS_EVAL_*`, `JS_Parse`/`JS_Eval`), `mquickjs-c/mquickjs_priv.h` (parser debug toggles), `mquickjs-c/mquickjs_opcode.h` (OP/REOP tables).
+- Core types/enums/macros: `JSParseState`, `JSToken`, `JSParsePos`, `BlockEnv`, `JSSourcePos`, `TOK_*`, `PF_*`, `ParseExprFuncEnum`, `JSParseFunctionEnum`, `PARSE_PROP_*`, `LABEL_*`, `SP_TO_VALUE`/`VALUE_TO_SP`, `JS_STACK_SLACK`.
+- Lexer/positioning: `next_token`, `js_parse_escape`, `js_parse_string`, `js_parse_ident`, `js_parse_regexp_token`, `is_regexp_allowed`, `js_parse_get_pos`/`js_parse_seek_token`/`js_parse_skip_parens_token`, `skip_spaces`, `get_line_col`/`get_line_col_delta`.
+- Parse engine (non-recursive): `parse_stack_alloc`, `js_parse_push_val`, `js_parse_pop_val`, `PARSE_START*` + `PARSE_CALL*`, `js_parse_call`, `parse_func_table`, `js_parse_*` expression/statement/block functions.
+- Bytecode emission + control flow: `emit_*`/`emit_op_*`, `pc2line_put_bits*`, `put_ugolomb`/`put_sgolomb`, `emit_pc2line`, `new_label`/`emit_label`/`emit_goto`, `get_lvalue`/`put_lvalue`, `emit_return`/`emit_break`.
+- Scope/variables: `define_var`/`put_var`, `add_var`/`find_var`, `add_ext_var`/`find_ext_var`/`add_func_ext_var`, `resolve_var_refs`, `compute_stack_size`, `convert_ext_vars_to_local_vars`.
+- JSON/RegExp parse: `js_parse_json_value`/`js_parse_json`/`js_json_parse`, `js_parse_regexp`/`js_parse_regexp_flags`/`js_compile_regexp`, `re_parse_*` helpers, `REOP_*`/`LRE_FLAG_*` constants.
+- Entry/error flow: `JS_Parse2`/`JS_Parse`/`JS_Eval`, `js_parse_error`/`_mem`/`_stack_overflow`, `js_parse_expect`/`js_parse_expect_semi` (setjmp/longjmp error path).
+- Tests to port together: `test_json`, `test_large_eval_parse_stack`, `test_regexp`, `test_line_column_numbers` plus helpers `get_string_pos`, `check_error_pos`, `eval_error`.
+- Key invariants to preserve: non-recursive parser + explicit parse stack, `TOK_*` ordering tied to `JS_ATOM_*`, `got_lf` + `is_regexp_allowed` for ASI/regexp literal disambiguation, parse stack uses JSValue + `JS_STACK_SLACK`, error positions (JSON/RegExp use `buf_pos`, JS parser uses `token.source_pos`), `ctx->parse_state` must track GC moves of `source_buf`.
+
 ## Cutils assessment
 
 Port (custom Rust code required):
