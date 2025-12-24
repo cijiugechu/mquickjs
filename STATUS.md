@@ -23,6 +23,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added `src/jsvalue.rs` for JSValue tagging helpers and tests, then refactored to strict-provenance-friendly tagged pointers via `src/tagged_ptr.rs` (using `map_addr/with_addr`), keeping short-float/int/special tag invariants.
 - Updated tests to skip non-unsafe modules under Miri (`#[cfg(all(test, not(miri)))]`) and run strict-provenance Miri on the JSValue tests only.
 - Ported JS memblock header & mtags layout into `src/memblock.rs`, including header encode/decode helpers and value array header size extraction tests.
+- Ported JSString/JSByteArray/JSValueArray/JSVarRef header layouts and size helpers into `src/containers.rs`, with flag/length roundtrip tests.
 
 ## Cutils assessment
 
