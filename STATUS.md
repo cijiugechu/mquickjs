@@ -49,6 +49,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported core lexer flow (`next_token`, `js_parse_string`, `js_parse_ident`, `js_parse_regexp_token`) plus a `ParseState` harness and sorted interned string table into `src/parser/lexer.rs` with tests.
 - Ported parser position capture/restore (`js_parse_get_pos`, `js_parse_seek_token`) and paren skipping (`js_skip_parens`, `js_parse_skip_parens_token`) into `src/parser/lexer.rs` with tests.
 - Ported regexp flag parsing (`js_parse_regexp_flags`) plus `LRE_FLAG_*` constants into `src/parser/regexp_flags.rs` with tests.
+- Ported regexp bytecode parsing/emission (`re_parse_*`, `js_parse_regexp`) into `src/parser/regexp.rs` with non-recursive parse stack and compile-time tests for prefix/captures/errors.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
 - Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.
