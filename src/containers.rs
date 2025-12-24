@@ -1,5 +1,5 @@
 use crate::jsvalue::{JSValue, JSWord, JSW};
-use crate::memblock::{mb_header, JS_MTAG_BITS, JS_MTAG_BYTE_ARRAY, JS_MTAG_STRING, JS_MTAG_VALUE_ARRAY, JS_MTAG_VARREF};
+use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
 
 const JS_STRING_FLAG_UNIQUE_SHIFT: u32 = JS_MTAG_BITS;
 const JS_STRING_FLAG_ASCII_SHIFT: u32 = JS_MTAG_BITS + 1;
@@ -15,29 +15,56 @@ pub const JS_STRING_LEN_MAX: JSWord = if JSW == 8 {
 pub const JS_BYTE_ARRAY_SIZE_MAX: JSWord = (1 << (32 - JS_MTAG_BITS)) - 1;
 pub const JS_VALUE_ARRAY_SIZE_MAX: JSWord = JS_BYTE_ARRAY_SIZE_MAX;
 
-pub fn string_header(len: JSWord, is_unique: bool, is_ascii: bool, is_numeric: bool, gc_mark: bool) -> JSWord {
-    debug_assert!(len <= JS_STRING_LEN_MAX);
-    let mut header = mb_header(JS_MTAG_STRING, gc_mark);
-    header |= (is_unique as JSWord) << JS_STRING_FLAG_UNIQUE_SHIFT;
-    header |= (is_ascii as JSWord) << JS_STRING_FLAG_ASCII_SHIFT;
-    header |= (is_numeric as JSWord) << JS_STRING_FLAG_NUMERIC_SHIFT;
-    header | (len << JS_STRING_LEN_SHIFT)
+// C: `JSString` header bitfields in mquickjs.c.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct StringHeader(MbHeader);
+
+impl StringHeader {
+    pub fn new(len: JSWord, is_unique: bool, is_ascii: bool, is_numeric: bool, gc_mark: bool) -> Self {
+        debug_assert!(len <= JS_STRING_LEN_MAX);
+        let mut word = MbHeader::new(MTag::String, gc_mark).word();
+        word |= (is_unique as JSWord) << JS_STRING_FLAG_UNIQUE_SHIFT;
+        word |= (is_ascii as JSWord) << JS_STRING_FLAG_ASCII_SHIFT;
+        word |= (is_numeric as JSWord) << JS_STRING_FLAG_NUMERIC_SHIFT;
+        Self(MbHeader::from_word(word | (len << JS_STRING_LEN_SHIFT)))
+    }
+
+    pub const fn header(self) -> MbHeader {
+        self.0
+    }
+
+    pub const fn len(self) -> JSWord {
+        self.0.word() >> JS_STRING_LEN_SHIFT
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    pub const fn is_unique(self) -> bool {
+        (self.0.word() >> JS_STRING_FLAG_UNIQUE_SHIFT) & 1 != 0
+    }
+
+    pub const fn is_ascii(self) -> bool {
+        (self.0.word() >> JS_STRING_FLAG_ASCII_SHIFT) & 1 != 0
+    }
+
+    pub const fn is_numeric(self) -> bool {
+        (self.0.word() >> JS_STRING_FLAG_NUMERIC_SHIFT) & 1 != 0
+    }
 }
 
-pub fn string_len(header: JSWord) -> JSWord {
-    header >> JS_STRING_LEN_SHIFT
+impl From<StringHeader> for MbHeader {
+    fn from(header: StringHeader) -> Self {
+        header.0
+    }
 }
 
-pub fn string_is_unique(header: JSWord) -> bool {
-    (header >> JS_STRING_FLAG_UNIQUE_SHIFT) & 1 != 0
-}
-
-pub fn string_is_ascii(header: JSWord) -> bool {
-    (header >> JS_STRING_FLAG_ASCII_SHIFT) & 1 != 0
-}
-
-pub fn string_is_numeric(header: JSWord) -> bool {
-    (header >> JS_STRING_FLAG_NUMERIC_SHIFT) & 1 != 0
+impl From<MbHeader> for StringHeader {
+    fn from(header: MbHeader) -> Self {
+        debug_assert!(header.tag() == MTag::String);
+        Self(header)
+    }
 }
 
 pub fn string_alloc_size(len: JSWord) -> usize {
@@ -47,13 +74,37 @@ pub fn string_alloc_size(len: JSWord) -> usize {
     aligned + core::mem::size_of::<JSWord>()
 }
 
-pub fn byte_array_header(size: JSWord, gc_mark: bool) -> JSWord {
-    debug_assert!(size <= JS_BYTE_ARRAY_SIZE_MAX);
-    mb_header(JS_MTAG_BYTE_ARRAY, gc_mark) | (size << JS_MTAG_BITS)
+// C: `JSByteArray` header bitfields in mquickjs.c.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ByteArrayHeader(MbHeader);
+
+impl ByteArrayHeader {
+    pub fn new(size: JSWord, gc_mark: bool) -> Self {
+        debug_assert!(size <= JS_BYTE_ARRAY_SIZE_MAX);
+        let word = MbHeader::new(MTag::ByteArray, gc_mark).word() | (size << JS_MTAG_BITS);
+        Self(MbHeader::from_word(word))
+    }
+
+    pub const fn header(self) -> MbHeader {
+        self.0
+    }
+
+    pub const fn size(self) -> JSWord {
+        self.0.word() >> JS_MTAG_BITS
+    }
 }
 
-pub fn byte_array_size(header: JSWord) -> JSWord {
-    header >> JS_MTAG_BITS
+impl From<ByteArrayHeader> for MbHeader {
+    fn from(header: ByteArrayHeader) -> Self {
+        header.0
+    }
+}
+
+impl From<MbHeader> for ByteArrayHeader {
+    fn from(header: MbHeader) -> Self {
+        debug_assert!(header.tag() == MTag::ByteArray);
+        Self(header)
+    }
 }
 
 pub fn byte_array_alloc_size(size: JSWord) -> usize {
@@ -61,13 +112,37 @@ pub fn byte_array_alloc_size(size: JSWord) -> usize {
     core::mem::size_of::<JSWord>() + size as usize
 }
 
-pub fn value_array_header(size: JSWord, gc_mark: bool) -> JSWord {
-    debug_assert!(size <= JS_VALUE_ARRAY_SIZE_MAX);
-    mb_header(JS_MTAG_VALUE_ARRAY, gc_mark) | (size << JS_MTAG_BITS)
+// C: `JSValueArray` header bitfields in mquickjs.c.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ValueArrayHeader(MbHeader);
+
+impl ValueArrayHeader {
+    pub fn new(size: JSWord, gc_mark: bool) -> Self {
+        debug_assert!(size <= JS_VALUE_ARRAY_SIZE_MAX);
+        let word = MbHeader::new(MTag::ValueArray, gc_mark).word() | (size << JS_MTAG_BITS);
+        Self(MbHeader::from_word(word))
+    }
+
+    pub const fn header(self) -> MbHeader {
+        self.0
+    }
+
+    pub const fn size(self) -> JSWord {
+        self.0.word() >> JS_MTAG_BITS
+    }
 }
 
-pub fn value_array_size(header: JSWord) -> JSWord {
-    header >> JS_MTAG_BITS
+impl From<ValueArrayHeader> for MbHeader {
+    fn from(header: ValueArrayHeader) -> Self {
+        header.0
+    }
+}
+
+impl From<MbHeader> for ValueArrayHeader {
+    fn from(header: MbHeader) -> Self {
+        debug_assert!(header.tag() == MTag::ValueArray);
+        Self(header)
+    }
 }
 
 pub fn value_array_alloc_size(size: JSWord) -> usize {
@@ -75,12 +150,36 @@ pub fn value_array_alloc_size(size: JSWord) -> usize {
     core::mem::size_of::<JSWord>() + (size as usize) * core::mem::size_of::<JSValue>()
 }
 
-pub fn var_ref_header(is_detached: bool, gc_mark: bool) -> JSWord {
-    mb_header(JS_MTAG_VARREF, gc_mark) | ((is_detached as JSWord) << JS_MTAG_BITS)
+// C: `JSVarRef` header bitfields in mquickjs.c.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VarRefHeader(MbHeader);
+
+impl VarRefHeader {
+    pub fn new(is_detached: bool, gc_mark: bool) -> Self {
+        let word = MbHeader::new(MTag::VarRef, gc_mark).word() | ((is_detached as JSWord) << JS_MTAG_BITS);
+        Self(MbHeader::from_word(word))
+    }
+
+    pub const fn header(self) -> MbHeader {
+        self.0
+    }
+
+    pub const fn is_detached(self) -> bool {
+        (self.0.word() >> JS_MTAG_BITS) & 1 != 0
+    }
 }
 
-pub fn var_ref_is_detached(header: JSWord) -> bool {
-    (header >> JS_MTAG_BITS) & 1 != 0
+impl From<VarRefHeader> for MbHeader {
+    fn from(header: VarRefHeader) -> Self {
+        header.0
+    }
+}
+
+impl From<MbHeader> for VarRefHeader {
+    fn from(header: MbHeader) -> Self {
+        debug_assert!(header.tag() == MTag::VarRef);
+        Self(header)
+    }
 }
 
 #[cfg(all(test, not(miri)))]
@@ -89,11 +188,11 @@ mod tests {
 
     #[test]
     fn string_header_roundtrip() {
-        let header = string_header(42, true, false, true, true);
-        assert_eq!(string_len(header), 42);
-        assert!(string_is_unique(header));
-        assert!(!string_is_ascii(header));
-        assert!(string_is_numeric(header));
+        let header = StringHeader::new(42, true, false, true, true);
+        assert_eq!(header.len(), 42);
+        assert!(header.is_unique());
+        assert!(!header.is_ascii());
+        assert!(header.is_numeric());
     }
 
     #[test]
@@ -106,19 +205,19 @@ mod tests {
 
     #[test]
     fn byte_array_header_roundtrip() {
-        let header = byte_array_header(128, false);
-        assert_eq!(byte_array_size(header), 128);
+        let header = ByteArrayHeader::new(128, false);
+        assert_eq!(header.size(), 128);
     }
 
     #[test]
     fn value_array_header_roundtrip() {
-        let header = value_array_header(7, true);
-        assert_eq!(value_array_size(header), 7);
+        let header = ValueArrayHeader::new(7, true);
+        assert_eq!(header.size(), 7);
     }
 
     #[test]
     fn var_ref_header_roundtrip() {
-        let header = var_ref_header(true, false);
-        assert!(var_ref_is_detached(header));
+        let header = VarRefHeader::new(true, false);
+        assert!(header.is_detached());
     }
 }

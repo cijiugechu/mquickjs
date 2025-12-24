@@ -47,3 +47,15 @@ Leverage the Rust Type System to enforce semantics.
 ### 5. Implementation Strategy
 *   **Incremental Rewrite:** Replace "leaves" (dependency-free modules) first.
 *   **Internal Replacement:** Keep C-compatible ABI/API initially; link Rust code as a static library to the existing C project.
+
+## Example: C port -> Rust idiomatic
+
+Use the `memblock` + `containers` refactor as a template for migrating C-style bitfields into Rust types:
+
+- Introduce `MTag` as a `repr(u8)` enum instead of raw `JSWord` tag constants, with `TryFrom<JSWord>` for validated conversions.
+- Use newtypes (`MbHeader`, `StringHeader`, `ByteArrayHeader`, `ValueArrayHeader`, `VarRefHeader`) to encode header layouts and enforce invariants.
+- Move header construction and decoding into methods on the types, avoiding free functions that pass raw `JSWord` around.
+- Keep bit-level layout explicit (`word()` access) for low-level packing while presenting safe, typed APIs to callers.
+- Update tests alongside the refactor to validate tag extraction and size round-trips.
+
+Reference implementation: `src/memblock.rs` and `src/containers.rs`.
