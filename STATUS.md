@@ -44,6 +44,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported parser data structures (`BlockEnv`, `JSSourcePos`, `JSToken`, `JSParsePos`) into `src/parser_types.rs`.
 - Ported parser line/column helpers (`get_line_col`, `get_line_col_delta`) into `src/parser_pos.rs` with UTF-8 lead-byte counting tests.
 - Ported parser token/keyword constants plus `is_regexp_allowed` into `src/parser/tokens.rs` with ordering/mapping tests.
+- Ported parser escape parsing + identifier ASCII helpers (`js_parse_escape`, `is_ident_first`, `is_ident_next`) into `src/parser/lexer.rs` with tests.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
 - Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.
