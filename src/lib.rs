@@ -21,3 +21,4 @@ pub mod rom_class;
 pub mod string_char_buf;
 pub mod closure_data;
 pub mod context_shell;
+pub mod memblock_views;
