@@ -7,6 +7,7 @@ The directory where the C version is located is `/mquickjs-c`.
 - Before porting functions and structures, first find out what their invariant is.
 
 - Always port the implementation and tests together.
+- If a C feature has no meaningful tests to port, do not add placeholder roundtrip tests just to have tests.
 
 - When using constants for mathematical operations, give priority to whether rust core provides them.
 
