@@ -27,5 +27,6 @@ pub mod memblock_views;
 pub mod object;
 pub mod function_bytecode;
 pub mod parser_types;
+pub mod parser_pos;
 pub mod gc_ref;
 pub mod stdlib_def;

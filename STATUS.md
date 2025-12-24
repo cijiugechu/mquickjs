@@ -42,6 +42,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSObject` layout plus `JSRegExp`/`JSObjectUserData` into `src/object.rs` with header/payload tests.
 - Ported `JSFunctionBytecode` layout into `src/function_bytecode.rs` with header/roundtrip tests.
 - Ported parser data structures (`BlockEnv`, `JSSourcePos`, `JSToken`, `JSParsePos`) into `src/parser_types.rs`.
+- Ported parser line/column helpers (`get_line_col`, `get_line_col_delta`) into `src/parser_pos.rs` with UTF-8 lead-byte counting tests.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
 - Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.
