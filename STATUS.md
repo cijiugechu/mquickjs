@@ -27,6 +27,9 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added Rust-idiomatic newtypes for `JSFreeBlock`/`JSFloat64` headers in `src/memblock.rs` with roundtrip tag/size tests.
 - Ported `JSStringPosCacheEntry` and related constants/enums into `src/string_pos_cache.rs` with tests.
 - Added minimal enum ports for `JSPropTypeEnum` and `JSVarRefKindEnum` in `src/enums.rs` with discriminant tests.
+- Ported `JSProperty` bitfield metadata into `src/property.rs` with roundtrip tests.
+- Ported `JSArrayData` layout and length invariant into `src/array_data.rs` with tests.
+- Ported `JSErrorData` and `JSCFunctionData` into `src/error_data.rs` and `src/cfunction_data.rs` with roundtrip tests.
 
 ## Cutils assessment
 

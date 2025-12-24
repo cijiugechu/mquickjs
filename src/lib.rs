@@ -11,3 +11,7 @@ pub mod memblock;
 pub mod containers;
 pub mod string_pos_cache;
 pub mod enums;
+pub mod property;
+pub mod array_data;
+pub mod error_data;
+pub mod cfunction_data;
