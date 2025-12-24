@@ -161,6 +161,65 @@ impl MbHeader {
     }
 }
 
+// C: `JSFreeBlock` header bitfields in mquickjs.c.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct FreeBlockHeader(MbHeader);
+
+impl FreeBlockHeader {
+    pub fn new(size: JSWord, gc_mark: bool) -> Self {
+        let word = MbHeader::new(MTag::Free, gc_mark).word() | (size << JS_MTAG_BITS);
+        Self(MbHeader::from_word(word))
+    }
+
+    pub const fn header(self) -> MbHeader {
+        self.0
+    }
+
+    pub const fn size(self) -> JSWord {
+        self.0.word() >> JS_MTAG_BITS
+    }
+}
+
+impl From<FreeBlockHeader> for MbHeader {
+    fn from(header: FreeBlockHeader) -> Self {
+        header.0
+    }
+}
+
+impl From<MbHeader> for FreeBlockHeader {
+    fn from(header: MbHeader) -> Self {
+        debug_assert!(header.tag() == MTag::Free);
+        Self(header)
+    }
+}
+
+// C: `JSFloat64` header bitfields in mquickjs.c.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Float64Header(MbHeader);
+
+impl Float64Header {
+    pub fn new(gc_mark: bool) -> Self {
+        Self(MbHeader::new(MTag::Float64, gc_mark))
+    }
+
+    pub const fn header(self) -> MbHeader {
+        self.0
+    }
+}
+
+impl From<Float64Header> for MbHeader {
+    fn from(header: Float64Header) -> Self {
+        header.0
+    }
+}
+
+impl From<MbHeader> for Float64Header {
+    fn from(header: MbHeader) -> Self {
+        debug_assert!(header.tag() == MTag::Float64);
+        Self(header)
+    }
+}
+
 impl From<MbHeader> for JSWord {
     fn from(header: MbHeader) -> Self {
         header.word()
@@ -201,5 +260,20 @@ mod tests {
         let header = MbHeader::value_array_header(size);
         assert_eq!(header.tag(), MTag::ValueArray);
         assert_eq!(header.value_array_size(), size);
+    }
+
+    #[test]
+    fn free_block_header_roundtrip() {
+        let header = FreeBlockHeader::new(0x1234, true);
+        assert_eq!(header.header().tag(), MTag::Free);
+        assert!(header.header().gc_mark());
+        assert_eq!(header.size(), 0x1234);
+    }
+
+    #[test]
+    fn float64_header_tag() {
+        let header = Float64Header::new(false);
+        assert_eq!(header.header().tag(), MTag::Float64);
+        assert!(!header.header().gc_mark());
     }
 }

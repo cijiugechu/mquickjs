@@ -24,6 +24,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Updated tests to skip non-unsafe modules under Miri (`#[cfg(all(test, not(miri)))]`) and run strict-provenance Miri on the JSValue tests only.
 - Ported JS memblock header & mtags layout into `src/memblock.rs`, including header encode/decode helpers and value array header size extraction tests.
 - Ported JSString/JSByteArray/JSValueArray/JSVarRef header layouts and size helpers into `src/containers.rs`, with flag/length roundtrip tests.
+- Added Rust-idiomatic newtypes for `JSFreeBlock`/`JSFloat64` headers in `src/memblock.rs` with roundtrip tag/size tests.
 
 ## Cutils assessment
 
