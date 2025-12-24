@@ -1,4 +1,4 @@
-# Rust port of the C opus library
+# Rust port of the C mquickjs library
 
 The directory where the C version is located is `/mquickjs-c`.
 
