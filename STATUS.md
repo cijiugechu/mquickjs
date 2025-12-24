@@ -38,3 +38,15 @@ Replace with Rust std/core:
 Skip/avoid direct port:
 - C-only macros/attributes (`likely`, `unlikely`, `force_inline`, `no_inline`, `__maybe_unused`).
 - `offsetof`, `countof`, `container_of` (use Rust layouts, `memoffset` if needed, or `intrusive-collections` adapters).
+
+## Upcoming mquickjs.c/h port plan (incremental, correctness-first)
+
+- **JSValue tagging & helpers**: Recreate tag layout (`JS_TAG_*`, special bits) and `JS_VALUE_GET/MAKE_*`/`JS_Is*` helpers in Rust newtypes with exhaustive tests (cover short-float on/off, int/pointer tagging).
+- **Memblock header & mtags**: Model `JS_MTAG_BITS`/`JS_MB_HEADER` and mtags in Rust; add bit-width/packing tests for 32/64-bit layouts. Keep allocator in C initially; Rust only parses/validates headers.
+- **Core containers**: Port layouts/constants for `JSString`/`JSByteArray`/`JSValueArray`/`JSVarRef` (length limits, flag bits) with property/roundtrip tests. Provide safe read views, no allocator takeover yet.
+- **JSContext shell**: Define Rust view/FFI handle mirroring `JSContext` memory map invariants (sp > stack_bottom, min_free_size). Expose read-only queries; assert before any unsafe entry.
+- **Objects & classes**: Model `JSObject` shape (class_id, extra_size, proto, props, union payloads) with typed accessors. Validate size/alignment math via tests; keep creation backed by C for now.
+- **Bytecode metadata**: Use existing opcode port to parse `JSFunctionBytecode` fields (arg_count, stack_size, cpool/ext_vars/pc2line). Test with C-generated sample bytecode for field equality.
+- **Interpreter bridge**: Keep C interpreter as oracle; add Rust wrappers for `JS_Call`/`JS_Eval` to collect outputs/exceptions for diff tests. Defer opcode execution port until data-model steps above are stable.
+- **Builtins surface**: Bridge `c_function_table`/class_count via FFI; keep builtins executed by C. Gradually port builtin families (Function/String/Array/Math/TypedArray) with proptest + C diff.
+- **Validation regimen**: Each increment runs `cargo check --all-features`, `cargo test --all-features`, `cargo clippy`; unsafe-heavy paths also run `cargo miri test`. Differential tests compare C/Rust outputs (incl. NaN/-0, UTF-16 edges, hash collisions).
