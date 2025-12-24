@@ -39,6 +39,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSObject` layout plus `JSRegExp`/`JSObjectUserData` into `src/object.rs` with header/payload tests.
 - Ported `JSFunctionBytecode` layout into `src/function_bytecode.rs` with header/roundtrip tests.
 - Ported parser data structures (`BlockEnv`, `JSSourcePos`, `JSToken`, `JSParsePos`) into `src/parser_types.rs`.
+- Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
 
 ## Cutils assessment
 
