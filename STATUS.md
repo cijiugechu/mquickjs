@@ -25,6 +25,8 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported JS memblock header & mtags layout into `src/memblock.rs`, including header encode/decode helpers and value array header size extraction tests.
 - Ported JSString/JSByteArray/JSValueArray/JSVarRef header layouts and size helpers into `src/containers.rs`, with flag/length roundtrip tests.
 - Added Rust-idiomatic newtypes for `JSFreeBlock`/`JSFloat64` headers in `src/memblock.rs` with roundtrip tag/size tests.
+- Ported `JSStringPosCacheEntry` and related constants/enums into `src/string_pos_cache.rs` with tests.
+- Added minimal enum ports for `JSPropTypeEnum` and `JSVarRefKindEnum` in `src/enums.rs` with discriminant tests.
 
 ## Cutils assessment
 
