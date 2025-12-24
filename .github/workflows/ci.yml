@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: cargo check
+        run: cargo +stable check --all-features
+
+      - name: cargo test
+        run: cargo +stable test --all-features
+
+      - name: cargo clippy
+        run: cargo +stable clippy
+
+      - name: Install nightly toolchain with Miri
+        run: rustup toolchain install nightly --profile minimal -c miri -c rust-src
+
+      - name: Miri strict provenance
+        run: MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test --all-features
