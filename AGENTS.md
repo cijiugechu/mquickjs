@@ -1,6 +1,7 @@
 # Rust port of the C mquickjs library
 
 The directory where the C version is located is `/mquickjs-c`.
+Current porting status located at [STATUS.md](./STATUS.md).
 
 # Porting strategy
 
