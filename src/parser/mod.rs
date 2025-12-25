@@ -1,5 +1,6 @@
 pub mod pos;
 pub mod pc2line;
+pub mod error;
 pub mod lexer;
 pub mod json;
 pub mod parse_stack;
