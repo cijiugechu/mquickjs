@@ -1,10 +1,10 @@
 use crate::cutils::{get_u32, put_u16, put_u32};
 use crate::jsvalue::{JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT};
 use crate::opcode::{
-    OpCode, OpCodeFormat, OPCODES, OP_GOTO, OP_INVALID, OP_PUSH_0, OP_PUSH_I16, OP_PUSH_I8,
-    OP_PUSH_MINUS1, OP_PUSH_VALUE, OP_RET, OP_RETURN, OP_RETURN_UNDEF, OP_THROW, OP_GET_LOC,
-    OP_PUT_LOC, OP_GET_ARG, OP_PUT_ARG, OP_GET_LOC0, OP_PUT_LOC0, OP_GET_ARG0, OP_PUT_ARG0,
-    OP_GET_LOC8, OP_PUT_LOC8,
+    OpCode, OpCodeFormat, OPCODES, OP_GOSUB, OP_GOTO, OP_INVALID, OP_PUSH_0, OP_PUSH_I16,
+    OP_PUSH_I8, OP_PUSH_MINUS1, OP_PUSH_VALUE, OP_RET, OP_RETURN, OP_RETURN_UNDEF, OP_THROW,
+    OP_GET_LOC, OP_PUT_LOC, OP_GET_ARG, OP_PUT_ARG, OP_GET_LOC0, OP_PUT_LOC0, OP_GET_ARG0,
+    OP_PUT_ARG0, OP_GET_LOC8, OP_PUT_LOC8,
 };
 
 use super::pc2line::Pc2LineEmitter;
@@ -231,7 +231,7 @@ impl<'a> BytecodeEmitter<'a> {
     }
 
     pub fn emit_goto(&mut self, opcode: OpCode, label: &mut Label) {
-        debug_assert!(opcode == OP_GOTO || opcode == OP_RET);
+        debug_assert!(opcode == OP_GOTO || opcode == OP_RET || opcode == OP_GOSUB);
         self.emit_op(opcode);
         let label_val = label.0;
         if (label_val & LABEL_RESOLVED_FLAG) != 0 {
