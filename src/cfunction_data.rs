@@ -19,6 +19,11 @@ impl CFunctionData {
     pub const fn params(self) -> JSValue {
         self.params
     }
+
+    pub(crate) unsafe fn params_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).params) }
+    }
 }
 
 #[cfg(all(test, not(miri)))]

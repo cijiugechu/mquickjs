@@ -187,6 +187,41 @@ impl FunctionBytecode {
     pub fn set_byte_code(&mut self, byte_code: JSValue) {
         self.byte_code = byte_code;
     }
+
+    pub(crate) unsafe fn func_name_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).func_name) }
+    }
+
+    pub(crate) unsafe fn byte_code_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).byte_code) }
+    }
+
+    pub(crate) unsafe fn cpool_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).cpool) }
+    }
+
+    pub(crate) unsafe fn vars_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).vars) }
+    }
+
+    pub(crate) unsafe fn ext_vars_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).ext_vars) }
+    }
+
+    pub(crate) unsafe fn filename_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).filename) }
+    }
+
+    pub(crate) unsafe fn pc2line_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).pc2line) }
+    }
 }
 
 #[cfg(all(test, not(miri)))]

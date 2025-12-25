@@ -26,6 +26,7 @@ pub mod object;
 pub mod function_bytecode;
 pub mod parser;
 pub mod gc_ref;
+pub mod heap;
 
 pub use parser::pos as parser_pos;
 pub use parser::types as parser_types;

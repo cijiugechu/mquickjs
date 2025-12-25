@@ -42,6 +42,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added read-only views for `JSFloat64`, `JSByteArray`, and `JSValueArray` in `src/memblock_views.rs` with roundtrip tests.
 - Ported `JSObject` layout plus `JSRegExp`/`JSObjectUserData` into `src/object.rs` with header/payload tests.
 - Ported `JSFunctionBytecode` layout into `src/function_bytecode.rs` with header/roundtrip tests.
+- Ported heap/memblock allocator + free-list compaction infrastructure into `src/heap.rs` (HeapLayout, memblock sizing, threaded-pointer compaction) with tests, and added internal pointer accessors needed for GC threading.
 - Ported parser data structures (`BlockEnv`, `JSSourcePos`, `JSToken`, `JSParsePos`) into `src/parser_types.rs`.
 - Ported parser line/column helpers (`get_line_col`, `get_line_col_delta`) into `src/parser_pos.rs` with UTF-8 lead-byte counting tests.
 - Ported pc2line bitstream decoding helpers (`get_bits`, `get_ugolomb`, `get_sgolomb`, `get_pc2line_hoisted_code_len`, `find_line_col`) into `src/parser/pc2line.rs` with roundtrip/tests for line/column decoding.

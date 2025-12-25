@@ -19,6 +19,16 @@ impl ErrorData {
     pub const fn stack(self) -> JSValue {
         self.stack
     }
+
+    pub(crate) unsafe fn message_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).message) }
+    }
+
+    pub(crate) unsafe fn stack_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).stack) }
+    }
 }
 
 #[cfg(all(test, not(miri)))]

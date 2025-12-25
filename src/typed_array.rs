@@ -17,6 +17,11 @@ impl TypedArray {
         self.buffer
     }
 
+    pub(crate) unsafe fn buffer_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).buffer) }
+    }
+
     pub const fn len(self) -> u32 {
         self.len
     }

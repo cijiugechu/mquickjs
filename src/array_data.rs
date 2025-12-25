@@ -19,6 +19,11 @@ impl ArrayData {
         self.tab
     }
 
+    pub(crate) unsafe fn tab_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).tab) }
+    }
+
     pub const fn len(self) -> u32 {
         self.len
     }

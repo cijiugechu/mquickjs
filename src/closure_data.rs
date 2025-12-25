@@ -22,6 +22,16 @@ impl ClosureData {
     pub const fn var_refs(self) -> JSValue {
         self.var_refs
     }
+
+    pub(crate) unsafe fn func_bytecode_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).func_bytecode) }
+    }
+
+    pub(crate) unsafe fn var_refs_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).var_refs) }
+    }
 }
 
 #[cfg(all(test, not(miri)))]

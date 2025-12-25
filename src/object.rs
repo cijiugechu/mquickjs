@@ -34,6 +34,10 @@ impl ObjectHeader {
         Self(word)
     }
 
+    pub const fn from_word(word: JSWord) -> Self {
+        Self(word)
+    }
+
     pub const fn header(self) -> MbHeader {
         MbHeader::from_word(self.0)
     }
@@ -83,6 +87,16 @@ impl RegExp {
     pub const fn last_index(self) -> i32 {
         self.last_index
     }
+
+    pub(crate) unsafe fn source_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).source) }
+    }
+
+    pub(crate) unsafe fn byte_code_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).byte_code) }
+    }
 }
 
 // C: `JSObjectUserData` in mquickjs.c.
@@ -126,6 +140,8 @@ pub struct Object {
 }
 
 impl Object {
+    pub const PAYLOAD_OFFSET: usize = core::mem::offset_of!(Object, payload);
+
     pub const fn new(header: ObjectHeader, proto: JSValue, props: JSValue, payload: ObjectPayload) -> Self {
         Self {
             header,
@@ -149,6 +165,21 @@ impl Object {
 
     pub const fn payload(self) -> ObjectPayload {
         self.payload
+    }
+
+    pub(crate) unsafe fn proto_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).proto) }
+    }
+
+    pub(crate) unsafe fn props_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).props) }
+    }
+
+    pub(crate) unsafe fn payload_ptr(this: *mut Self) -> *mut ObjectPayload {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).payload) }
     }
 }
 
