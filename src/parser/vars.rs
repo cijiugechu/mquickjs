@@ -41,6 +41,105 @@ impl VarError {
     }
 }
 
+// Newtype wrappers replace raw i32 indices; TryFrom enforces u16 bounds at call sites.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LocalVarIndex(u16);
+
+impl LocalVarIndex {
+    fn from_u16(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ExtVarIndex(u16);
+
+impl ExtVarIndex {
+    fn from_u16(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+impl From<u16> for LocalVarIndex {
+    fn from(value: u16) -> Self {
+        Self::from_u16(value)
+    }
+}
+
+impl From<u16> for ExtVarIndex {
+    fn from(value: u16) -> Self {
+        Self::from_u16(value)
+    }
+}
+
+impl From<LocalVarIndex> for u16 {
+    fn from(value: LocalVarIndex) -> Self {
+        value.0
+    }
+}
+
+impl From<ExtVarIndex> for u16 {
+    fn from(value: ExtVarIndex) -> Self {
+        value.0
+    }
+}
+
+impl From<LocalVarIndex> for usize {
+    fn from(value: LocalVarIndex) -> Self {
+        value.0 as usize
+    }
+}
+
+impl From<ExtVarIndex> for usize {
+    fn from(value: ExtVarIndex) -> Self {
+        value.0 as usize
+    }
+}
+
+impl From<LocalVarIndex> for i32 {
+    fn from(value: LocalVarIndex) -> Self {
+        value.0 as i32
+    }
+}
+
+impl From<ExtVarIndex> for i32 {
+    fn from(value: ExtVarIndex) -> Self {
+        value.0 as i32
+    }
+}
+
+impl TryFrom<u32> for LocalVarIndex {
+    type Error = core::num::TryFromIntError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(Self(u16::try_from(value)?))
+    }
+}
+
+impl TryFrom<u32> for ExtVarIndex {
+    type Error = core::num::TryFromIntError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(Self(u16::try_from(value)?))
+    }
+}
+
+impl TryFrom<usize> for LocalVarIndex {
+    type Error = core::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(Self(u16::try_from(value)?))
+    }
+}
+
+impl TryFrom<usize> for ExtVarIndex {
+    type Error = core::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(Self(u16::try_from(value)?))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueArray {
     values: Vec<JSValue>,
@@ -173,57 +272,51 @@ fn pack_decl(kind: JSVarRefKind, idx: i32) -> i32 {
     ((kind as i32) << 16) | (idx & 0xffff)
 }
 
-/* return the local variable index or -1 if not found */
-pub fn find_func_var(func: JSValue, name: JSValue) -> i32 {
-    let Some(func_ptr) = value_to_ptr::<FunctionBytecode>(func) else {
-        return -1;
-    };
+/* return the local variable index; None means "not found" (replaces -1 sentinel) */
+pub fn find_func_var(func: JSValue, name: JSValue) -> Option<LocalVarIndex> {
+    let func_ptr = value_to_ptr::<FunctionBytecode>(func)?;
     // SAFETY: caller provides a valid function bytecode pointer.
     let func_ref = unsafe { func_ptr.as_ref() };
     if func_ref.vars() == JS_NULL {
-        return -1;
+        return None;
     }
-    let Some(arr_ptr) = value_to_ptr::<ValueArray>(func_ref.vars()) else {
-        return -1;
-    };
+    let arr_ptr = value_to_ptr::<ValueArray>(func_ref.vars())?;
     // SAFETY: vars points to a live ValueArray.
     let arr = unsafe { arr_ptr.as_ref() };
     for (idx, value) in arr.values().iter().enumerate() {
         if *value == name {
-            return idx as i32;
+            return Some(LocalVarIndex::try_from(idx).expect("local var index"));
         }
     }
-    -1
+    None
 }
 
-pub fn find_var(state: &JSParseState, name: JSValue) -> i32 {
+/* return the local variable index; None means "not found" (replaces -1 sentinel) */
+pub fn find_var(state: &JSParseState, name: JSValue) -> Option<LocalVarIndex> {
     let local_len = state.local_vars_len() as usize;
     if local_len == 0 {
-        return -1;
+        return None;
     }
-    let func_ptr = match value_to_ptr::<FunctionBytecode>(state.cur_func()) {
-        Some(ptr) => ptr,
-        None => return -1,
-    };
+    let func_ptr = value_to_ptr::<FunctionBytecode>(state.cur_func())?;
     // SAFETY: state.cur_func points to a live FunctionBytecode.
     let func_ref = unsafe { func_ptr.as_ref() };
     let vars_val = func_ref.vars();
     let Some(arr_ptr) = value_to_ptr::<ValueArray>(vars_val) else {
         debug_assert!(local_len == 0);
-        return -1;
+        return None;
     };
     // SAFETY: vars points to a live ValueArray.
     let arr = unsafe { arr_ptr.as_ref() };
     debug_assert!(arr.size() >= local_len);
     for (idx, value) in arr.values().iter().take(local_len).enumerate() {
         if *value == name {
-            return idx as i32;
+            return Some(LocalVarIndex::try_from(idx).expect("local var index"));
         }
     }
-    -1
+    None
 }
 
-pub fn get_ext_var_name(state: &JSParseState, var_idx: usize) -> Option<JSValue> {
+pub fn get_ext_var_name(state: &JSParseState, var_idx: ExtVarIndex) -> Option<JSValue> {
     let func_ptr = value_to_ptr::<FunctionBytecode>(state.cur_func())?;
     // SAFETY: state.cur_func points to a live FunctionBytecode.
     let func_ref = unsafe { func_ptr.as_ref() };
@@ -231,36 +324,35 @@ pub fn get_ext_var_name(state: &JSParseState, var_idx: usize) -> Option<JSValue>
     let arr_ptr = value_to_ptr::<ValueArray>(ext_vars_val)?;
     // SAFETY: ext_vars points to a live ValueArray.
     let arr = unsafe { arr_ptr.as_ref() };
-    arr.values().get(2 * var_idx).copied()
+    arr.values().get(2 * usize::from(var_idx)).copied()
 }
 
-/* return the external variable index or -1 if not found */
-pub fn find_func_ext_var(func: JSValue, name: JSValue) -> i32 {
-    let Some(func_ptr) = value_to_ptr::<FunctionBytecode>(func) else {
-        return -1;
-    };
+/* return the external variable index; None means "not found" (replaces -1 sentinel) */
+pub fn find_func_ext_var(func: JSValue, name: JSValue) -> Option<ExtVarIndex> {
+    let func_ptr = value_to_ptr::<FunctionBytecode>(func)?;
     // SAFETY: caller provides a valid function bytecode pointer.
     let func_ref = unsafe { func_ptr.as_ref() };
     let ext_len = func_ref.ext_vars_len() as usize;
     if ext_len == 0 {
-        return -1;
+        return None;
     }
     let Some(arr_ptr) = value_to_ptr::<ValueArray>(func_ref.ext_vars()) else {
         debug_assert!(ext_len == 0);
-        return -1;
+        return None;
     };
     // SAFETY: ext_vars points to a live ValueArray.
     let arr = unsafe { arr_ptr.as_ref() };
     debug_assert!(arr.size() >= ext_len * 2);
     for i in 0..ext_len {
         if arr.values()[2 * i] == name {
-            return i as i32;
+            return Some(ExtVarIndex::try_from(i).expect("ext var index"));
         }
     }
-    -1
+    None
 }
 
-pub fn find_ext_var(state: &JSParseState, name: JSValue) -> i32 {
+/* return the external variable index; None means "not found" (replaces -1 sentinel) */
+pub fn find_ext_var(state: &JSParseState, name: JSValue) -> Option<ExtVarIndex> {
     find_func_ext_var(state.cur_func(), name)
 }
 
@@ -270,7 +362,7 @@ pub fn add_func_ext_var(
     func: JSValue,
     name: JSValue,
     decl: i32,
-) -> Result<i32, VarError> {
+) -> Result<ExtVarIndex, VarError> {
     let mut func_ptr = func_from_value(func)?;
     // SAFETY: caller provides a valid function bytecode pointer.
     let func_ref = unsafe { func_ptr.as_mut() };
@@ -288,9 +380,10 @@ pub fn add_func_ext_var(
     debug_assert!(arr.size() >= (idx + 1) * 2);
     arr.values_mut()[2 * idx] = name;
     arr.values_mut()[2 * idx + 1] = new_short_int(decl);
+    let ext_idx = ExtVarIndex::try_from(ext_len).expect("ext var index");
     let new_len = ext_len + 1;
     func_ref.set_ext_vars_len(new_len as u16);
-    Ok(new_len as i32 - 1)
+    Ok(ext_idx)
 }
 
 /* return the external variable index */
@@ -299,7 +392,7 @@ pub fn add_ext_var(
     alloc: &mut VarAllocator,
     name: JSValue,
     decl: i32,
-) -> Result<i32, VarError> {
+) -> Result<ExtVarIndex, VarError> {
     add_func_ext_var(alloc, state.cur_func(), name, decl)
 }
 
@@ -308,7 +401,7 @@ pub fn add_var(
     state: &mut JSParseState,
     alloc: &mut VarAllocator,
     name: JSValue,
-) -> Result<i32, VarError> {
+) -> Result<LocalVarIndex, VarError> {
     let local_len = state.local_vars_len() as u32;
     if local_len >= JS_MAX_LOCAL_VARS {
         return Err(VarError::new(ERR_TOO_MANY_LOCAL_VARS));
@@ -326,7 +419,7 @@ pub fn add_var(
     debug_assert!(arr.size() > idx);
     arr.values_mut()[idx] = name;
     state.set_local_vars_len((local_len + 1) as u16);
-    Ok(local_len as i32)
+    Ok(LocalVarIndex::try_from(local_len).expect("local var index"))
 }
 
 pub fn define_var(
@@ -335,22 +428,23 @@ pub fn define_var(
     name: JSValue,
 ) -> Result<(JSVarRefKind, i32), VarError> {
     if state.is_eval() {
-        let mut var_idx = find_ext_var(state, name);
+        let var_idx = find_ext_var(state, name);
         let decl = ((JSVarRefKind::Global as i32) << 16) | 1;
-        if var_idx < 0 {
-            var_idx = add_ext_var(state, alloc, name, decl)?;
-        } else {
+        let var_idx = if let Some(var_idx) = var_idx {
             let func_ptr = func_from_value(state.cur_func())?;
             // SAFETY: state.cur_func points to a live FunctionBytecode.
             let func_ref = unsafe { func_ptr.as_ref() };
             let mut arr_ptr = value_array_ptr(func_ref.ext_vars())?;
             // SAFETY: ext_vars points to a live ValueArray and is uniquely borrowed here.
             let arr = unsafe { arr_ptr.as_mut() };
-            let idx = var_idx as usize;
+            let idx = usize::from(var_idx);
             debug_assert!(arr.size() > idx * 2 + 1);
             arr.values_mut()[2 * idx + 1] = new_short_int(decl);
-        }
-        return Ok((JSVarRefKind::VarRef, var_idx));
+            var_idx
+        } else {
+            add_ext_var(state, alloc, name, decl)?
+        };
+        return Ok((JSVarRefKind::VarRef, i32::from(var_idx)));
     }
 
     let arg_count = {
@@ -359,15 +453,16 @@ pub fn define_var(
         unsafe { func_ptr.as_ref() }.arg_count() as i32
     };
     let var_idx = find_var(state, name);
-    if var_idx >= 0 {
-        if var_idx < arg_count {
-            Ok((JSVarRefKind::Arg, var_idx))
+    if let Some(var_idx) = var_idx {
+        let var_idx_i32 = i32::from(var_idx);
+        if var_idx_i32 < arg_count {
+            Ok((JSVarRefKind::Arg, var_idx_i32))
         } else {
-            Ok((JSVarRefKind::Var, var_idx - arg_count))
+            Ok((JSVarRefKind::Var, var_idx_i32 - arg_count))
         }
     } else {
         let var_idx = add_var(state, alloc, name)?;
-        Ok((JSVarRefKind::Var, var_idx - arg_count))
+        Ok((JSVarRefKind::Var, i32::from(var_idx) - arg_count))
     }
 }
 
@@ -471,9 +566,18 @@ pub fn convert_ext_vars_to_local_vars(state: &mut JSParseState) -> Result<(), Va
             let var_name = ext_vars.values()[2 * (i0 + i)];
             let decl = ext_vars.values()[2 * (i0 + i) + 1];
             let var_idx = find_var(state, var_name);
-            if var_idx >= arg_count {
-                entry.new_var_idx = (var_idx - arg_count) as u16;
-                entry.is_local = true;
+            if let Some(var_idx) = var_idx {
+                let var_idx_i32 = i32::from(var_idx);
+                if var_idx_i32 >= arg_count {
+                    entry.new_var_idx = (var_idx_i32 - arg_count) as u16;
+                    entry.is_local = true;
+                } else {
+                    entry.new_var_idx = j as u16;
+                    entry.is_local = false;
+                    ext_vars.values_mut()[2 * j] = var_name;
+                    ext_vars.values_mut()[2 * j + 1] = decl;
+                    j += 1;
+                }
             } else {
                 entry.new_var_idx = j as u16;
                 entry.is_local = false;
@@ -520,24 +624,26 @@ pub fn resolve_var_refs(
 
     for i in 0..ext_len {
         let var_name = ext_vars.values()[2 * i];
-        let mut var_idx = find_func_var(parent_func, var_name);
-        let decl = if var_idx >= 0 {
-            if var_idx < arg_count {
-                pack_decl(JSVarRefKind::Arg, var_idx)
+        let var_idx = find_func_var(parent_func, var_name);
+        let decl = if let Some(var_idx) = var_idx {
+            let var_idx_i32 = i32::from(var_idx);
+            if var_idx_i32 < arg_count {
+                pack_decl(JSVarRefKind::Arg, var_idx_i32)
             } else {
-                pack_decl(JSVarRefKind::Var, var_idx - arg_count)
+                pack_decl(JSVarRefKind::Var, var_idx_i32 - arg_count)
             }
         } else {
-            var_idx = find_func_ext_var(parent_func, var_name);
-            if var_idx < 0 {
-                var_idx = add_func_ext_var(
+            let ext_idx = if let Some(ext_idx) = find_func_ext_var(parent_func, var_name) {
+                ext_idx
+            } else {
+                add_func_ext_var(
                     alloc,
                     parent_func,
                     var_name,
                     (JSVarRefKind::Global as i32) << 16,
-                )?;
-            }
-            pack_decl(JSVarRefKind::VarRef, var_idx)
+                )?
+            };
+            pack_decl(JSVarRefKind::VarRef, i32::from(ext_idx))
         };
         ext_vars.values_mut()[2 * i + 1] = new_short_int(decl);
     }
@@ -629,7 +735,7 @@ mod tests {
         let mut harness = Harness::new(0);
         let name = new_short_int(7);
         let idx = add_var(&mut harness.state, &mut harness.alloc, name).unwrap();
-        assert_eq!(idx, 0);
+        assert_eq!(i32::from(idx), 0);
         assert_eq!(harness.state.local_vars_len(), 1);
         let vars_val = harness.func.as_ref().vars();
         let arr = value_array_ref(vars_val);
@@ -644,7 +750,7 @@ mod tests {
         let name = new_short_int(11);
         let decl = (JSVarRefKind::Global as i32) << 16;
         let idx = add_ext_var(&harness.state, &mut harness.alloc, name, decl).unwrap();
-        assert_eq!(idx, 0);
+        assert_eq!(i32::from(idx), 0);
         let func_ref = harness.func.as_ref();
         assert_eq!(func_ref.ext_vars_len(), 1);
         let arr = value_array_ref(func_ref.ext_vars());
