@@ -206,6 +206,22 @@ impl JSParseState {
     pub fn set_is_eval(&mut self, is_eval: bool) {
         self.flags.set(ParseStateFlags::IS_EVAL, is_eval);
     }
+
+    pub fn is_repl(&self) -> bool {
+        self.flags.contains(ParseStateFlags::IS_REPL)
+    }
+
+    pub fn set_is_repl(&mut self, is_repl: bool) {
+        self.flags.set(ParseStateFlags::IS_REPL, is_repl);
+    }
+
+    pub fn cpool_len(&self) -> u16 {
+        self.cpool_len
+    }
+
+    pub fn set_cpool_len(&mut self, len: u16) {
+        self.cpool_len = len;
+    }
 }
 
 #[cfg(test)]

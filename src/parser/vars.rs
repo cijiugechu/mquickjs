@@ -164,7 +164,7 @@ impl ValueArray {
         &mut self.values
     }
 
-    fn ensure_size(&mut self, new_size: usize) {
+    pub(crate) fn ensure_size(&mut self, new_size: usize) {
         let old_size = self.values.len();
         if new_size <= old_size {
             return;

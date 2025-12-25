@@ -799,6 +799,14 @@ impl<'a> ParseState<'a> {
         self.alloc_string(bytes, is_ascii, is_unique, err_pos)
     }
 
+    pub(crate) fn intern_identifier(
+        &mut self,
+        bytes: &[u8],
+        err_pos: usize,
+    ) -> Result<JSValue, ParseError> {
+        self.intern_bytes(bytes, err_pos)
+    }
+
     fn alloc_string(
         &mut self,
         bytes: Vec<u8>,

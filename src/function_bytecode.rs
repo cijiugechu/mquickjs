@@ -176,6 +176,10 @@ impl FunctionBytecode {
         self.ext_vars = ext_vars;
     }
 
+    pub fn set_cpool(&mut self, cpool: JSValue) {
+        self.cpool = cpool;
+    }
+
     pub fn set_ext_vars_len(&mut self, len: u16) {
         self.ext_vars_len = len;
     }

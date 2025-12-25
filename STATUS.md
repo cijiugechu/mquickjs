@@ -64,6 +64,8 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported parser control-flow helpers (`push_break_entry`/`pop_break_entry`, `emit_return`, `emit_break`) into `src/parser/control_flow.rs` with tests, and allowed `emit_goto` to patch `OP_gosub`.
 - Ported parser variable/ext-var resolution (`find_*`, `add_*`, `define_var`, `put_var`, `convert_ext_vars_to_local_vars`, `resolve_var_refs`) into `src/parser/vars.rs` with owned array allocators and unit tests.
 - Ported `js_parse_property_name` into `src/parser/property_name.rs` with get/set disambiguation, method detection, and tests.
+- Ported expression parsing (`js_parse_postfix_expr`, `js_parse_unary`, `js_parse_expr_binary`, `js_parse_logical_and_or`, `js_parse_cond_expr`, `js_parse_assign_expr`, `js_parse_expr_comma`) into `src/parser/expr.rs` with opcode-level tests for precedence, array literals, assignments, and logical short-circuiting.
+- **Temporary measure (important):** `src/parser/expr.rs` uses a Rust-only `FloatAllocator` to own `Float64View` allocations for numeric constants. In C this comes from `JS_NewFloat64` and is GC-managed; the Rust port does **not** yet have runtime/GC, so these pointers must not escape the parser lifetime. Replace this once runtime/GC allocation is available.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
 - Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.

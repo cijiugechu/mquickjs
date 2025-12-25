@@ -1,10 +1,10 @@
 use crate::cutils::{get_u32, put_u16, put_u32};
 use crate::jsvalue::{JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT};
 use crate::opcode::{
-    OpCode, OpCodeFormat, OPCODES, OP_GOSUB, OP_GOTO, OP_INVALID, OP_PUSH_0, OP_PUSH_I16,
-    OP_PUSH_I8, OP_PUSH_MINUS1, OP_PUSH_VALUE, OP_RET, OP_RETURN, OP_RETURN_UNDEF, OP_THROW,
-    OP_GET_LOC, OP_PUT_LOC, OP_GET_ARG, OP_PUT_ARG, OP_GET_LOC0, OP_PUT_LOC0, OP_GET_ARG0,
-    OP_PUT_ARG0, OP_GET_LOC8, OP_PUT_LOC8,
+    OpCode, OpCodeFormat, OPCODES, OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE, OP_INVALID,
+    OP_PUSH_0, OP_PUSH_I16, OP_PUSH_I8, OP_PUSH_MINUS1, OP_PUSH_VALUE, OP_RET, OP_RETURN,
+    OP_RETURN_UNDEF, OP_THROW, OP_GET_LOC, OP_PUT_LOC, OP_GET_ARG, OP_PUT_ARG, OP_GET_LOC0,
+    OP_PUT_LOC0, OP_GET_ARG0, OP_PUT_ARG0, OP_GET_LOC8, OP_PUT_LOC8,
 };
 
 use super::pc2line::Pc2LineEmitter;
@@ -27,6 +27,14 @@ impl Label {
 
     pub const fn is_none(self) -> bool {
         self.0 < 0
+    }
+
+    pub(crate) const fn raw(self) -> i32 {
+        self.0
+    }
+
+    pub(crate) const fn from_raw(raw: i32) -> Self {
+        Self(raw)
     }
 
     fn is_resolved(self) -> bool {
@@ -68,6 +76,14 @@ impl<'a> BytecodeEmitter<'a> {
 
     pub fn byte_code(&self) -> &[u8] {
         &self.byte_code
+    }
+
+    pub fn byte_code_mut(&mut self) -> &mut [u8] {
+        &mut self.byte_code
+    }
+
+    pub fn last_opcode_pos(&self) -> Option<usize> {
+        self.last_opcode_pos
     }
 
     pub fn pc2line_bytes(&self) -> &[u8] {
@@ -152,6 +168,10 @@ impl<'a> BytecodeEmitter<'a> {
         self.last_opcode_pos = None;
     }
 
+    pub fn clear_last_opcode(&mut self) {
+        self.last_opcode_pos = None;
+    }
+
     pub fn emit_push_short_int(&mut self, val: i32) {
         if val == -1 {
             self.emit_op(OP_PUSH_MINUS1);
@@ -231,7 +251,13 @@ impl<'a> BytecodeEmitter<'a> {
     }
 
     pub fn emit_goto(&mut self, opcode: OpCode, label: &mut Label) {
-        debug_assert!(opcode == OP_GOTO || opcode == OP_RET || opcode == OP_GOSUB);
+        debug_assert!(
+            opcode == OP_GOTO
+                || opcode == OP_RET
+                || opcode == OP_GOSUB
+                || opcode == OP_IF_FALSE
+                || opcode == OP_IF_TRUE
+        );
         self.emit_op(opcode);
         let label_val = label.0;
         if (label_val & LABEL_RESOLVED_FLAG) != 0 {
