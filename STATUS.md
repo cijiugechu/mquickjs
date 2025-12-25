@@ -37,6 +37,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSArrayBuffer` into `src/array_buffer.rs` with roundtrip tests.
 - Ported `JSROMClass` and `JSStringCharBuf` into `src/rom_class.rs` and `src/string_char_buf.rs` with tests.
 - Added `JSString` backing storage in `src/string/js_string.rs` (raw bytes + header, no implicit NUL) and wired it into `src/string/mod.rs`.
+- Ported atom/unique-string table management into `src/atom.rs` (sorted lookup, UTF-16 compare semantics, numeric string detection, GC-style sweep) with tests.
 - Added full `JSProperty` layout and `JSClosureData` into `src/property.rs` and `src/closure_data.rs` with roundtrip tests.
 - Added a read-only `JSContext` shell (`ContextShell`) capturing memory map fields and invariants in `src/context_shell.rs` with validation tests.
 - Added read-only views for `JSFloat64`, `JSByteArray`, and `JSValueArray` in `src/memblock_views.rs` with roundtrip tests.

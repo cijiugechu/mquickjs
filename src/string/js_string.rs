@@ -1,9 +1,10 @@
 use crate::containers::{StringHeader, JS_STRING_LEN_MAX};
 use crate::jsvalue::JSWord;
+use core::cell::Cell;
 
 #[derive(Debug)]
 pub struct JSString {
-    header: StringHeader,
+    header: Cell<StringHeader>,
     buf: Vec<u8>,
 }
 
@@ -15,15 +16,18 @@ impl JSString {
         }
         // Keep raw bytes only; callers use the header length for bounds.
         let header = StringHeader::new(len as JSWord, is_unique, is_ascii, is_numeric, false);
-        Some(Self { header, buf })
+        Some(Self {
+            header: Cell::new(header),
+            buf,
+        })
     }
 
     pub fn header(&self) -> StringHeader {
-        self.header
+        self.header.get()
     }
 
     pub fn len(&self) -> usize {
-        self.header.len() as usize
+        self.header.get().len() as usize
     }
 
     pub fn is_empty(&self) -> bool {
@@ -31,15 +35,24 @@ impl JSString {
     }
 
     pub fn is_ascii(&self) -> bool {
-        self.header.is_ascii()
+        self.header.get().is_ascii()
     }
 
     pub fn is_unique(&self) -> bool {
-        self.header.is_unique()
+        self.header.get().is_unique()
     }
 
     pub fn is_numeric(&self) -> bool {
-        self.header.is_numeric()
+        self.header.get().is_numeric()
+    }
+
+    pub fn set_unique_flags(&self, is_unique: bool, is_numeric: bool) {
+        let header = self.header.get();
+        let len = header.len();
+        let is_ascii = header.is_ascii();
+        let gc_mark = header.header().gc_mark();
+        self.header
+            .set(StringHeader::new(len, is_unique, is_ascii, is_numeric, gc_mark));
     }
 
     pub fn buf(&self) -> &[u8] {
