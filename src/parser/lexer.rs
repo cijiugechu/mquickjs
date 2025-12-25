@@ -783,7 +783,7 @@ impl<'a> ParseState<'a> {
         Ok(value)
     }
 
-    fn value_from_bytes(
+    pub(crate) fn value_from_bytes(
         &mut self,
         bytes: Vec<u8>,
         is_ascii: bool,
@@ -1033,7 +1033,7 @@ fn expecting_close_error(expected: i32) -> &'static str {
     }
 }
 
-fn value_matches_bytes(value: JSValue, bytes: &[u8]) -> bool {
+pub(crate) fn value_matches_bytes(value: JSValue, bytes: &[u8]) -> bool {
     if value_get_special_tag(value) == JS_TAG_STRING_CHAR {
         if bytes.len() != 1 {
             return false;
