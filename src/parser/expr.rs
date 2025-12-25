@@ -8,7 +8,6 @@ use crate::jsvalue::{
     value_to_ptr, JSValue, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT,
     JS_TAG_SPECIAL_BITS, JS_TAG_STRING_CHAR,
 };
-use crate::memblock_views::Float64View;
 use crate::opcode::{
     OpCode, OP_ADD, OP_AND, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR, OP_CALL_METHOD,
     OP_DEC, OP_DEFINE_FIELD, OP_DELETE, OP_DIV, OP_DROP, OP_DUP, OP_EQ, OP_GOTO, OP_GTE, OP_GT,
@@ -31,6 +30,7 @@ use crate::parser::parse_state::{
 };
 use crate::parser::property_name::parse_property_name;
 use crate::parser::regexp::{compile_regexp, RegExpError};
+use crate::parser::runtime::ParserRuntime;
 use crate::parser::tokens::{
     TOK_DEC, TOK_FIRST_KEYWORD, TOK_IDENT, TOK_INC, TOK_LAND, TOK_LOR, TOK_MUL_ASSIGN,
     TOK_NEQ, TOK_NUMBER, TOK_OR_ASSIGN, TOK_POW, TOK_REGEXP, TOK_SAR, TOK_SHL, TOK_SHR,
@@ -134,36 +134,6 @@ struct AtomCache {
     length_cpool: Option<u16>,
 }
 
-// Temporary owner for float64 allocations: C uses JS_NewFloat64 (GC-managed),
-// but the Rust parser lacks runtime GC, so we keep boxed Float64View alive
-// for the parser lifetime.
-struct FloatAllocator {
-    floats: Vec<NonNull<Float64View>>,
-}
-
-impl FloatAllocator {
-    fn new() -> Self {
-        Self { floats: Vec::new() }
-    }
-
-    fn alloc(&mut self, value: f64) -> JSValue {
-        let boxed = Box::new(Float64View::new(false, value));
-        // SAFETY: Box never yields a null pointer.
-        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
-        self.floats.push(ptr);
-        value_from_ptr(ptr)
-    }
-}
-
-impl Drop for FloatAllocator {
-    fn drop(&mut self) {
-        for ptr in self.floats.drain(..) {
-            // SAFETY: pointers were created from Box::into_raw in this allocator.
-            unsafe { drop(Box::from_raw(ptr.as_ptr())) };
-        }
-    }
-}
-
 struct OwnedFunctionBytecode {
     ptr: NonNull<FunctionBytecode>,
 }
@@ -203,7 +173,7 @@ pub struct ExprParser<'a> {
     emitter: BytecodeEmitter<'a>,
     parse_state: JSParseState,
     alloc: VarAllocator,
-    floats: FloatAllocator,
+    runtime: ParserRuntime,
     func: OwnedFunctionBytecode,
     dropped_result: bool,
     atoms: AtomCache,
@@ -232,7 +202,7 @@ impl<'a> ExprParser<'a> {
             emitter: BytecodeEmitter::new(source, 0, false),
             parse_state,
             alloc: VarAllocator::new(),
-            floats: FloatAllocator::new(),
+            runtime: ParserRuntime::new_default(),
             func,
             dropped_result: false,
             atoms: AtomCache::default(),
@@ -453,7 +423,12 @@ impl<'a> ExprParser<'a> {
             self.emitter.emit_push_short_int(value as i32);
             return Ok(());
         }
-        let js_val = self.floats.alloc(value);
+        let js_val = self.runtime.new_float64(value).ok_or_else(|| {
+            ParserError::new(
+                ParserErrorKind::Static(ERR_NO_MEM),
+                self.lexer.token().source_pos() as usize,
+            )
+        })?;
         self.emit_push_const(js_val)
     }
 
