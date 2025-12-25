@@ -59,6 +59,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added parser parse stack helpers (`JS_STACK_SLACK`, push/pop, `parse_call` dispatcher) into `src/parser/parse_stack.rs` with unit tests for stack bottom updates and call/return sequencing.
 - Added parser error helpers (`parse_expect*`, ASI handling) and `ParserError` in `src/parser/error.rs` with tests.
 - Ported parser bytecode emission helpers (`emit_u*`, `emit_op*`, `emit_insert`, label patching, `emit_var`, short-int pushes) into `src/parser/emit.rs` with tests, plus pc2line state restore helpers in `src/parser/pc2line.rs`.
+- Ported parser bytecode stack size analysis (`compute_stack_size`/`compute_stack_size_push`) into `src/parser/stack_size.rs` with tests for branches, npop calls, and error paths.
 - Ported parser lvalue helpers (`get_lvalue`/`put_lvalue`) into `src/parser/lvalue.rs` with bytecode-level tests; exposed an emitter `pc2line_source_pos` accessor and enabled emit/lvalue tests under Miri.
 - Ported parser control-flow helpers (`push_break_entry`/`pop_break_entry`, `emit_return`, `emit_break`) into `src/parser/control_flow.rs` with tests, and allowed `emit_goto` to patch `OP_gosub`.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
