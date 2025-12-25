@@ -59,6 +59,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added parser parse stack helpers (`JS_STACK_SLACK`, push/pop, `parse_call` dispatcher) into `src/parser/parse_stack.rs` with unit tests for stack bottom updates and call/return sequencing.
 - Added parser error helpers (`parse_expect*`, ASI handling) and `ParserError` in `src/parser/error.rs` with tests.
 - Ported parser bytecode emission helpers (`emit_u*`, `emit_op*`, `emit_insert`, label patching, `emit_var`, short-int pushes) into `src/parser/emit.rs` with tests, plus pc2line state restore helpers in `src/parser/pc2line.rs`.
+- Ported parser lvalue helpers (`get_lvalue`/`put_lvalue`) into `src/parser/lvalue.rs` with bytecode-level tests; exposed an emitter `pc2line_source_pos` accessor and enabled emit/lvalue tests under Miri.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
 - Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.

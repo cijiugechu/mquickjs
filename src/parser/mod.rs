@@ -3,6 +3,7 @@ pub mod pc2line;
 pub mod emit;
 pub mod error;
 pub mod lexer;
+pub mod lvalue;
 pub mod json;
 pub mod parse_stack;
 pub mod parse_state;

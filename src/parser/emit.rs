@@ -74,6 +74,10 @@ impl<'a> BytecodeEmitter<'a> {
         self.pc2line.bytes()
     }
 
+    pub fn pc2line_source_pos(&self) -> SourcePos {
+        self.pc2line.source_pos()
+    }
+
     pub fn emit_u8(&mut self, val: u8) {
         self.byte_code.push(val);
     }
@@ -247,7 +251,7 @@ fn encode_short_int(val: i32) -> u32 {
     ((val as u32) << 1) | (JS_TAG_INT as u32)
 }
 
-#[cfg(all(test, not(miri)))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::cutils::get_u16;
