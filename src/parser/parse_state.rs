@@ -82,6 +82,9 @@ pub struct JSParseState {
     flags: ParseStateFlags,
     source_str: JSValue,
     filename_str: JSValue,
+    // source_buf is a read-only view into the source bytes; buf_len is authoritative.
+    // When source_str is a JSString, source_buf can move after allocations/GC, so callers
+    // must refresh it as needed. When buf_len == 0, source_buf may be null.
     source_buf: *const u8,
     buf_pos: u32,
     buf_len: u32,
