@@ -45,6 +45,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported parser data structures (`BlockEnv`, `JSSourcePos`, `JSToken`, `JSParsePos`) into `src/parser_types.rs`.
 - Ported parser line/column helpers (`get_line_col`, `get_line_col_delta`) into `src/parser_pos.rs` with UTF-8 lead-byte counting tests.
 - Ported pc2line bitstream decoding helpers (`get_bits`, `get_ugolomb`, `get_sgolomb`, `get_pc2line_hoisted_code_len`, `find_line_col`) into `src/parser/pc2line.rs` with roundtrip/tests for line/column decoding.
+- Ported pc2line encoding/emit helpers (`pc2line_put_bits*`, `put_ugolomb`/`put_sgolomb`, `emit_pc2line`) as `Pc2LineEmitter` in `src/parser/pc2line.rs` with encoder/decoder roundtrip tests.
 - Ported parser token/keyword constants plus `is_regexp_allowed` into `src/parser/tokens.rs` with ordering/mapping tests.
 - Ported parser escape parsing + identifier ASCII helpers (`js_parse_escape`, `is_ident_first`, `is_ident_next`) into `src/parser/lexer.rs` with tests.
 - Ported core lexer flow (`next_token`, `js_parse_string`, `js_parse_ident`, `js_parse_regexp_token`) plus a `ParseState` harness and sorted interned string table into `src/parser/lexer.rs` with tests.

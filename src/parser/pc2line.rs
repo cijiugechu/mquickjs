@@ -1,5 +1,7 @@
-use crate::cutils::get_be32;
+use crate::cutils::{get_be32, put_be32};
 use crate::opcode::OPCODES;
+use super::pos::get_line_col_delta;
+use super::types::SourcePos;
 
 fn get_bit(buf: &[u8], index: u32) -> u32 {
     let byte_index = (index >> 3) as usize;
@@ -64,6 +66,106 @@ fn get_ugolomb(buf: &[u8], index: &mut u32) -> u32 {
 fn get_sgolomb(buf: &[u8], index: &mut u32) -> i32 {
     let val = get_ugolomb(buf, index);
     (val >> 1) as i32 ^ -((val & 1) as i32)
+}
+
+// C: pc2line_put_bits*, put_{u,sg}olomb, emit_pc2line in mquickjs.c.
+pub struct Pc2LineEmitter {
+    buf: Vec<u8>,
+    bit_len: u32,
+    source_pos: SourcePos,
+    has_column: bool,
+}
+
+impl Pc2LineEmitter {
+    pub fn new(source_pos: SourcePos, has_column: bool) -> Self {
+        Self {
+            buf: Vec::new(),
+            bit_len: 0,
+            source_pos,
+            has_column,
+        }
+    }
+
+    pub fn bit_len(&self) -> u32 {
+        self.bit_len
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.buf
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.buf
+    }
+
+    pub fn pad_to_byte(&mut self) {
+        let rem = self.bit_len & 7;
+        if rem != 0 {
+            self.put_bits(8 - rem, 0);
+        }
+    }
+
+    pub fn emit_pc2line(&mut self, source_buf: &[u8], pos: SourcePos) {
+        let (line_delta, col_delta) = get_line_col_delta(source_buf, self.source_pos, pos);
+        self.put_sgolomb(line_delta);
+        if self.has_column {
+            if line_delta == 0 {
+                self.put_sgolomb(col_delta);
+            } else {
+                debug_assert!(col_delta >= 0);
+                self.put_ugolomb(col_delta as u32);
+            }
+        }
+        self.source_pos = pos;
+    }
+
+    fn put_bits_short(&mut self, n: u32, bits: u32) {
+        debug_assert!((1..=25).contains(&n));
+        debug_assert!(bits < (1u32 << n));
+        let index = self.bit_len;
+        let pos = (index >> 3) as usize;
+        let need = pos + 4;
+        if self.buf.len() < need {
+            self.buf.resize(need, 0);
+        }
+        let shift = 32 - (index & 7) - n;
+        let mut val = get_be32(&self.buf[pos..pos + 4]);
+        let mask = ((1u32 << n) - 1) << shift;
+        val &= !mask;
+        val |= (bits << shift) & mask;
+        put_be32(&mut self.buf[pos..pos + 4], val);
+        self.bit_len = index + n;
+    }
+
+    fn put_bits(&mut self, n: u32, bits: u32) {
+        debug_assert!((1..=32).contains(&n));
+        let n_max = 25;
+        if n > n_max {
+            self.put_bits_short(n - n_max, bits >> n_max);
+            let low = bits & ((1u32 << n_max) - 1);
+            self.put_bits_short(n_max, low);
+        } else {
+            self.put_bits_short(n, bits);
+        }
+    }
+
+    fn put_ugolomb(&mut self, v: u32) {
+        debug_assert!(v < u32::MAX);
+        let v = v + 1;
+        let n = 32 - v.leading_zeros();
+        if n > 1 {
+            self.put_bits(n - 1, 0);
+        }
+        self.put_bits(n, v);
+    }
+
+    fn put_sgolomb(&mut self, v: i32) {
+        debug_assert!(v != i32::MIN);
+        let v = v as u32;
+        let sign = 0u32.wrapping_sub(v >> 31);
+        let uv = v.wrapping_mul(2) ^ sign;
+        self.put_ugolomb(uv);
+    }
 }
 
 // C: `get_pc2line_hoisted_code_len` in mquickjs.c.
@@ -147,66 +249,7 @@ pub fn find_line_col(
 mod tests {
     use super::*;
     use crate::opcode::OP_NOP;
-
-    struct BitWriter {
-        bytes: Vec<u8>,
-        bit_len: u32,
-    }
-
-    impl BitWriter {
-        fn new() -> Self {
-            Self {
-                bytes: Vec::new(),
-                bit_len: 0,
-            }
-        }
-
-        fn push_bits(&mut self, n: u32, bits: u32) {
-            debug_assert!(n <= 32);
-            for i in (0..n).rev() {
-                let bit = (bits >> i) & 1;
-                self.push_bit(bit as u8);
-            }
-        }
-
-        fn push_bit(&mut self, bit: u8) {
-            let byte_index = (self.bit_len >> 3) as usize;
-            let bit_in_byte = 7 - (self.bit_len & 7);
-            if byte_index == self.bytes.len() {
-                self.bytes.push(0);
-            }
-            if bit != 0 {
-                self.bytes[byte_index] |= 1 << bit_in_byte;
-            }
-            self.bit_len += 1;
-        }
-
-        fn pad_to_byte(&mut self) {
-            let rem = self.bit_len & 7;
-            if rem != 0 {
-                self.push_bits(8 - rem, 0);
-            }
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            self.bytes
-        }
-    }
-
-    fn push_ugolomb(writer: &mut BitWriter, v: u32) {
-        debug_assert!(v < u32::MAX);
-        let v = v + 1;
-        let n = 32 - v.leading_zeros();
-        if n > 1 {
-            writer.push_bits(n - 1, 0);
-        }
-        writer.push_bits(n, v);
-    }
-
-    fn push_sgolomb(writer: &mut BitWriter, v: i32) {
-        let uv = ((v as u32) << 1) ^ ((v >> 31) as u32);
-        push_ugolomb(writer, uv);
-    }
+    use crate::parser::pos::get_line_col;
 
     fn append_hoisted_len(buf: &mut Vec<u8>, mut n: u32) {
         let mut h = 0u32;
@@ -223,9 +266,9 @@ mod tests {
     #[test]
     fn ugolomb_roundtrip() {
         let values = [0u32, 1, 2, 3, 7, 8, 63, 127, 128, 1024, 65535];
-        let mut writer = BitWriter::new();
+        let mut writer = Pc2LineEmitter::new(0, false);
         for &v in &values {
-            push_ugolomb(&mut writer, v);
+            writer.put_ugolomb(v);
         }
         let data = writer.into_bytes();
         let mut index = 0u32;
@@ -237,9 +280,9 @@ mod tests {
     #[test]
     fn sgolomb_roundtrip() {
         let values = [0i32, 1, -1, 2, -2, 15, -15, 1024, -1024];
-        let mut writer = BitWriter::new();
+        let mut writer = Pc2LineEmitter::new(0, false);
         for &v in &values {
-            push_sgolomb(&mut writer, v);
+            writer.put_sgolomb(v);
         }
         let data = writer.into_bytes();
         let mut index = 0u32;
@@ -261,22 +304,24 @@ mod tests {
     #[test]
     fn find_line_col_basic() {
         let byte_code = vec![OP_NOP.0 as u8, OP_NOP.0 as u8, OP_NOP.0 as u8];
-        let mut writer = BitWriter::new();
-
-        push_sgolomb(&mut writer, 0);
-        push_sgolomb(&mut writer, 0);
-        push_sgolomb(&mut writer, 0);
-        push_sgolomb(&mut writer, 2);
-        push_sgolomb(&mut writer, 1);
-        push_ugolomb(&mut writer, 0);
-
-        writer.pad_to_byte();
-        let mut pc2line = writer.into_bytes();
+        let source_buf = b"abc\nxyz";
+        let positions = [0u32, 2, 4];
+        let mut emitter = Pc2LineEmitter::new(0, true);
+        for &pos in &positions {
+            emitter.emit_pc2line(source_buf, pos);
+        }
+        emitter.pad_to_byte();
+        let mut pc2line = emitter.into_bytes();
         append_hoisted_len(&mut pc2line, 0);
 
-        assert_eq!(find_line_col(&byte_code, Some(&pc2line), true, 0), (1, 1));
-        assert_eq!(find_line_col(&byte_code, Some(&pc2line), true, 1), (1, 3));
-        assert_eq!(find_line_col(&byte_code, Some(&pc2line), true, 2), (2, 1));
+        for (pc, &pos) in positions.iter().enumerate() {
+            let (line, col) = get_line_col(&source_buf[..pos as usize]);
+            let expected = (line + 1, col + 1);
+            assert_eq!(
+                find_line_col(&byte_code, Some(&pc2line), true, pc as u32),
+                expected
+            );
+        }
     }
 
     #[test]
