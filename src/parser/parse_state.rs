@@ -1,5 +1,7 @@
 use core::ptr::NonNull;
 
+use bitflags::bitflags;
+
 use crate::capi_defs::JSContext;
 use crate::jsvalue::{JSValue, JS_NULL};
 
@@ -15,6 +17,23 @@ pub const PF_DROP: u32 = 1 << 1;
 pub const PF_ACCEPT_LPAREN: u32 = 1 << 2;
 pub const PF_LEVEL_SHIFT: u32 = 4;
 pub const PF_LEVEL_MASK: u32 = 0x0f << PF_LEVEL_SHIFT;
+
+bitflags! {
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    struct ParseStateFlags: u16 {
+        const GOT_LF = 1 << 0;
+        const IS_EVAL = 1 << 1;
+        const HAS_RETVAL = 1 << 2;
+        const IS_REPL = 1 << 3;
+        const HAS_COLUMN = 1 << 4;
+        const DROPPED_RESULT = 1 << 5;
+        const RE_IN_JS = 1 << 6;
+        const MULTI_LINE = 1 << 7;
+        const DOTALL = 1 << 8;
+        const IGNORE_CASE = 1 << 9;
+        const IS_UNICODE = 1 << 10;
+    }
+}
 
 // C: `JSParseFunctionEnum` in mquickjs.c.
 #[repr(u8)]
@@ -60,12 +79,7 @@ const ERROR_MSG_LEN: usize = 64;
 pub struct JSParseState {
     ctx: NonNull<JSContext>,
     token: Token,
-    got_lf: bool,
-    is_eval: bool,
-    has_retval: bool,
-    is_repl: bool,
-    has_column: bool,
-    dropped_result: bool,
+    flags: ParseStateFlags,
     source_str: JSValue,
     filename_str: JSValue,
     source_buf: *const u8,
@@ -85,25 +99,17 @@ pub struct JSParseState {
     eval_ret_idx: i32,
     top_break: JSValue,
     capture_count: u8,
-    re_in_js: bool,
-    multi_line: bool,
-    dotall: bool,
-    ignore_case: bool,
-    is_unicode: bool,
     error_msg: [u8; ERROR_MSG_LEN],
 }
 
 impl JSParseState {
     pub fn new(ctx: NonNull<JSContext>, has_column: bool) -> Self {
+        let mut flags = ParseStateFlags::empty();
+        flags.set(ParseStateFlags::HAS_COLUMN, has_column);
         Self {
             ctx,
             token: Token::new(0, 0, TokenExtra::None, JS_NULL),
-            got_lf: false,
-            is_eval: false,
-            has_retval: false,
-            is_repl: false,
-            has_column,
-            dropped_result: false,
+            flags,
             source_str: JS_NULL,
             filename_str: JS_NULL,
             source_buf: core::ptr::null(),
@@ -123,11 +129,6 @@ impl JSParseState {
             eval_ret_idx: 0,
             top_break: JS_NULL,
             capture_count: 0,
-            re_in_js: false,
-            multi_line: false,
-            dotall: false,
-            ignore_case: false,
-            is_unicode: false,
             error_msg: [0; ERROR_MSG_LEN],
         }
     }
