@@ -181,12 +181,14 @@ mod tests {
     use crate::jsvalue::new_short_int;
 
     #[test]
+    #[cfg(not(miri))]
     fn parse_state_values_match_c() {
         assert_eq!(PARSE_STATE_INIT, 0xfe);
         assert_eq!(PARSE_STATE_RET, 0xff);
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn parse_flag_values_match_c() {
         assert_eq!(PF_NO_IN, 1 << 0);
         assert_eq!(PF_DROP, 1 << 1);
@@ -196,6 +198,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn parse_function_discriminants_match_c() {
         assert_eq!(JSParseFunction::Statement as u8, 0);
         assert_eq!(JSParseFunction::Expr as u8, 1);
@@ -203,6 +206,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn parse_prop_discriminants_match_c() {
         assert_eq!(ParseProp::Field as u8, 0);
         assert_eq!(ParseProp::Get as u8, 1);
@@ -211,6 +215,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn parse_expr_func_order_matches_c() {
         assert_eq!(ParseExprFunc::JsParseExprComma as u8, 0);
         assert_eq!(ParseExprFunc::JsParseAssignExpr as u8, 1);
