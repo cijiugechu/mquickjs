@@ -90,6 +90,10 @@ impl Pc2LineEmitter {
         self.bit_len
     }
 
+    pub fn source_pos(&self) -> SourcePos {
+        self.source_pos
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.buf
     }
@@ -117,6 +121,11 @@ impl Pc2LineEmitter {
             }
         }
         self.source_pos = pos;
+    }
+
+    pub fn restore_state(&mut self, bit_len: u32, source_pos: SourcePos) {
+        self.bit_len = bit_len;
+        self.source_pos = source_pos;
     }
 
     fn put_bits_short(&mut self, n: u32, bits: u32) {
