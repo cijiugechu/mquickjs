@@ -62,6 +62,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported parser bytecode stack size analysis (`compute_stack_size`/`compute_stack_size_push`) into `src/parser/stack_size.rs` with tests for branches, npop calls, and error paths.
 - Ported parser lvalue helpers (`get_lvalue`/`put_lvalue`) into `src/parser/lvalue.rs` with bytecode-level tests; exposed an emitter `pc2line_source_pos` accessor and enabled emit/lvalue tests under Miri.
 - Ported parser control-flow helpers (`push_break_entry`/`pop_break_entry`, `emit_return`, `emit_break`) into `src/parser/control_flow.rs` with tests, and allowed `emit_goto` to patch `OP_gosub`.
+- Ported parser variable/ext-var resolution (`find_*`, `add_*`, `define_var`, `put_var`, `convert_ext_vars_to_local_vars`, `resolve_var_refs`) into `src/parser/vars.rs` with owned array allocators and unit tests.
 - Ported GC reference helpers (`JSGCRef` + JS_*GCRef list operations) into `src/gc_ref.rs`, using `intrusive-collections` for intrusive lists.
 - Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.

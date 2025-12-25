@@ -124,6 +124,10 @@ impl FunctionBytecode {
         self.header
     }
 
+    pub const fn arg_count(self) -> u16 {
+        self.header.arg_count()
+    }
+
     pub const fn func_name(self) -> JSValue {
         self.func_name
     }
@@ -162,6 +166,22 @@ impl FunctionBytecode {
 
     pub const fn source_pos(self) -> u32 {
         self.source_pos
+    }
+
+    pub fn set_vars(&mut self, vars: JSValue) {
+        self.vars = vars;
+    }
+
+    pub fn set_ext_vars(&mut self, ext_vars: JSValue) {
+        self.ext_vars = ext_vars;
+    }
+
+    pub fn set_ext_vars_len(&mut self, len: u16) {
+        self.ext_vars_len = len;
+    }
+
+    pub fn set_byte_code(&mut self, byte_code: JSValue) {
+        self.byte_code = byte_code;
     }
 }
 

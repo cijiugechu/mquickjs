@@ -174,6 +174,38 @@ impl JSParseState {
         }
         self.token.source_pos() <= self.buf_len
     }
+
+    pub fn cur_func(&self) -> JSValue {
+        self.cur_func
+    }
+
+    pub fn set_cur_func(&mut self, cur_func: JSValue) {
+        self.cur_func = cur_func;
+    }
+
+    pub fn local_vars_len(&self) -> u16 {
+        self.local_vars_len
+    }
+
+    pub fn set_local_vars_len(&mut self, len: u16) {
+        self.local_vars_len = len;
+    }
+
+    pub fn byte_code_len(&self) -> u32 {
+        self.byte_code_len
+    }
+
+    pub fn set_byte_code_len(&mut self, len: u32) {
+        self.byte_code_len = len;
+    }
+
+    pub fn is_eval(&self) -> bool {
+        self.flags.contains(ParseStateFlags::IS_EVAL)
+    }
+
+    pub fn set_is_eval(&mut self, is_eval: bool) {
+        self.flags.set(ParseStateFlags::IS_EVAL, is_eval);
+    }
 }
 
 #[cfg(test)]

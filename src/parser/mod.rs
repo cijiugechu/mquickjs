@@ -13,3 +13,4 @@ pub mod regexp_flags;
 pub mod regexp;
 pub mod tokens;
 pub mod types;
+pub mod vars;
