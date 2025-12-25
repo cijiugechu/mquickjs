@@ -1,3 +1,10 @@
+use core::ptr::NonNull;
+
+use crate::capi_defs::JSContext;
+use crate::jsvalue::{JSValue, JS_NULL};
+
+use super::types::{SourcePos, Token, TokenExtra};
+
 // C: parse state flags and enums from mquickjs.c.
 
 pub const PARSE_STATE_INIT: u8 = 0xfe;
@@ -46,9 +53,131 @@ pub enum ParseExprFunc {
     ReParseDisjunction = 11,
 }
 
-#[cfg(all(test, not(miri)))]
+const ERROR_MSG_LEN: usize = 64;
+
+// C: `JSParseState` in mquickjs.c.
+#[allow(dead_code)]
+pub struct JSParseState {
+    ctx: NonNull<JSContext>,
+    token: Token,
+    got_lf: bool,
+    is_eval: bool,
+    has_retval: bool,
+    is_repl: bool,
+    has_column: bool,
+    dropped_result: bool,
+    source_str: JSValue,
+    filename_str: JSValue,
+    source_buf: *const u8,
+    buf_pos: u32,
+    buf_len: u32,
+    cur_func: JSValue,
+    byte_code: JSValue,
+    byte_code_len: u32,
+    last_opcode_pos: i32,
+    last_pc2line_pos: i32,
+    last_pc2line_source_pos: SourcePos,
+    pc2line_bit_len: u32,
+    pc2line_source_pos: SourcePos,
+    cpool_len: u16,
+    hoisted_code_len: u32,
+    local_vars_len: u16,
+    eval_ret_idx: i32,
+    top_break: JSValue,
+    capture_count: u8,
+    re_in_js: bool,
+    multi_line: bool,
+    dotall: bool,
+    ignore_case: bool,
+    is_unicode: bool,
+    error_msg: [u8; ERROR_MSG_LEN],
+}
+
+impl JSParseState {
+    pub fn new(ctx: NonNull<JSContext>, has_column: bool) -> Self {
+        Self {
+            ctx,
+            token: Token::new(0, 0, TokenExtra::None, JS_NULL),
+            got_lf: false,
+            is_eval: false,
+            has_retval: false,
+            is_repl: false,
+            has_column,
+            dropped_result: false,
+            source_str: JS_NULL,
+            filename_str: JS_NULL,
+            source_buf: core::ptr::null(),
+            buf_pos: 0,
+            buf_len: 0,
+            cur_func: JS_NULL,
+            byte_code: JS_NULL,
+            byte_code_len: 0,
+            last_opcode_pos: 0,
+            last_pc2line_pos: 0,
+            last_pc2line_source_pos: 0,
+            pc2line_bit_len: 0,
+            pc2line_source_pos: 0,
+            cpool_len: 0,
+            hoisted_code_len: 0,
+            local_vars_len: 0,
+            eval_ret_idx: 0,
+            top_break: JS_NULL,
+            capture_count: 0,
+            re_in_js: false,
+            multi_line: false,
+            dotall: false,
+            ignore_case: false,
+            is_unicode: false,
+            error_msg: [0; ERROR_MSG_LEN],
+        }
+    }
+
+    pub fn set_source(&mut self, source_buf: *const u8, buf_len: u32) {
+        if buf_len != 0 {
+            debug_assert!(!source_buf.is_null());
+        }
+        self.source_buf = source_buf;
+        self.buf_len = buf_len;
+    }
+
+    pub fn reset_parse_state(&mut self, input_pos: u32, cur_func: JSValue) {
+        debug_assert!(input_pos <= self.buf_len);
+        self.buf_pos = input_pos;
+        self.token = Token::new(b' ' as i32, 0, TokenExtra::None, JS_NULL);
+
+        self.cur_func = cur_func;
+        self.byte_code = JS_NULL;
+        self.byte_code_len = 0;
+        self.last_opcode_pos = -1;
+
+        self.pc2line_bit_len = 0;
+        self.pc2line_source_pos = 0;
+
+        self.cpool_len = 0;
+        self.hoisted_code_len = 0;
+
+        self.local_vars_len = 0;
+
+        self.eval_ret_idx = -1;
+    }
+
+    pub fn is_valid(&self) -> bool {
+        if self.buf_pos > self.buf_len {
+            return false;
+        }
+        if self.buf_len != 0 && self.source_buf.is_null() {
+            return false;
+        }
+        self.token.source_pos() <= self.buf_len
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use core::ptr::NonNull;
+
+    use crate::jsvalue::new_short_int;
 
     #[test]
     fn parse_state_values_match_c() {
@@ -94,5 +223,52 @@ mod tests {
         assert_eq!(ParseExprFunc::JsParseJsonValue as u8, 9);
         assert_eq!(ParseExprFunc::ReParseAlternative as u8, 10);
         assert_eq!(ParseExprFunc::ReParseDisjunction as u8, 11);
+    }
+
+    #[test]
+    fn parse_state_reset_matches_c() {
+        let ctx = NonNull::dangling();
+        let mut state = JSParseState::new(ctx, true);
+        let buf = [0u8; 10];
+        state.set_source(buf.as_ptr(), buf.len() as u32);
+        state.buf_pos = 5;
+        state.token = Token::new(123, 7, TokenExtra::None, JS_NULL);
+        state.cur_func = new_short_int(1);
+        state.byte_code = new_short_int(2);
+        state.byte_code_len = 3;
+        state.last_opcode_pos = 17;
+        state.pc2line_bit_len = 9;
+        state.pc2line_source_pos = 7;
+        state.cpool_len = 2;
+        state.hoisted_code_len = 11;
+        state.local_vars_len = 4;
+        state.eval_ret_idx = 2;
+
+        state.reset_parse_state(2, JS_NULL);
+
+        assert_eq!(state.buf_pos, 2);
+        assert_eq!(state.token.val(), b' ' as i32);
+        assert_eq!(state.cur_func, JS_NULL);
+        assert_eq!(state.byte_code, JS_NULL);
+        assert_eq!(state.byte_code_len, 0);
+        assert_eq!(state.last_opcode_pos, -1);
+        assert_eq!(state.pc2line_bit_len, 0);
+        assert_eq!(state.pc2line_source_pos, 0);
+        assert_eq!(state.cpool_len, 0);
+        assert_eq!(state.hoisted_code_len, 0);
+        assert_eq!(state.local_vars_len, 0);
+        assert_eq!(state.eval_ret_idx, -1);
+    }
+
+    #[test]
+    fn parse_state_validates_buffer_invariants() {
+        let ctx = NonNull::dangling();
+        let mut state = JSParseState::new(ctx, false);
+        assert!(state.is_valid());
+
+        let buf = [0u8; 4];
+        state.set_source(buf.as_ptr(), buf.len() as u32);
+        state.buf_pos = 5;
+        assert!(!state.is_valid());
     }
 }

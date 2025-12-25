@@ -54,6 +54,8 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported regexp bytecode parsing/emission (`re_parse_*`, `js_parse_regexp`) into `src/parser/regexp.rs` with non-recursive parse stack and compile-time tests for prefix/captures/errors.
 - Ported JSON parsing (`js_parse_json_value`/`js_parse_json`) into `src/parser/json.rs` using a non-recursive stack and QuickJS string/number parsing semantics, with tests for basic objects, nesting depth, escapes, and error positions.
 - Added parser parse-state constants/enums (`PARSE_STATE_*`, `PF_*`, parse function/property enums) into `src/parser/parse_state.rs` with discriminant tests.
+- Added `JSParseState` shell plus `reset_parse_state` and buffer invariant tests in `src/parser/parse_state.rs`.
+- Updated parser parse-state tests to run under Miri with real buffer pointers (no integer-to-pointer casts).
 - Added parser parse stack helpers (`JS_STACK_SLACK`, push/pop, `parse_call` dispatcher) into `src/parser/parse_stack.rs` with unit tests for stack bottom updates and call/return sequencing.
 - Added parser error helpers (`parse_expect*`, ASI handling) and `ParserError` in `src/parser/error.rs` with tests.
 - Ported parser bytecode emission helpers (`emit_u*`, `emit_op*`, `emit_insert`, label patching, `emit_var`, short-int pushes) into `src/parser/emit.rs` with tests, plus pc2line state restore helpers in `src/parser/pc2line.rs`.
