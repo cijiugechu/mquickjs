@@ -10,18 +10,22 @@ use crate::jsvalue::{
 };
 use crate::opcode::{
     OpCode, OP_ADD, OP_AND, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR, OP_CALL_METHOD,
-    OP_DEC, OP_DEFINE_FIELD, OP_DELETE, OP_DIV, OP_DROP, OP_DUP, OP_EQ, OP_GOTO, OP_GTE, OP_GT,
-    OP_IF_FALSE, OP_IF_TRUE, OP_IN, OP_INSTANCEOF, OP_LNOT, OP_LT, OP_LTE, OP_MOD, OP_MUL,
-    OP_NEG, OP_NEQ, OP_NEW_TARGET, OP_NOT, OP_NULL, OP_OBJECT, OP_OR, OP_PLUS, OP_POST_DEC,
-    OP_POW, OP_PUSH_CONST, OP_PUSH_FALSE, OP_PUSH_THIS, OP_PUSH_TRUE, OP_PUSH_VALUE, OP_REGEXP,
-    OP_SAR, OP_SET_PROTO, OP_SHL, OP_SHR, OP_STRICT_EQ, OP_STRICT_NEQ, OP_SUB, OP_TYPEOF,
-    OP_UNDEFINED, OP_XOR, OP_GET_ARG, OP_GET_ARRAY_EL,
-    OP_GET_ARRAY_EL2, OP_GET_FIELD, OP_GET_FIELD2, OP_GET_LENGTH, OP_GET_LENGTH2, OP_GET_LOC,
-    OP_GET_VAR_REF, OP_GET_VAR_REF_NOCHECK, OP_INVALID, OP_PUT_ARRAY_EL,
+    OP_CATCH, OP_DEC, OP_DEFINE_FIELD, OP_DELETE, OP_DIV, OP_DROP, OP_DUP, OP_EQ, OP_FOR_IN_START,
+    OP_FOR_OF_NEXT, OP_FOR_OF_START, OP_GOSUB, OP_GOTO, OP_GTE, OP_GT, OP_IF_FALSE, OP_IF_TRUE,
+    OP_IN, OP_INSTANCEOF, OP_LNOT, OP_LT, OP_LTE, OP_MOD, OP_MUL, OP_NEG, OP_NEQ, OP_NEW_TARGET,
+    OP_NOT, OP_NULL, OP_OBJECT, OP_OR, OP_PLUS, OP_POST_DEC, OP_POW, OP_PUSH_CONST,
+    OP_PUSH_FALSE, OP_PUSH_THIS, OP_PUSH_TRUE, OP_PUSH_VALUE, OP_REGEXP, OP_RET, OP_SAR,
+    OP_SET_PROTO, OP_SHL, OP_SHR, OP_STRICT_EQ, OP_STRICT_NEQ, OP_SUB, OP_THROW, OP_TYPEOF,
+    OP_UNDEFINED, OP_XOR, OP_GET_ARG, OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD,
+    OP_GET_FIELD2, OP_GET_LENGTH, OP_GET_LENGTH2, OP_GET_LOC, OP_GET_VAR_REF,
+    OP_GET_VAR_REF_NOCHECK, OP_INVALID, OP_PUT_ARRAY_EL, OP_PUT_LOC,
 };
+use crate::parser::control_flow::{emit_break, emit_return, BreakStack, ControlFlowError};
 use crate::parser::emit::{BytecodeEmitter, Label};
-use crate::parser::error::{parse_expect, ParserError, ParserErrorKind, ERR_NO_MEM};
-use crate::parser::lexer::{value_matches_bytes, ParseState};
+use crate::parser::error::{
+    parse_expect, parse_expect1, parse_expect_semi, ParserError, ParserErrorKind, ERR_NO_MEM,
+};
+use crate::parser::lexer::{value_matches_bytes, ParseState, SKIP_HAS_SEMI};
 use crate::parser::lvalue::{get_lvalue, put_lvalue, LValueError, PutLValue};
 use crate::parser::parse_stack::{ParseStack, ParseStackError};
 use crate::parser::parse_state::{
@@ -32,14 +36,18 @@ use crate::parser::property_name::parse_property_name;
 use crate::parser::regexp::{compile_regexp, RegExpError};
 use crate::parser::runtime::ParserRuntime;
 use crate::parser::tokens::{
-    TOK_DEC, TOK_FIRST_KEYWORD, TOK_IDENT, TOK_INC, TOK_LAND, TOK_LOR, TOK_MUL_ASSIGN,
-    TOK_NEQ, TOK_NUMBER, TOK_OR_ASSIGN, TOK_POW, TOK_REGEXP, TOK_SAR, TOK_SHL, TOK_SHR,
-    TOK_STRICT_EQ, TOK_STRICT_NEQ, TOK_STRING, TOK_EQ, TOK_GTE, TOK_LTE, TOK_TRUE, TOK_FALSE,
-    TOK_NULL, TOK_THIS, TOK_FUNCTION, TOK_NEW, TOK_INSTANCEOF, TOK_IN, TOK_DELETE, TOK_TYPEOF,
-    TOK_VOID,
+    TOK_BREAK, TOK_CASE, TOK_CATCH, TOK_CONTINUE, TOK_DEC, TOK_DEFAULT, TOK_DO, TOK_ELSE, TOK_EOF,
+    TOK_FALSE, TOK_FIRST_KEYWORD, TOK_FOR, TOK_FUNCTION, TOK_IDENT, TOK_IF, TOK_INC, TOK_IN,
+    TOK_INSTANCEOF, TOK_LAND, TOK_LOR, TOK_MUL_ASSIGN, TOK_NEQ, TOK_NEW, TOK_NULL, TOK_NUMBER,
+    TOK_OR_ASSIGN, TOK_POW, TOK_REGEXP, TOK_RETURN, TOK_SAR, TOK_SHL, TOK_SHR, TOK_STRICT_EQ,
+    TOK_STRICT_NEQ, TOK_STRING, TOK_SWITCH, TOK_THIS, TOK_THROW, TOK_TRY, TOK_TRUE, TOK_TYPEOF,
+    TOK_VAR, TOK_VOID, TOK_WHILE, TOK_EQ, TOK_GTE, TOK_LTE, TOK_DELETE, TOK_FINALLY,
 };
-use crate::parser::types::{SourcePos, TokenExtra};
-use crate::parser::vars::{add_ext_var, add_var, find_ext_var, find_var, get_ext_var_name, VarAllocator, VarError, ValueArray};
+use crate::parser::types::{ParsePos, SourcePos, TokenExtra};
+use crate::parser::vars::{
+    add_ext_var, add_var, define_var, find_ext_var, find_var, get_ext_var_name, put_var,
+    VarAllocator, VarError, ValueArray,
+};
 use crate::string::js_string::JSString;
 
 const ERR_TOO_MANY_CONSTANTS: &str = "too many constants";
@@ -54,13 +62,27 @@ const ERR_DIRECT_EVAL: &str =
 const ERR_DUP_PROTO: &str = "duplicate __proto__ property name";
 const ERR_FUNCTION_UNSUPPORTED: &str = "function parsing not implemented";
 const ERR_INVALID_STRING: &str = "invalid string value";
+const ERR_VARIABLE_NAME_EXPECTED: &str = "variable name expected";
+const ERR_INVALID_VARIABLE_NAME: &str = "invalid variable name";
+const ERR_RETURN_NOT_IN_FUNCTION: &str = "return not in a function";
+const ERR_LINE_TERMINATOR_AFTER_THROW: &str = "line terminator not allowed after throw";
+const ERR_EXPECTED_OF_OR_IN: &str = "expected 'of' or 'in' in for control expression";
+const ERR_IDENTIFIER_EXPECTED: &str = "identifier expected";
+const ERR_CATCH_VAR_EXISTS: &str = "catch variable already exists";
+const ERR_DUPLICATE_DEFAULT: &str = "duplicate default";
+const ERR_INVALID_SWITCH: &str = "invalid switch statement";
+const ERR_EXPECTING_CATCH_OR_FINALLY: &str = "expecting catch or finally";
+const ERR_DUPLICATE_LABEL: &str = "duplicate label name";
 
 const MAX_CALL_ARGUMENTS: i32 = 65535;
 const DEFAULT_STACK_SIZE: usize = 256;
 
 const TOK_PAREN_OPEN: i32 = b'(' as i32;
+const TOK_PAREN_CLOSE: i32 = b')' as i32;
 const TOK_BRACE_OPEN: i32 = b'{' as i32;
+const TOK_BRACE_CLOSE: i32 = b'}' as i32;
 const TOK_BRACKET_OPEN: i32 = b'[' as i32;
+const TOK_SEMI: i32 = b';' as i32;
 const TOK_PLUS: i32 = b'+' as i32;
 const TOK_MINUS: i32 = b'-' as i32;
 const TOK_BANG: i32 = b'!' as i32;
@@ -175,6 +197,7 @@ pub struct ExprParser<'a> {
     alloc: VarAllocator,
     runtime: ParserRuntime,
     func: OwnedFunctionBytecode,
+    break_stack: BreakStack,
     dropped_result: bool,
     atoms: AtomCache,
 }
@@ -197,6 +220,7 @@ impl<'a> ExprParser<'a> {
         let func = OwnedFunctionBytecode::new(header, fields);
         let mut parse_state = JSParseState::new(NonNull::dangling(), false);
         parse_state.set_cur_func(func.value());
+        parse_state.set_eval_ret_idx(-1);
         Self {
             lexer: ParseState::new(source),
             emitter: BytecodeEmitter::new(source, 0, false),
@@ -204,6 +228,7 @@ impl<'a> ExprParser<'a> {
             alloc: VarAllocator::new(),
             runtime: ParserRuntime::new_default(),
             func,
+            break_stack: BreakStack::new(),
             dropped_result: false,
             atoms: AtomCache::default(),
         }
@@ -211,9 +236,14 @@ impl<'a> ExprParser<'a> {
 
     pub fn parse_expression(&mut self, parse_flags: u32) -> Result<(), ParserError> {
         self.lexer.next_token().map_err(ParserError::from)?;
+        self.parse_expr2(parse_flags as i32)
+    }
+
+    pub fn parse_statement(&mut self) -> Result<(), ParserError> {
+        self.lexer.next_token().map_err(ParserError::from)?;
         let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
         let mut stack = ParseStack::new(&mut storage);
-        self.parse_call(&mut stack, ParseExprFunc::JsParseExprComma, parse_flags as i32)
+        self.parse_call(&mut stack, ParseExprFunc::JsParseStatement, 0)
     }
 
     pub fn bytecode(&self) -> &[u8] {
@@ -228,6 +258,717 @@ impl<'a> ExprParser<'a> {
         add_var(&mut self.parse_state, &mut self.alloc, value)
             .map_err(|err| Self::var_error(err, 0))?;
         Ok(value)
+    }
+
+    fn parse_expr2(&mut self, parse_flags: i32) -> Result<(), ParserError> {
+        let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
+        let mut stack = ParseStack::new(&mut storage);
+        self.parse_call(&mut stack, ParseExprFunc::JsParseExprComma, parse_flags)
+    }
+
+    fn parse_assign_expr2(&mut self, parse_flags: i32) -> Result<(), ParserError> {
+        let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
+        let mut stack = ParseStack::new(&mut storage);
+        self.parse_call(&mut stack, ParseExprFunc::JsParseAssignExpr, parse_flags)
+    }
+
+    fn parse_expr(&mut self) -> Result<(), ParserError> {
+        self.parse_expr2(0)
+    }
+
+    fn parse_expr_paren(&mut self) -> Result<(), ParserError> {
+        parse_expect(&mut self.lexer, '(' as i32)?;
+        self.parse_expr()?;
+        parse_expect(&mut self.lexer, ')' as i32)
+    }
+
+    fn skip_expr(&mut self) -> Result<(), ParserError> {
+        loop {
+            match self.lexer.token().val() {
+                TOK_PAREN_CLOSE => return Ok(()),
+                TOK_SEMI | TOK_EOF => {
+                    let pos = self.lexer.token().source_pos() as usize;
+                    return Err(ParserError::new(
+                        ParserErrorKind::ExpectingChar(b')'),
+                        pos,
+                    ));
+                }
+                TOK_PAREN_OPEN | TOK_BRACKET_OPEN | TOK_BRACE_OPEN => {
+                    self.lexer.skip_parens(None).map_err(ParserError::from)?;
+                }
+                _ => {
+                    self.next_token()?;
+                }
+            }
+        }
+    }
+
+    fn parse_var(&mut self, in_accepted: bool) -> Result<(), ParserError> {
+        loop {
+            let ident_source_pos = self.lexer.token().source_pos();
+            if self.lexer.token().val() != TOK_IDENT {
+                return Err(self.parser_error(ERR_VARIABLE_NAME_EXPECTED));
+            }
+            let name = self.lexer.token().value();
+            if value_matches_bytes(name, b"arguments") {
+                return Err(self.parser_error(ERR_INVALID_VARIABLE_NAME));
+            }
+            let (var_kind, var_idx) = define_var(&mut self.parse_state, &mut self.alloc, name)
+                .map_err(|err| Self::var_error(err, ident_source_pos as usize))?;
+            self.next_token()?;
+            if self.lexer.token().val() == '=' as i32 {
+                self.next_token()?;
+                let flags = if in_accepted { 0 } else { PF_NO_IN as i32 };
+                self.parse_assign_expr2(flags)?;
+                put_var(&mut self.emitter, var_kind, var_idx, ident_source_pos)
+                    .map_err(|err| Self::var_error(err, ident_source_pos as usize))?;
+            }
+            if self.lexer.token().val() != ',' as i32 {
+                break;
+            }
+            self.next_token()?;
+        }
+        Ok(())
+    }
+
+    fn set_eval_ret_undefined(&mut self) {
+        let eval_ret_idx = self.parse_state.eval_ret_idx();
+        if eval_ret_idx < 0 {
+            return;
+        }
+        self.emitter.emit_op(OP_UNDEFINED);
+        let idx = eval_ret_idx as u32;
+        let source_pos = self.emitter.pc2line_source_pos();
+        self.emitter.emit_var(OP_PUT_LOC, idx, source_pos);
+    }
+
+    fn parse_block_func(
+        &mut self,
+        _stack: &mut ParseStack<'_>,
+        state: u8,
+        _param: i32,
+    ) -> Result<i32, ParserError> {
+        match state {
+            PARSE_STATE_INIT => {
+                parse_expect(&mut self.lexer, TOK_BRACE_OPEN)?;
+                if self.lexer.token().val() == TOK_BRACE_CLOSE {
+                    self.next_token()?;
+                    return Ok(PARSE_STATE_RET as i32);
+                }
+                Ok(encode_call(0, ParseExprFunc::JsParseStatement, 0))
+            }
+            0 => {
+                if self.lexer.token().val() == TOK_BRACE_CLOSE {
+                    self.next_token()?;
+                    return Ok(PARSE_STATE_RET as i32);
+                }
+                Ok(encode_call(0, ParseExprFunc::JsParseStatement, 0))
+            }
+            _ => unreachable!("unexpected parse state"),
+        }
+    }
+
+    fn parse_switch_body(
+        &mut self,
+        stack: &mut ParseStack<'_>,
+        label_case: &mut Label,
+        default_label_pos: &mut i32,
+    ) -> Result<i32, ParserError> {
+        loop {
+            match self.lexer.token().val() {
+                TOK_CASE => {
+                    let mut label1 = Label::none();
+                    if !label_case.is_none() {
+                        label1 = Label::new();
+                        self.emitter.emit_goto(OP_GOTO, &mut label1);
+                        self.emitter.emit_label(label_case);
+                        *label_case = Label::none();
+                    }
+                    loop {
+                        self.next_token()?;
+                        self.emitter.emit_op(OP_DUP);
+                        self.parse_expr()?;
+                        parse_expect(&mut self.lexer, ':' as i32)?;
+                        self.emitter.emit_op(OP_STRICT_EQ);
+                        if self.lexer.token().val() == TOK_CASE {
+                            if label1.is_none() {
+                                label1 = Label::new();
+                            }
+                            self.emitter.emit_goto(OP_IF_TRUE, &mut label1);
+                        } else {
+                            *label_case = Label::new();
+                            self.emitter.emit_goto(OP_IF_FALSE, label_case);
+                            if !label1.is_none() {
+                                self.emitter.emit_label(&mut label1);
+                            }
+                            break;
+                        }
+                    }
+                }
+                TOK_DEFAULT => {
+                    self.next_token()?;
+                    parse_expect(&mut self.lexer, ':' as i32)?;
+                    if *default_label_pos >= 0 {
+                        return Err(self.parser_error(ERR_DUPLICATE_DEFAULT));
+                    }
+                    if label_case.is_none() {
+                        *label_case = Label::new();
+                        self.emitter.emit_goto(OP_GOTO, label_case);
+                    }
+                    *default_label_pos = self.emitter.byte_code().len() as i32;
+                }
+                TOK_BRACE_CLOSE => {
+                    parse_expect(&mut self.lexer, TOK_BRACE_CLOSE)?;
+                    if *default_label_pos >= 0 {
+                        let pos = usize::try_from(*default_label_pos)
+                            .unwrap_or_default();
+                        self.emitter.emit_label_pos(label_case, pos);
+                    } else if !label_case.is_none() {
+                        self.emitter.emit_label(label_case);
+                    }
+                    let entry = self
+                        .break_stack
+                        .top_mut()
+                        .expect("switch break entry");
+                    self.emitter.emit_label(entry.label_break_mut());
+                    self.emitter.emit_op(OP_DROP);
+                    self.break_stack.pop();
+                    return Ok(PARSE_STATE_RET as i32);
+                }
+                _ => {
+                    if label_case.is_none() {
+                        return Err(self.parser_error(ERR_INVALID_SWITCH));
+                    }
+                    stack.push_int(label_case.raw()).map_err(Self::stack_error)?;
+                    stack
+                        .push_int(*default_label_pos)
+                        .map_err(Self::stack_error)?;
+                    return Ok(encode_call(
+                        7,
+                        ParseExprFunc::JsParseStatement,
+                        0,
+                    ));
+                }
+            }
+        }
+    }
+
+    fn parse_statement_func(
+        &mut self,
+        stack: &mut ParseStack<'_>,
+        state: u8,
+        _param: i32,
+    ) -> Result<i32, ParserError> {
+        match state {
+            PARSE_STATE_INIT => {
+                let mut label_name = JS_NULL;
+                if self.lexer.is_label() {
+                    label_name = self.lexer.token().value();
+                    self.next_token()?;
+                    parse_expect(&mut self.lexer, ':' as i32)?;
+                    for entry in self.break_stack.iter().rev() {
+                        if entry.label_name() == label_name {
+                            return Err(self.parser_error(ERR_DUPLICATE_LABEL));
+                        }
+                    }
+                    let tok = self.lexer.token().val();
+                    if tok != TOK_FOR && tok != TOK_DO && tok != TOK_WHILE {
+                        self.break_stack
+                            .push(label_name, Label::new(), Label::none(), 0);
+                        return Ok(encode_call(
+                            11,
+                            ParseExprFunc::JsParseStatement,
+                            0,
+                        ));
+                    }
+                }
+
+                match self.lexer.token().val() {
+                    TOK_BRACE_OPEN => Ok(encode_call(0, ParseExprFunc::JsParseBlock, 0)),
+                    TOK_RETURN => {
+                        if self.parse_state.is_eval() {
+                            return Err(self.parser_error(ERR_RETURN_NOT_IN_FUNCTION));
+                        }
+                        let op_source_pos = self.lexer.token().source_pos();
+                        self.next_token()?;
+                        let has_val = if self.lexer.token().val() != ';' as i32
+                            && self.lexer.token().val() != '}' as i32
+                            && !self.lexer.got_lf()
+                        {
+                            self.parse_expr()?;
+                            true
+                        } else {
+                            false
+                        };
+                        emit_return(
+                            &mut self.emitter,
+                            &mut self.break_stack,
+                            has_val,
+                            op_source_pos,
+                        );
+                        parse_expect_semi(&mut self.lexer)?;
+                        Ok(PARSE_STATE_RET as i32)
+                    }
+                    TOK_THROW => {
+                        let op_source_pos = self.lexer.token().source_pos();
+                        self.next_token()?;
+                        if self.lexer.got_lf() {
+                            return Err(self.parser_error(ERR_LINE_TERMINATOR_AFTER_THROW));
+                        }
+                        self.parse_expr()?;
+                        self.emitter.emit_op_pos(OP_THROW, op_source_pos);
+                        parse_expect_semi(&mut self.lexer)?;
+                        Ok(PARSE_STATE_RET as i32)
+                    }
+                    TOK_VAR => {
+                        self.next_token()?;
+                        self.parse_var(true)?;
+                        parse_expect_semi(&mut self.lexer)?;
+                        Ok(PARSE_STATE_RET as i32)
+                    }
+                    TOK_IF => {
+                        self.next_token()?;
+                        self.set_eval_ret_undefined();
+                        self.parse_expr_paren()?;
+                        let mut label1 = Label::new();
+                        self.emitter.emit_goto(OP_IF_FALSE, &mut label1);
+                        stack.push_int(label1.raw()).map_err(Self::stack_error)?;
+                        Ok(encode_call(1, ParseExprFunc::JsParseStatement, 0))
+                    }
+                    TOK_WHILE => {
+                        let idx = self
+                            .break_stack
+                            .push(label_name, Label::new(), Label::new(), 0);
+                        self.next_token()?;
+                        self.set_eval_ret_undefined();
+                        {
+                            let entry = self.break_stack.entry_mut(idx).expect("break entry");
+                            self.emitter.emit_label(entry.label_cont_mut());
+                        }
+                        self.parse_expr_paren()?;
+                        {
+                            let entry = self.break_stack.entry_mut(idx).expect("break entry");
+                            self.emitter.emit_goto(OP_IF_FALSE, entry.label_break_mut());
+                        }
+                        Ok(encode_call(3, ParseExprFunc::JsParseStatement, 0))
+                    }
+                    TOK_DO => {
+                        let _idx = self
+                            .break_stack
+                            .push(label_name, Label::new(), Label::new(), 0);
+                        let mut label1 = Label::new();
+                        self.next_token()?;
+                        self.set_eval_ret_undefined();
+                        self.emitter.emit_label(&mut label1);
+                        stack.push_int(label1.raw()).map_err(Self::stack_error)?;
+                        Ok(encode_call(4, ParseExprFunc::JsParseStatement, 0))
+                    }
+                    TOK_FOR => {
+                        let idx = self
+                            .break_stack
+                            .push(label_name, Label::new(), Label::new(), 0);
+                        self.next_token()?;
+                        self.set_eval_ret_undefined();
+                        parse_expect1(&self.lexer, '(' as i32)?;
+                        let bits = self.lexer.skip_parens_token().map_err(ParserError::from)?;
+                        self.next_token()?;
+                        if (bits & SKIP_HAS_SEMI) == 0 {
+                            let mut label_expr = Label::new();
+                            let mut label_body = Label::new();
+                            let mut label_next = Label::new();
+                            if let Some(entry) = self.break_stack.entry_mut(idx) {
+                                entry.set_drop_count(1);
+                            }
+                            self.emitter.emit_goto(OP_GOTO, &mut label_expr);
+                            self.emitter.emit_label(&mut label_next);
+                            if self.lexer.token().val() == TOK_VAR {
+                                self.next_token()?;
+                                if self.lexer.token().val() != TOK_IDENT {
+                                    return Err(self.parser_error(ERR_VARIABLE_NAME_EXPECTED));
+                                }
+                                let name = self.lexer.token().value();
+                                let ident_source_pos = self.lexer.token().source_pos();
+                                let (var_kind, var_idx) =
+                                    define_var(&mut self.parse_state, &mut self.alloc, name)
+                                        .map_err(|err| {
+                                            Self::var_error(err, ident_source_pos as usize)
+                                        })?;
+                                let source_pos = self.emitter.pc2line_source_pos();
+                                put_var(
+                                    &mut self.emitter,
+                                    var_kind,
+                                    var_idx,
+                                    source_pos,
+                                )
+                                .map_err(|err| {
+                                    Self::var_error(err, ident_source_pos as usize)
+                                })?;
+                                self.next_token()?;
+                            } else {
+                                self.parse_assign_expr2(PF_NO_IN as i32)?;
+                                let lvalue = get_lvalue(&mut self.emitter, false)
+                                    .map_err(Self::lvalue_error)?;
+                                let length_idx = self.length_atom_index()?;
+                                put_lvalue(
+                                    &mut self.emitter,
+                                    lvalue,
+                                    PutLValue::NoKeepBottom,
+                                    self.parse_state.is_repl(),
+                                    length_idx,
+                                )
+                                .map_err(Self::lvalue_error)?;
+                            }
+                            self.emitter.emit_goto(OP_GOTO, &mut label_body);
+                            let opcode = if self.lexer.token().val() == TOK_IN {
+                                OP_FOR_IN_START
+                            } else if self.lexer.token().val() == TOK_IDENT
+                                && value_matches_bytes(self.lexer.token().value(), b"of")
+                            {
+                                OP_FOR_OF_START
+                            } else {
+                                return Err(self.parser_error(ERR_EXPECTED_OF_OR_IN));
+                            };
+                            self.next_token()?;
+                            self.emitter.emit_label(&mut label_expr);
+                            self.parse_expr()?;
+                            self.emitter.emit_op(opcode);
+                            {
+                                let entry = self.break_stack.entry_mut(idx).expect("break entry");
+                                self.emitter.emit_goto(OP_GOTO, entry.label_cont_mut());
+                            }
+                            parse_expect(&mut self.lexer, ')' as i32)?;
+                            self.emitter.emit_label(&mut label_body);
+                            stack.push_int(label_next.raw()).map_err(Self::stack_error)?;
+                            Ok(encode_call(5, ParseExprFunc::JsParseStatement, 0))
+                        } else {
+                            if self.lexer.token().val() != ';' as i32 {
+                                if self.lexer.token().val() == TOK_VAR {
+                                    self.next_token()?;
+                                    self.parse_var(false)?;
+                                } else {
+                                    self.parse_expr2((PF_NO_IN | PF_DROP) as i32)?;
+                                }
+                            }
+                            parse_expect(&mut self.lexer, ';' as i32)?;
+
+                            let mut label_test = Label::new();
+                            self.emitter.emit_label(&mut label_test);
+                            if self.lexer.token().val() != ';' as i32 {
+                                self.parse_expr()?;
+                                let entry = self.break_stack.entry_mut(idx).expect("break entry");
+                                self.emitter.emit_goto(OP_IF_FALSE, entry.label_break_mut());
+                            }
+                            parse_expect(&mut self.lexer, ';' as i32)?;
+
+                            let (expr3_source_pos, expr3_flags) =
+                                if self.lexer.token().val() != ')' as i32 {
+                                    let pos = self.lexer.get_pos();
+                                    self.skip_expr()?;
+                                    (
+                                        pos.source_pos() as i32,
+                                        (pos.got_lf() as i32)
+                                            | ((pos.regexp_allowed() as i32) << 1),
+                                    )
+                                } else {
+                                    (-1, 0)
+                                };
+                            parse_expect(&mut self.lexer, ')' as i32)?;
+
+                            stack.push_int(label_test.raw()).map_err(Self::stack_error)?;
+                            stack.push_int(expr3_flags).map_err(Self::stack_error)?;
+                            stack.push_int(expr3_source_pos).map_err(Self::stack_error)?;
+                            Ok(encode_call(6, ParseExprFunc::JsParseStatement, 0))
+                        }
+                    }
+                    TOK_BREAK | TOK_CONTINUE => {
+                        let is_cont = self.lexer.token().val() == TOK_CONTINUE;
+                        let source_pos = self.lexer.token().source_pos();
+                        self.next_token()?;
+                        let label_name = if !self.lexer.got_lf()
+                            && self.lexer.token().val() == TOK_IDENT
+                        {
+                            self.lexer.token().value()
+                        } else {
+                            JS_NULL
+                        };
+                        emit_break(
+                            &mut self.emitter,
+                            &mut self.break_stack,
+                            label_name,
+                            is_cont,
+                            source_pos,
+                        )
+                        .map_err(Self::control_flow_error)?;
+                        if label_name != JS_NULL {
+                            self.next_token()?;
+                        }
+                        parse_expect_semi(&mut self.lexer)?;
+                        Ok(PARSE_STATE_RET as i32)
+                    }
+                    TOK_SWITCH => {
+                        self.next_token()?;
+                        self.set_eval_ret_undefined();
+                        self.parse_expr_paren()?;
+                        parse_expect(&mut self.lexer, '{' as i32)?;
+                        self.break_stack
+                            .push(label_name, Label::new(), Label::none(), 1);
+                        let mut label_case = Label::none();
+                        let mut default_label_pos = -1;
+                        self.parse_switch_body(stack, &mut label_case, &mut default_label_pos)
+                    }
+                    TOK_TRY => {
+                        self.set_eval_ret_undefined();
+                        self.next_token()?;
+                        let mut label_catch = Label::new();
+                        let label_finally = Label::new();
+                        self.emitter.emit_goto(OP_CATCH, &mut label_catch);
+
+                        let idx = self
+                            .break_stack
+                            .push(JS_NULL, Label::none(), Label::none(), 1);
+                        if let Some(entry) = self.break_stack.entry_mut(idx) {
+                            *entry.label_finally_mut() = label_finally;
+                        }
+                        stack.push_int(label_catch.raw()).map_err(Self::stack_error)?;
+                        Ok(encode_call(8, ParseExprFunc::JsParseBlock, 0))
+                    }
+                    TOK_SEMI => {
+                        self.next_token()?;
+                        Ok(PARSE_STATE_RET as i32)
+                    }
+                    _ => {
+                        let eval_ret_idx = self.parse_state.eval_ret_idx();
+                        if eval_ret_idx >= 0 {
+                            self.parse_expr()?;
+                            let idx = eval_ret_idx as u32;
+                            let source_pos = self.emitter.pc2line_source_pos();
+                            self.emitter.emit_var(OP_PUT_LOC, idx, source_pos);
+                        } else {
+                            self.parse_expr2(PF_DROP as i32)?;
+                        }
+                        parse_expect_semi(&mut self.lexer)?;
+                        Ok(PARSE_STATE_RET as i32)
+                    }
+                }
+            }
+            0 => Ok(PARSE_STATE_RET as i32),
+            1 => {
+                let mut label1 = Label::from_raw(stack.pop_int());
+                if self.lexer.token().val() == TOK_ELSE {
+                    self.next_token()?;
+                    let mut label2 = Label::new();
+                    self.emitter.emit_goto(OP_GOTO, &mut label2);
+                    self.emitter.emit_label(&mut label1);
+                    stack.push_int(label2.raw()).map_err(Self::stack_error)?;
+                    return Ok(encode_call(2, ParseExprFunc::JsParseStatement, 0));
+                }
+                self.emitter.emit_label(&mut label1);
+                Ok(PARSE_STATE_RET as i32)
+            }
+            2 => {
+                let mut label2 = Label::from_raw(stack.pop_int());
+                self.emitter.emit_label(&mut label2);
+                Ok(PARSE_STATE_RET as i32)
+            }
+            3 => {
+                let entry = self.break_stack.top_mut().expect("break entry");
+                self.emitter.emit_goto(OP_GOTO, entry.label_cont_mut());
+                self.emitter.emit_label(entry.label_break_mut());
+                self.break_stack.pop();
+                Ok(PARSE_STATE_RET as i32)
+            }
+            4 => {
+                let mut label1 = Label::from_raw(stack.pop_int());
+                {
+                    let entry = self.break_stack.top_mut().expect("break entry");
+                    self.emitter.emit_label(entry.label_cont_mut());
+                }
+                parse_expect(&mut self.lexer, TOK_WHILE)?;
+                self.parse_expr_paren()?;
+                if self.lexer.token().val() == ';' as i32 {
+                    self.next_token()?;
+                }
+                self.emitter.emit_goto(OP_IF_TRUE, &mut label1);
+                {
+                    let entry = self.break_stack.top_mut().expect("break entry");
+                    self.emitter.emit_label(entry.label_break_mut());
+                }
+                self.break_stack.pop();
+                Ok(PARSE_STATE_RET as i32)
+            }
+            5 => {
+                let mut label_next = Label::from_raw(stack.pop_int());
+                let entry = self.break_stack.top_mut().expect("break entry");
+                self.emitter.emit_label(entry.label_cont_mut());
+                self.emitter.emit_op(OP_FOR_OF_NEXT);
+                self.emitter.emit_goto(OP_IF_FALSE, &mut label_next);
+                self.emitter.emit_op(OP_DROP);
+                self.emitter.emit_label(entry.label_break_mut());
+                self.emitter.emit_op(OP_DROP);
+                self.break_stack.pop();
+                Ok(PARSE_STATE_RET as i32)
+            }
+            6 => {
+                let expr3_source_pos = stack.pop_int();
+                let expr3_flags = stack.pop_int();
+                let mut label_test = Label::from_raw(stack.pop_int());
+                {
+                    let entry = self.break_stack.top_mut().expect("break entry");
+                    self.emitter.emit_label(entry.label_cont_mut());
+                }
+                if expr3_source_pos != -1 {
+                    let end_pos = self.lexer.get_pos();
+                    let expr3_pos = ParsePos::new(
+                        (expr3_flags & 1) != 0,
+                        (expr3_flags >> 1) != 0,
+                        expr3_source_pos as u32,
+                    );
+                    self.lexer.seek_token(expr3_pos).map_err(ParserError::from)?;
+                    self.parse_expr2(PF_DROP as i32)?;
+                    self.lexer.seek_token(end_pos).map_err(ParserError::from)?;
+                }
+                self.emitter.emit_goto(OP_GOTO, &mut label_test);
+                {
+                    let entry = self.break_stack.top_mut().expect("break entry");
+                    self.emitter.emit_label(entry.label_break_mut());
+                }
+                self.break_stack.pop();
+                Ok(PARSE_STATE_RET as i32)
+            }
+            7 => {
+                let mut default_label_pos = stack.pop_int();
+                let mut label_case = Label::from_raw(stack.pop_int());
+                self.parse_switch_body(stack, &mut label_case, &mut default_label_pos)
+            }
+            8 => {
+                let mut label_catch = Label::from_raw(stack.pop_int());
+                let label_finally = {
+                    let entry = self.break_stack.top_mut().expect("try break entry");
+                    let label = entry.label_finally();
+                    self.break_stack.pop();
+                    label
+                };
+                let mut label_finally = label_finally;
+
+                self.emitter.emit_op(OP_DROP);
+                self.emitter.emit_op(OP_UNDEFINED);
+                self.emitter.emit_goto(OP_GOSUB, &mut label_finally);
+                self.emitter.emit_op(OP_DROP);
+
+                let mut label_end = Label::new();
+                self.emitter.emit_goto(OP_GOTO, &mut label_end);
+
+                if self.lexer.token().val() == TOK_CATCH {
+                    let mut label_catch2 = Label::new();
+                    self.next_token()?;
+                    parse_expect(&mut self.lexer, '(' as i32)?;
+                    if self.lexer.token().val() != TOK_IDENT {
+                        return Err(self.parser_error(ERR_IDENTIFIER_EXPECTED));
+                    }
+                    let name = self.lexer.token().value();
+                    let ident_source_pos = self.lexer.token().source_pos();
+                    if find_var(&self.parse_state, name).is_some()
+                        || find_ext_var(&self.parse_state, name).is_some()
+                    {
+                        return Err(self.parser_error(ERR_CATCH_VAR_EXISTS));
+                    }
+                    let var_idx =
+                        add_var(&mut self.parse_state, &mut self.alloc, name)
+                            .map_err(|err| {
+                                Self::var_error(err, ident_source_pos as usize)
+                            })?;
+                    self.next_token()?;
+                    parse_expect(&mut self.lexer, ')' as i32)?;
+
+                    self.emitter.emit_label(&mut label_catch);
+                    let arg_count = self.func.as_ref().arg_count() as i32;
+                    let idx = i32::from(var_idx) - arg_count;
+                    self.emitter
+                        .emit_var(OP_PUT_LOC, idx as u32, self.emitter.pc2line_source_pos());
+
+                    self.emitter.emit_goto(OP_CATCH, &mut label_catch2);
+
+                    let idx = self
+                        .break_stack
+                        .push(JS_NULL, Label::none(), Label::none(), 1);
+                    if let Some(entry) = self.break_stack.entry_mut(idx) {
+                        *entry.label_finally_mut() = label_finally;
+                    }
+
+                    stack.push_int(label_end.raw()).map_err(Self::stack_error)?;
+                    stack
+                        .push_int(label_catch2.raw())
+                        .map_err(Self::stack_error)?;
+                    return Ok(encode_call(9, ParseExprFunc::JsParseBlock, 0));
+                } else if self.lexer.token().val() == TOK_FINALLY {
+                    self.emitter.emit_label(&mut label_catch);
+                    self.emitter.emit_goto(OP_GOSUB, &mut label_finally);
+                    self.emitter.emit_op(OP_THROW);
+                } else {
+                    return Err(self.parser_error(ERR_EXPECTING_CATCH_OR_FINALLY));
+                }
+
+                self.emitter.emit_label(&mut label_finally);
+                if self.lexer.token().val() == TOK_FINALLY {
+                    self.next_token()?;
+                    self.break_stack
+                        .push(JS_NULL, Label::none(), Label::none(), 2);
+                    stack.push_int(label_end.raw()).map_err(Self::stack_error)?;
+                    return Ok(encode_call(10, ParseExprFunc::JsParseBlock, 0));
+                }
+                self.emitter.emit_op(OP_RET);
+                self.emitter.emit_label(&mut label_end);
+                Ok(PARSE_STATE_RET as i32)
+            }
+            9 => {
+                let mut label_catch2 = Label::from_raw(stack.pop_int());
+                let mut label_end = Label::from_raw(stack.pop_int());
+
+                let label_finally = {
+                    let entry = self.break_stack.top_mut().expect("catch break entry");
+                    let label = entry.label_finally();
+                    self.break_stack.pop();
+                    label
+                };
+                let mut label_finally = label_finally;
+
+                self.emitter.emit_op(OP_DROP);
+                self.emitter.emit_op(OP_UNDEFINED);
+                self.emitter.emit_goto(OP_GOSUB, &mut label_finally);
+                self.emitter.emit_op(OP_DROP);
+                self.emitter.emit_goto(OP_GOTO, &mut label_end);
+
+                self.emitter.emit_label(&mut label_catch2);
+                self.emitter.emit_goto(OP_GOSUB, &mut label_finally);
+                self.emitter.emit_op(OP_THROW);
+
+                self.emitter.emit_label(&mut label_finally);
+                if self.lexer.token().val() == TOK_FINALLY {
+                    self.next_token()?;
+                    self.break_stack
+                        .push(JS_NULL, Label::none(), Label::none(), 2);
+                    stack.push_int(label_end.raw()).map_err(Self::stack_error)?;
+                    return Ok(encode_call(10, ParseExprFunc::JsParseBlock, 0));
+                }
+                self.emitter.emit_op(OP_RET);
+                self.emitter.emit_label(&mut label_end);
+                Ok(PARSE_STATE_RET as i32)
+            }
+            10 => {
+                let mut label_end = Label::from_raw(stack.pop_int());
+                self.break_stack.pop();
+                self.emitter.emit_op(OP_RET);
+                self.emitter.emit_label(&mut label_end);
+                Ok(PARSE_STATE_RET as i32)
+            }
+            11 => {
+                let entry = self.break_stack.top_mut().expect("label break entry");
+                self.emitter.emit_label(entry.label_break_mut());
+                self.break_stack.pop();
+                Ok(PARSE_STATE_RET as i32)
+            }
+            _ => unreachable!("unexpected parse state"),
+        }
     }
 
     fn parse_call(
@@ -277,6 +1018,8 @@ impl<'a> ExprParser<'a> {
             ParseExprFunc::JsParseExprBinary => self.parse_expr_binary(stack, state, param),
             ParseExprFunc::JsParseUnary => self.parse_unary(stack, state, param),
             ParseExprFunc::JsParsePostfixExpr => self.parse_postfix_expr(stack, state, param),
+            ParseExprFunc::JsParseStatement => self.parse_statement_func(stack, state, param),
+            ParseExprFunc::JsParseBlock => self.parse_block_func(stack, state, param),
             _ => Err(ParserError::new(
                 ParserErrorKind::Static(ERR_UNEXPECTED_CHAR_EXPR),
                 self.lexer.token().source_pos() as usize,
@@ -293,7 +1036,11 @@ impl<'a> ExprParser<'a> {
             4 => ParseExprFunc::JsParseExprBinary,
             5 => ParseExprFunc::JsParseUnary,
             6 => ParseExprFunc::JsParsePostfixExpr,
-            _ => ParseExprFunc::JsParseExprComma,
+            7 => ParseExprFunc::JsParseStatement,
+            8 => ParseExprFunc::JsParseBlock,
+            9 => ParseExprFunc::JsParseJsonValue,
+            10 => ParseExprFunc::ReParseAlternative,
+            _ => ParseExprFunc::ReParseDisjunction,
         }
     }
 
@@ -325,6 +1072,10 @@ impl<'a> ExprParser<'a> {
     }
 
     fn regexp_error(err: RegExpError) -> ParserError {
+        ParserError::new(ParserErrorKind::Static(err.message()), err.position())
+    }
+
+    fn control_flow_error(err: ControlFlowError) -> ParserError {
         ParserError::new(ParserErrorKind::Static(err.message()), err.position())
     }
 
@@ -1656,7 +2407,10 @@ impl<'a> ExprParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::opcode::{OP_ADD, OP_ARRAY_FROM, OP_DUP, OP_MUL, OP_PUT_LOC0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_FALSE, OP_PUSH_TRUE, OPCODES};
+    use crate::opcode::{
+        OP_ADD, OP_ARRAY_FROM, OP_DROP, OP_DUP, OP_GOTO, OP_IF_FALSE, OP_MUL, OP_PUT_LOC0,
+        OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_FALSE, OP_PUSH_TRUE, OP_RETURN, OPCODES,
+    };
 
     fn decode_ops(bytes: &[u8]) -> Vec<OpCode> {
         let mut ops = Vec::new();
@@ -1676,6 +2430,12 @@ mod tests {
     fn parse_ops(input: &str) -> Vec<OpCode> {
         let mut parser = ExprParser::new(input.as_bytes());
         parser.parse_expression(0).expect("parse");
+        decode_ops(parser.bytecode())
+    }
+
+    fn parse_statement_ops(input: &str) -> Vec<OpCode> {
+        let mut parser = ExprParser::new(input.as_bytes());
+        parser.parse_statement().expect("parse");
         decode_ops(parser.bytecode())
     }
 
@@ -1704,5 +2464,26 @@ mod tests {
     fn expr_logical_and_short_circuits() {
         let ops = parse_ops("true && false");
         assert_eq!(ops, [OP_PUSH_TRUE, OP_DUP, OP_IF_FALSE, OP_DROP, OP_PUSH_FALSE]);
+    }
+
+    #[test]
+    fn stmt_var_initializer_emits_put_loc() {
+        let ops = parse_statement_ops("var x=1;");
+        assert_eq!(ops, [OP_PUSH_1, OP_PUT_LOC0]);
+    }
+
+    #[test]
+    fn stmt_if_else_emits_jumps() {
+        let ops = parse_statement_ops("if(true) 1; else 2;");
+        assert_eq!(
+            ops,
+            [OP_PUSH_TRUE, OP_IF_FALSE, OP_PUSH_1, OP_DROP, OP_GOTO, OP_PUSH_2, OP_DROP]
+        );
+    }
+
+    #[test]
+    fn stmt_return_with_value_emits_return() {
+        let ops = parse_statement_ops("return 1;");
+        assert_eq!(ops, [OP_PUSH_1, OP_RETURN]);
     }
 }

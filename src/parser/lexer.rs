@@ -28,9 +28,9 @@ const ERR_EXPECTING_CLOSE_BRACE: &str = "expecting '}'";
 const ERR_EXPECTING_DELIMITER: &str = "expecting closing delimiter";
 const NUL_BYTE: [u8; 1] = [0];
 
-const SKIP_HAS_ARGUMENTS: u32 = 1 << 0;
-const SKIP_HAS_FUNC_NAME: u32 = 1 << 1;
-const SKIP_HAS_SEMI: u32 = 1 << 2;
+pub(crate) const SKIP_HAS_ARGUMENTS: u32 = 1 << 0;
+pub(crate) const SKIP_HAS_FUNC_NAME: u32 = 1 << 1;
+pub(crate) const SKIP_HAS_SEMI: u32 = 1 << 2;
 
 const TOK_PAREN_OPEN: i32 = b'(' as i32;
 const TOK_PAREN_CLOSE: i32 = b')' as i32;
@@ -199,6 +199,10 @@ impl<'a> ParseState<'a> {
 
     pub fn got_lf(&self) -> bool {
         self.got_lf
+    }
+
+    pub fn is_label(&self) -> bool {
+        self.token.val() == TOK_IDENT && self.byte_at(self.buf_pos) == b':'
     }
 
     pub fn buf_pos(&self) -> usize {

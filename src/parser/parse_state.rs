@@ -222,6 +222,14 @@ impl JSParseState {
     pub fn set_cpool_len(&mut self, len: u16) {
         self.cpool_len = len;
     }
+
+    pub fn eval_ret_idx(&self) -> i32 {
+        self.eval_ret_idx
+    }
+
+    pub fn set_eval_ret_idx(&mut self, idx: i32) {
+        self.eval_ret_idx = idx;
+    }
 }
 
 #[cfg(test)]

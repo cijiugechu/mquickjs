@@ -109,6 +109,10 @@ impl BreakStack {
         self.entries.last_mut()
     }
 
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &BreakEntry> {
+        self.entries.iter()
+    }
+
     pub fn entry_mut(&mut self, idx: usize) -> Option<&mut BreakEntry> {
         self.entries.get_mut(idx)
     }
