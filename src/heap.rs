@@ -81,6 +81,13 @@ impl HeapLayout {
         self.stack_bottom = stack_bottom;
     }
 
+    pub fn ptr_in_heap(self, ptr: NonNull<u8>) -> bool {
+        let base = self.heap_base.as_ptr() as usize;
+        let free = self.heap_free.as_ptr() as usize;
+        let addr = ptr.as_ptr() as usize;
+        addr >= base && addr < free
+    }
+
     pub fn is_valid(self) -> bool {
         let heap_base = self.heap_base.as_ptr() as usize;
         let heap_free = self.heap_free.as_ptr() as usize;
@@ -274,8 +281,8 @@ pub unsafe fn mblock_size(ptr: NonNull<u8>) -> usize {
 }
 
 /// # Safety
-/// `pval` must be a valid pointer to a JSValue slot.
-pub unsafe fn thread_pointer(pval: *mut JSValue) {
+/// `pval` must be a valid pointer to a JSValue slot; non-heap pointers are ignored.
+pub unsafe fn thread_pointer(heap: &HeapLayout, pval: *mut JSValue) {
     let val = unsafe { *pval };
     if !is_ptr(val) {
         return;
@@ -284,6 +291,9 @@ pub unsafe fn thread_pointer(pval: *mut JSValue) {
         Some(ptr) => ptr,
         None => return,
     };
+    if !heap.ptr_in_heap(ptr) {
+        return;
+    }
     let header_ptr = ptr.as_ptr() as *mut JSValue;
     unsafe {
         let prev = *header_ptr;
@@ -313,67 +323,70 @@ pub unsafe fn update_threaded_pointers(ptr: *mut u8, new_ptr: *mut u8) {
 
 /// # Safety
 /// `ptr` must point to a readable memblock start.
-pub unsafe fn thread_block(ptr: *mut u8) {
+pub unsafe fn thread_block(heap: &HeapLayout, ptr: *mut u8) {
     let header = unsafe { MbHeader::from_word(read_header_word(ptr)) };
     match header.tag() {
-        MTag::Object => unsafe { thread_object(ptr) },
-        MTag::ValueArray => unsafe { thread_value_array(ptr, header) },
-        MTag::VarRef => unsafe { thread_var_ref(ptr) },
-        MTag::FunctionBytecode => unsafe { thread_function_bytecode(ptr) },
+        MTag::Object => unsafe { thread_object(heap, ptr) },
+        MTag::ValueArray => unsafe { thread_value_array(heap, ptr, header) },
+        MTag::VarRef => unsafe { thread_var_ref(heap, ptr) },
+        MTag::FunctionBytecode => unsafe { thread_function_bytecode(heap, ptr) },
         _ => {}
     }
 }
 
-unsafe fn thread_value_array(ptr: *mut u8, header: MbHeader) {
+unsafe fn thread_value_array(heap: &HeapLayout, ptr: *mut u8, header: MbHeader) {
     let header = ValueArrayHeader::from(header);
     let len = header.size() as usize;
     let arr_ptr = unsafe { ptr.add(size_of::<JSWord>()) as *mut JSValue };
     for idx in 0..len {
         unsafe {
-            thread_pointer(arr_ptr.add(idx));
+            thread_pointer(heap, arr_ptr.add(idx));
         }
     }
 }
 
-unsafe fn thread_var_ref(ptr: *mut u8) {
+unsafe fn thread_var_ref(heap: &HeapLayout, ptr: *mut u8) {
     let val_ptr = unsafe { ptr.add(size_of::<JSWord>()) as *mut JSValue };
     unsafe {
-        thread_pointer(val_ptr);
+        thread_pointer(heap, val_ptr);
     }
 }
 
-unsafe fn thread_function_bytecode(ptr: *mut u8) {
+unsafe fn thread_function_bytecode(heap: &HeapLayout, ptr: *mut u8) {
     let func = ptr as *mut FunctionBytecode;
     unsafe {
-        thread_pointer(FunctionBytecode::func_name_ptr(func));
-        thread_pointer(FunctionBytecode::byte_code_ptr(func));
-        thread_pointer(FunctionBytecode::cpool_ptr(func));
-        thread_pointer(FunctionBytecode::vars_ptr(func));
-        thread_pointer(FunctionBytecode::ext_vars_ptr(func));
-        thread_pointer(FunctionBytecode::filename_ptr(func));
-        thread_pointer(FunctionBytecode::pc2line_ptr(func));
+        thread_pointer(heap, FunctionBytecode::func_name_ptr(func));
+        thread_pointer(heap, FunctionBytecode::byte_code_ptr(func));
+        thread_pointer(heap, FunctionBytecode::cpool_ptr(func));
+        thread_pointer(heap, FunctionBytecode::vars_ptr(func));
+        thread_pointer(heap, FunctionBytecode::ext_vars_ptr(func));
+        thread_pointer(heap, FunctionBytecode::filename_ptr(func));
+        thread_pointer(heap, FunctionBytecode::pc2line_ptr(func));
     }
 }
 
-unsafe fn thread_object(ptr: *mut u8) {
+unsafe fn thread_object(heap: &HeapLayout, ptr: *mut u8) {
     let obj = ptr as *mut Object;
     let header_word = unsafe { read_header_word(ptr) };
     let header = ObjectHeader::from_word(header_word);
     unsafe {
-        thread_pointer(Object::proto_ptr(obj));
-        thread_pointer(Object::props_ptr(obj));
+        thread_pointer(heap, Object::proto_ptr(obj));
+        thread_pointer(heap, Object::props_ptr(obj));
     }
     let class_id = header.class_id();
     match class_id {
         x if x == JSObjectClass::Closure as u8 => unsafe {
             let payload = Object::payload_ptr(obj);
             let closure = core::ptr::addr_of_mut!((*payload).closure);
-            thread_pointer(crate::closure_data::ClosureData::func_bytecode_ptr(closure));
+            thread_pointer(
+                heap,
+                crate::closure_data::ClosureData::func_bytecode_ptr(closure),
+            );
             if header.extra_size() > 1 {
                 let var_refs = crate::closure_data::ClosureData::var_refs_ptr(closure);
                 let count = (header.extra_size() - 1) as usize;
                 for idx in 0..count {
-                    thread_pointer(var_refs.add(idx));
+                    thread_pointer(heap, var_refs.add(idx));
                 }
             }
         },
@@ -381,24 +394,30 @@ unsafe fn thread_object(ptr: *mut u8) {
             if header.extra_size() > 1 {
                 let payload = Object::payload_ptr(obj);
                 let cfunc = core::ptr::addr_of_mut!((*payload).cfunc);
-                thread_pointer(crate::cfunction_data::CFunctionData::params_ptr(cfunc));
+                thread_pointer(
+                    heap,
+                    crate::cfunction_data::CFunctionData::params_ptr(cfunc),
+                );
             }
         },
         x if x == JSObjectClass::Array as u8 => unsafe {
             let payload = Object::payload_ptr(obj);
             let array = core::ptr::addr_of_mut!((*payload).array);
-            thread_pointer(crate::array_data::ArrayData::tab_ptr(array));
+            thread_pointer(heap, crate::array_data::ArrayData::tab_ptr(array));
         },
         x if x == JSObjectClass::Error as u8 => unsafe {
             let payload = Object::payload_ptr(obj);
             let error = core::ptr::addr_of_mut!((*payload).error);
-            thread_pointer(crate::error_data::ErrorData::message_ptr(error));
-            thread_pointer(crate::error_data::ErrorData::stack_ptr(error));
+            thread_pointer(heap, crate::error_data::ErrorData::message_ptr(error));
+            thread_pointer(heap, crate::error_data::ErrorData::stack_ptr(error));
         },
         x if x == JSObjectClass::ArrayBuffer as u8 => unsafe {
             let payload = Object::payload_ptr(obj);
             let buffer = core::ptr::addr_of_mut!((*payload).array_buffer);
-            thread_pointer(crate::array_buffer::ArrayBuffer::byte_buffer_ptr(buffer));
+            thread_pointer(
+                heap,
+                crate::array_buffer::ArrayBuffer::byte_buffer_ptr(buffer),
+            );
         },
         x if x == JSObjectClass::Uint8CArray as u8
             || x == JSObjectClass::Int8Array as u8
@@ -412,13 +431,13 @@ unsafe fn thread_object(ptr: *mut u8) {
         unsafe {
             let payload = Object::payload_ptr(obj);
             let array = core::ptr::addr_of_mut!((*payload).typed_array);
-            thread_pointer(crate::typed_array::TypedArray::buffer_ptr(array));
+            thread_pointer(heap, crate::typed_array::TypedArray::buffer_ptr(array));
         },
         x if x == JSObjectClass::RegExp as u8 => unsafe {
             let payload = Object::payload_ptr(obj);
             let regexp = core::ptr::addr_of_mut!((*payload).regexp);
-            thread_pointer(RegExp::source_ptr(regexp));
-            thread_pointer(RegExp::byte_code_ptr(regexp));
+            thread_pointer(heap, RegExp::source_ptr(regexp));
+            thread_pointer(heap, RegExp::byte_code_ptr(regexp));
         },
         _ => {}
     }
@@ -431,7 +450,7 @@ where
     R: RootVisitor,
 {
     roots.visit_roots(|root| unsafe {
-        thread_pointer(root);
+        thread_pointer(heap, root);
     });
 
     let mut new_ptr = heap.heap_base.as_ptr();
@@ -443,7 +462,7 @@ where
         let size = unsafe { mblock_size(NonNull::new_unchecked(ptr)) };
         if unsafe { mblock_tag(NonNull::new_unchecked(ptr)) } != MTag::Free {
             unsafe {
-                thread_block(ptr);
+                thread_block(heap, ptr);
             }
             new_ptr = unsafe { new_ptr.add(size) };
         }

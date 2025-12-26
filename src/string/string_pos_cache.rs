@@ -36,6 +36,10 @@ impl StringPosCacheEntry {
         self.str = val;
     }
 
+    pub(crate) fn str_ptr(&mut self) -> *mut JSValue {
+        &mut self.str
+    }
+
     pub const fn utf8_pos(self) -> u32 {
         self.str_pos[0]
     }

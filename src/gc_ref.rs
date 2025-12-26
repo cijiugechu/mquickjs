@@ -121,6 +121,18 @@ impl GcRefState {
         }
     }
 
+    pub fn visit_root_slots<F>(&self, mut f: F)
+    where
+        F: FnMut(*mut JSValue),
+    {
+        for node in self.stack.iter() {
+            f(node.val_ptr());
+        }
+        for node in self.list.iter() {
+            f(node.val_ptr());
+        }
+    }
+
     pub fn is_stack_empty(&self) -> bool {
         self.stack.is_empty()
     }

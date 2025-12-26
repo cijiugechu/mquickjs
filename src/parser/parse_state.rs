@@ -3,7 +3,8 @@ use core::ptr::NonNull;
 use bitflags::bitflags;
 
 use crate::capi_defs::JSContext;
-use crate::jsvalue::{JSValue, JS_NULL};
+use crate::jsvalue::{value_to_ptr, JSValue, JS_NULL};
+use crate::string::js_string::JSString;
 
 use super::types::{SourcePos, Token, TokenExtra};
 
@@ -268,6 +269,27 @@ impl JSParseState {
             self.byte_code,
         ]
     }
+
+    pub(crate) fn gc_root_slots_mut(&mut self) -> [*mut JSValue; 5] {
+        [
+            &mut self.source_str as *mut JSValue,
+            &mut self.filename_str as *mut JSValue,
+            self.token.value_ptr(),
+            &mut self.cur_func as *mut JSValue,
+            &mut self.byte_code as *mut JSValue,
+        ]
+    }
+
+    pub(crate) fn refresh_source_buf_from_str(&mut self) {
+        let Some(ptr) = value_to_ptr::<JSString>(self.source_str) else {
+            return;
+        };
+        let string = unsafe {
+            // SAFETY: `source_str` is expected to reference a live JSString when it is a pointer.
+            ptr.as_ref()
+        };
+        self.source_buf = string.buf().as_ptr();
+    }
 }
 
 #[cfg(test)]
@@ -373,5 +395,21 @@ mod tests {
         state.set_source(buf.as_ptr(), buf.len() as u32);
         state.buf_pos = 5;
         assert!(!state.is_valid());
+    }
+
+    #[test]
+    fn refresh_source_buf_from_string() {
+        let ctx = NonNull::dangling();
+        let mut state = JSParseState::new(ctx, true);
+        let source_bytes = b"abc";
+        let source = JSString::new(source_bytes.to_vec(), false, true, false).unwrap();
+        let boxed = Box::new(source);
+        let source_ptr = NonNull::from(boxed.as_ref());
+        state.source_str = crate::jsvalue::value_from_ptr(source_ptr);
+        let dummy = [0u8; 1];
+        state.set_source(dummy.as_ptr(), source_bytes.len() as u32);
+        state.refresh_source_buf_from_str();
+        assert_eq!(state.source_buf, boxed.buf().as_ptr());
+        drop(boxed);
     }
 }

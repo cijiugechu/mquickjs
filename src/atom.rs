@@ -92,6 +92,20 @@ impl AtomTables {
             }
         }
     }
+
+    pub fn visit_root_slots<F>(&mut self, mut f: F)
+    where
+        F: FnMut(*mut JSValue),
+    {
+        for table in &mut self.rom_tables {
+            for val in table.iter_mut() {
+                f(val as *mut JSValue);
+            }
+        }
+        for val in self.unique_strings.iter_mut() {
+            f(val as *mut JSValue);
+        }
+    }
 }
 
 fn find_atom(arr: &[JSValue], val: JSValue) -> Result<usize, usize> {
