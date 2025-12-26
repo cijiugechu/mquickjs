@@ -215,12 +215,40 @@ impl JSParseState {
         self.flags.set(ParseStateFlags::IS_REPL, is_repl);
     }
 
+    pub fn has_retval(&self) -> bool {
+        self.flags.contains(ParseStateFlags::HAS_RETVAL)
+    }
+
+    pub fn set_has_retval(&mut self, has_retval: bool) {
+        self.flags.set(ParseStateFlags::HAS_RETVAL, has_retval);
+    }
+
+    pub fn has_column(&self) -> bool {
+        self.flags.contains(ParseStateFlags::HAS_COLUMN)
+    }
+
+    pub fn set_has_column(&mut self, has_column: bool) {
+        self.flags.set(ParseStateFlags::HAS_COLUMN, has_column);
+    }
+
     pub fn cpool_len(&self) -> u16 {
         self.cpool_len
     }
 
     pub fn set_cpool_len(&mut self, len: u16) {
         self.cpool_len = len;
+    }
+
+    pub fn hoisted_code_len(&self) -> u32 {
+        self.hoisted_code_len
+    }
+
+    pub fn set_hoisted_code_len(&mut self, len: u32) {
+        self.hoisted_code_len = len;
+    }
+
+    pub fn add_hoisted_code_len(&mut self, delta: u32) {
+        self.hoisted_code_len = self.hoisted_code_len.saturating_add(delta);
     }
 
     pub fn eval_ret_idx(&self) -> i32 {

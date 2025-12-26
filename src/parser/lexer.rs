@@ -197,6 +197,10 @@ impl<'a> ParseState<'a> {
         self.token
     }
 
+    pub fn source(&self) -> &[u8] {
+        self.source
+    }
+
     pub fn got_lf(&self) -> bool {
         self.got_lf
     }
@@ -207,6 +211,16 @@ impl<'a> ParseState<'a> {
 
     pub fn buf_pos(&self) -> usize {
         self.buf_pos
+    }
+
+    pub fn buf_len(&self) -> usize {
+        self.buf_len
+    }
+
+    pub fn reset_to_pos(&mut self, pos: usize) {
+        self.buf_pos = pos.min(self.buf_len);
+        self.got_lf = false;
+        self.token = Token::new(b' ' as i32, self.buf_pos as SourcePos, TokenExtra::None, JS_NULL);
     }
 
     pub fn get_pos(&self) -> ParsePos {

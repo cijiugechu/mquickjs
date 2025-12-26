@@ -173,6 +173,10 @@ impl ValueArray {
         let target = new_size.max(grow);
         self.values.resize(target, JS_UNDEFINED);
     }
+
+    pub(crate) fn shrink_to(&mut self, new_size: usize) {
+        self.values.truncate(new_size);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,8 +197,16 @@ impl ByteArray {
         self.buf.is_empty()
     }
 
+    pub fn buf(&self) -> &[u8] {
+        &self.buf
+    }
+
     pub fn buf_mut(&mut self) -> &mut [u8] {
         &mut self.buf
+    }
+
+    pub(crate) fn shrink_to(&mut self, new_len: usize) {
+        self.buf.truncate(new_len);
     }
 }
 

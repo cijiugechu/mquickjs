@@ -124,6 +124,18 @@ impl FunctionBytecode {
         self.header
     }
 
+    pub const fn has_arguments(self) -> bool {
+        self.header.has_arguments()
+    }
+
+    pub const fn has_local_func_name(self) -> bool {
+        self.header.has_local_func_name()
+    }
+
+    pub const fn has_column(self) -> bool {
+        self.header.has_column()
+    }
+
     pub const fn arg_count(self) -> u16 {
         self.header.arg_count()
     }
@@ -172,6 +184,10 @@ impl FunctionBytecode {
         self.vars = vars;
     }
 
+    pub fn set_stack_size(&mut self, stack_size: u16) {
+        self.stack_size = stack_size;
+    }
+
     pub fn set_ext_vars(&mut self, ext_vars: JSValue) {
         self.ext_vars = ext_vars;
     }
@@ -186,6 +202,63 @@ impl FunctionBytecode {
 
     pub fn set_byte_code(&mut self, byte_code: JSValue) {
         self.byte_code = byte_code;
+    }
+
+    pub fn set_pc2line(&mut self, pc2line: JSValue) {
+        self.pc2line = pc2line;
+    }
+
+    pub fn set_arg_count(&mut self, arg_count: u16) {
+        self.rebuild_header(
+            self.header.has_arguments(),
+            self.header.has_local_func_name(),
+            self.header.has_column(),
+            arg_count,
+        );
+    }
+
+    pub fn set_has_arguments(&mut self, has_arguments: bool) {
+        self.rebuild_header(
+            has_arguments,
+            self.header.has_local_func_name(),
+            self.header.has_column(),
+            self.header.arg_count(),
+        );
+    }
+
+    pub fn set_has_local_func_name(&mut self, has_local_func_name: bool) {
+        self.rebuild_header(
+            self.header.has_arguments(),
+            has_local_func_name,
+            self.header.has_column(),
+            self.header.arg_count(),
+        );
+    }
+
+    pub fn set_has_column(&mut self, has_column: bool) {
+        self.rebuild_header(
+            self.header.has_arguments(),
+            self.header.has_local_func_name(),
+            has_column,
+            self.header.arg_count(),
+        );
+    }
+
+    fn rebuild_header(
+        &mut self,
+        has_arguments: bool,
+        has_local_func_name: bool,
+        has_column: bool,
+        arg_count: u16,
+    ) {
+        let header = FunctionBytecodeHeader::new(
+            has_arguments,
+            has_local_func_name,
+            has_column,
+            arg_count,
+            self.header.gc_mark(),
+        );
+        self.header = header;
     }
 
     pub(crate) unsafe fn func_name_ptr(this: *mut Self) -> *mut JSValue {
@@ -224,7 +297,7 @@ impl FunctionBytecode {
     }
 }
 
-#[cfg(all(test, not(miri)))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

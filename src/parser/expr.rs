@@ -9,32 +9,38 @@ use crate::jsvalue::{
     JS_TAG_SPECIAL_BITS, JS_TAG_STRING_CHAR,
 };
 use crate::opcode::{
-    OpCode, OP_ADD, OP_AND, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR, OP_CALL_METHOD,
-    OP_CATCH, OP_DEC, OP_DEFINE_FIELD, OP_DELETE, OP_DIV, OP_DROP, OP_DUP, OP_EQ, OP_FOR_IN_START,
-    OP_FOR_OF_NEXT, OP_FOR_OF_START, OP_GOSUB, OP_GOTO, OP_GTE, OP_GT, OP_IF_FALSE, OP_IF_TRUE,
-    OP_IN, OP_INSTANCEOF, OP_LNOT, OP_LT, OP_LTE, OP_MOD, OP_MUL, OP_NEG, OP_NEQ, OP_NEW_TARGET,
-    OP_NOT, OP_NULL, OP_OBJECT, OP_OR, OP_PLUS, OP_POST_DEC, OP_POW, OP_PUSH_CONST,
-    OP_PUSH_FALSE, OP_PUSH_THIS, OP_PUSH_TRUE, OP_PUSH_VALUE, OP_REGEXP, OP_RET, OP_SAR,
-    OP_SET_PROTO, OP_SHL, OP_SHR, OP_STRICT_EQ, OP_STRICT_NEQ, OP_SUB, OP_THROW, OP_TYPEOF,
-    OP_UNDEFINED, OP_XOR, OP_GET_ARG, OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD,
+    OpCode, OP_ADD, OP_AND, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR,
+    OP_CALL_METHOD, OP_CATCH, OP_DEC, OP_DEFINE_FIELD, OP_DEFINE_GETTER, OP_DEFINE_SETTER,
+    OP_DELETE, OP_DIV, OP_DROP, OP_DUP, OP_EQ, OP_FCLOSURE, OP_FOR_IN_START, OP_FOR_OF_NEXT,
+    OP_FOR_OF_START, OP_GOSUB, OP_GOTO, OP_GTE, OP_GT, OP_IF_FALSE, OP_IF_TRUE, OP_IN,
+    OP_INSTANCEOF, OP_LNOT, OP_LT, OP_LTE, OP_MOD, OP_MUL, OP_NEG, OP_NEQ, OP_NEW_TARGET, OP_NOT,
+    OP_NULL, OP_OBJECT, OP_OR, OP_PLUS, OP_POST_DEC, OP_POW, OP_PUSH_CONST, OP_PUSH_FALSE,
+    OP_PUSH_THIS, OP_PUSH_TRUE, OP_PUSH_VALUE, OP_REGEXP, OP_RET, OP_RETURN, OP_RETURN_UNDEF,
+    OP_SAR,
+    OP_SET_PROTO, OP_SHL, OP_SHR, OP_STRICT_EQ, OP_STRICT_NEQ, OP_SUB, OP_THIS_FUNC, OP_THROW,
+    OP_TYPEOF, OP_UNDEFINED, OP_XOR, OP_GET_ARG, OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD,
     OP_GET_FIELD2, OP_GET_LENGTH, OP_GET_LENGTH2, OP_GET_LOC, OP_GET_VAR_REF,
-    OP_GET_VAR_REF_NOCHECK, OP_INVALID, OP_PUT_ARRAY_EL, OP_PUT_LOC,
+    OP_GET_VAR_REF_NOCHECK, OP_INVALID, OP_PUT_ARG, OP_PUT_ARRAY_EL, OP_PUT_LOC,
+    OP_PUT_VAR_REF_NOCHECK,
 };
 use crate::parser::control_flow::{emit_break, emit_return, BreakStack, ControlFlowError};
 use crate::parser::emit::{BytecodeEmitter, Label};
 use crate::parser::error::{
     parse_expect, parse_expect1, parse_expect_semi, ParserError, ParserErrorKind, ERR_NO_MEM,
 };
-use crate::parser::lexer::{value_matches_bytes, ParseState, SKIP_HAS_SEMI};
+use crate::parser::lexer::{
+    value_matches_bytes, ParseState, SKIP_HAS_ARGUMENTS, SKIP_HAS_FUNC_NAME, SKIP_HAS_SEMI,
+};
 use crate::parser::lvalue::{get_lvalue, put_lvalue, LValueError, PutLValue};
 use crate::parser::parse_stack::{ParseStack, ParseStackError};
 use crate::parser::parse_state::{
-    ParseExprFunc, JSParseState, PF_ACCEPT_LPAREN, PF_DROP, PF_LEVEL_MASK, PF_LEVEL_SHIFT,
-    PF_NO_IN, PARSE_STATE_INIT, PARSE_STATE_RET,
+    ParseExprFunc, ParseProp, JSParseFunction, JSParseState, PF_ACCEPT_LPAREN, PF_DROP,
+    PF_LEVEL_MASK, PF_LEVEL_SHIFT, PF_NO_IN, PARSE_STATE_INIT, PARSE_STATE_RET,
 };
 use crate::parser::property_name::parse_property_name;
 use crate::parser::regexp::{compile_regexp, RegExpError};
 use crate::parser::runtime::ParserRuntime;
+use crate::parser::stack_size::{compute_stack_size, StackSizeError};
 use crate::parser::tokens::{
     TOK_BREAK, TOK_CASE, TOK_CATCH, TOK_CONTINUE, TOK_DEC, TOK_DEFAULT, TOK_DO, TOK_ELSE, TOK_EOF,
     TOK_FALSE, TOK_FIRST_KEYWORD, TOK_FOR, TOK_FUNCTION, TOK_IDENT, TOK_IF, TOK_INC, TOK_IN,
@@ -45,8 +51,8 @@ use crate::parser::tokens::{
 };
 use crate::parser::types::{ParsePos, SourcePos, TokenExtra};
 use crate::parser::vars::{
-    add_ext_var, add_var, define_var, find_ext_var, find_var, get_ext_var_name, put_var,
-    VarAllocator, VarError, ValueArray,
+    add_ext_var, add_var, convert_ext_vars_to_local_vars, define_var, find_ext_var, find_var,
+    get_ext_var_name, put_var, resolve_var_refs, ByteArray, VarAllocator, VarError, ValueArray,
 };
 use crate::string::js_string::JSString;
 
@@ -60,8 +66,15 @@ const ERR_EXPECTING_FIELD_NAME: &str = "expecting field name";
 const ERR_DIRECT_EVAL: &str =
     "direct eval is not supported. Use (1,eval) instead for indirect eval";
 const ERR_DUP_PROTO: &str = "duplicate __proto__ property name";
-const ERR_FUNCTION_UNSUPPORTED: &str = "function parsing not implemented";
+const ERR_FUNCTION_NAME_EXPECTED: &str = "function name expected";
+const ERR_MISSING_FORMAL_PARAMETER: &str = "missing formal parameter";
+const ERR_INVALID_ARGUMENT_NAME: &str = "invalid argument name";
+const ERR_DUPLICATE_ARGUMENT_NAME: &str = "duplicate argument name";
 const ERR_INVALID_STRING: &str = "invalid string value";
+const ERR_INVALID_FUNCTION_PTR: &str = "invalid function bytecode pointer";
+const ERR_INVALID_VALUE_ARRAY_PTR: &str = "invalid value array pointer";
+const ERR_INVALID_BYTE_ARRAY_PTR: &str = "invalid byte array pointer";
+const ERR_TOO_MANY_LOCAL_VARS: &str = "too many local variables";
 const ERR_VARIABLE_NAME_EXPECTED: &str = "variable name expected";
 const ERR_INVALID_VARIABLE_NAME: &str = "invalid variable name";
 const ERR_RETURN_NOT_IN_FUNCTION: &str = "return not in a function";
@@ -172,6 +185,10 @@ impl OwnedFunctionBytecode {
         value_from_ptr(self.ptr)
     }
 
+    fn ptr(&self) -> NonNull<FunctionBytecode> {
+        self.ptr
+    }
+
     fn as_ref(&self) -> &FunctionBytecode {
         // SAFETY: pointer remains valid for the lifetime of OwnedFunctionBytecode.
         unsafe { self.ptr.as_ref() }
@@ -191,12 +208,14 @@ impl Drop for OwnedFunctionBytecode {
 }
 
 pub struct ExprParser<'a> {
+    source: &'a [u8],
     lexer: ParseState<'a>,
     emitter: BytecodeEmitter<'a>,
     parse_state: JSParseState,
     alloc: VarAllocator,
     runtime: ParserRuntime,
     func: OwnedFunctionBytecode,
+    nested_funcs: Vec<OwnedFunctionBytecode>,
     break_stack: BreakStack,
     dropped_result: bool,
     atoms: AtomCache,
@@ -218,16 +237,20 @@ impl<'a> ExprParser<'a> {
             source_pos: 0,
         };
         let func = OwnedFunctionBytecode::new(header, fields);
+        let lexer = ParseState::new(source);
         let mut parse_state = JSParseState::new(NonNull::dangling(), false);
         parse_state.set_cur_func(func.value());
         parse_state.set_eval_ret_idx(-1);
+        parse_state.set_source(source.as_ptr(), lexer.buf_len() as u32);
         Self {
-            lexer: ParseState::new(source),
+            source,
+            lexer,
             emitter: BytecodeEmitter::new(source, 0, false),
             parse_state,
             alloc: VarAllocator::new(),
             runtime: ParserRuntime::new_default(),
             func,
+            nested_funcs: Vec::new(),
             break_stack: BreakStack::new(),
             dropped_result: false,
             atoms: AtomCache::default(),
@@ -246,6 +269,61 @@ impl<'a> ExprParser<'a> {
         self.parse_call(&mut stack, ParseExprFunc::JsParseStatement, 0)
     }
 
+    pub fn parse_program(&mut self) -> Result<(), ParserError> {
+        self.parse_program_with_flags(false, false, false)
+    }
+
+    pub fn parse_program_with_flags(
+        &mut self,
+        is_eval: bool,
+        has_retval: bool,
+        is_repl: bool,
+    ) -> Result<(), ParserError> {
+        let func_val = self.func.value();
+        self.nested_funcs.clear();
+        self.parse_state.reset_parse_state(0, func_val);
+        self.parse_state.set_is_eval(is_eval);
+        self.parse_state.set_is_repl(is_repl);
+        self.parse_state.set_has_retval(has_retval);
+        self.parse_state.set_hoisted_code_len(0);
+        self.func.as_mut().set_has_column(self.parse_state.has_column());
+
+        self.lexer.reset_to_pos(0);
+        self.emitter = BytecodeEmitter::new(self.source, 0, self.parse_state.has_column());
+        self.break_stack = BreakStack::new();
+        self.dropped_result = false;
+
+        self.lexer.next_token().map_err(ParserError::from)?;
+
+        if self.parse_state.has_retval() {
+            let name = self
+                .lexer
+                .intern_identifier(b"_ret_", 0)
+                .map_err(ParserError::from)?;
+            let idx = add_var(&mut self.parse_state, &mut self.alloc, name)
+                .map_err(|err| Self::var_error(err, 0))?;
+            self.parse_state.set_eval_ret_idx(i32::from(idx));
+        }
+
+        while self.lexer.token().val() != TOK_EOF {
+            self.parse_source_element()?;
+        }
+
+        let eval_ret_idx = self.parse_state.eval_ret_idx();
+        if eval_ret_idx >= 0 {
+            let idx = eval_ret_idx as u32;
+            let source_pos = self.emitter.pc2line_source_pos();
+            self.emitter.emit_var(OP_GET_LOC, idx, source_pos);
+            self.emitter.emit_op(OP_RETURN);
+        } else {
+            self.emitter.emit_op(OP_RETURN_UNDEF);
+        }
+
+        self.store_current_function(is_eval)?;
+        self.parse_local_functions(func_val)?;
+        Ok(())
+    }
+
     pub fn bytecode(&self) -> &[u8] {
         self.emitter.byte_code()
     }
@@ -258,6 +336,86 @@ impl<'a> ExprParser<'a> {
         add_var(&mut self.parse_state, &mut self.alloc, value)
             .map_err(|err| Self::var_error(err, 0))?;
         Ok(value)
+    }
+
+    fn current_func_ref(&self) -> Result<&FunctionBytecode, ParserError> {
+        self.function_ref(self.parse_state.cur_func())
+    }
+
+    fn current_func_mut(&mut self) -> Result<&mut FunctionBytecode, ParserError> {
+        self.function_mut(self.parse_state.cur_func())
+    }
+
+    fn function_ref(&self, value: JSValue) -> Result<&FunctionBytecode, ParserError> {
+        if value == self.func.value() {
+            return Ok(self.func.as_ref());
+        }
+        for func in &self.nested_funcs {
+            if func.value() == value {
+                return Ok(func.as_ref());
+            }
+        }
+        Err(ParserError::new(
+            ParserErrorKind::Static(ERR_INVALID_FUNCTION_PTR),
+            0,
+        ))
+    }
+
+    fn function_mut(&mut self, value: JSValue) -> Result<&mut FunctionBytecode, ParserError> {
+        if value == self.func.value() {
+            return Ok(self.func.as_mut());
+        }
+        for func in &mut self.nested_funcs {
+            if func.value() == value {
+                return Ok(func.as_mut());
+            }
+        }
+        Err(ParserError::new(
+            ParserErrorKind::Static(ERR_INVALID_FUNCTION_PTR),
+            0,
+        ))
+    }
+
+    fn func_ptr(&self, value: JSValue) -> Option<NonNull<FunctionBytecode>> {
+        if value == self.func.value() {
+            return Some(self.func.ptr());
+        }
+        self.nested_funcs
+            .iter()
+            .find(|func| func.value() == value)
+            .map(|func| func.ptr())
+    }
+
+    fn value_array_ref(&self, value: JSValue) -> Result<&ValueArray, ParserError> {
+        let ptr = value_to_ptr::<ValueArray>(value).ok_or_else(|| {
+            ParserError::new(ParserErrorKind::Static(ERR_INVALID_VALUE_ARRAY_PTR), 0)
+        })?;
+        // SAFETY: value points to a ValueArray allocated by VarAllocator.
+        Ok(unsafe { ptr.as_ref() })
+    }
+
+    fn value_array_mut(&mut self, value: JSValue) -> Result<&mut ValueArray, ParserError> {
+        let mut ptr = value_to_ptr::<ValueArray>(value).ok_or_else(|| {
+            ParserError::new(ParserErrorKind::Static(ERR_INVALID_VALUE_ARRAY_PTR), 0)
+        })?;
+        // SAFETY: value points to a ValueArray allocated by VarAllocator.
+        Ok(unsafe { ptr.as_mut() })
+    }
+
+    fn byte_array_ref(&self, value: JSValue) -> Result<&ByteArray, ParserError> {
+        let ptr = value_to_ptr::<ByteArray>(value).ok_or_else(|| {
+            ParserError::new(ParserErrorKind::Static(ERR_INVALID_BYTE_ARRAY_PTR), 0)
+        })?;
+        // SAFETY: value points to a ByteArray allocated by VarAllocator.
+        Ok(unsafe { ptr.as_ref() })
+    }
+
+    fn byte_array_mut(&mut self, value: JSValue) -> Result<&mut ByteArray, ParserError> {
+        let mut ptr = value_to_ptr::<ByteArray>(value).ok_or_else(|| {
+            ParserError::new(ParserErrorKind::Static(ERR_INVALID_BYTE_ARRAY_PTR), 0)
+        })?;
+        // SAFETY: value points to a ByteArray allocated by VarAllocator.
+        Ok(unsafe { ptr.as_mut() })
     }
 
     fn parse_expr2(&mut self, parse_flags: i32) -> Result<(), ParserError> {
@@ -301,6 +459,360 @@ impl<'a> ExprParser<'a> {
                 }
             }
         }
+    }
+
+    fn parse_source_element(&mut self) -> Result<(), ParserError> {
+        if self.lexer.token().val() == TOK_FUNCTION {
+            self.parse_function_decl(JSParseFunction::Statement, JS_NULL)?;
+            return Ok(());
+        }
+        let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
+        let mut stack = ParseStack::new(&mut storage);
+        self.parse_call(&mut stack, ParseExprFunc::JsParseStatement, 0)?;
+        Ok(())
+    }
+
+    fn reset_for_function(&mut self, func: JSValue, source_pos: u32) -> Result<(), ParserError> {
+        let has_column = self.function_ref(func)?.has_column();
+        self.parse_state.reset_parse_state(source_pos, func);
+        self.parse_state.set_is_eval(false);
+        self.parse_state.set_is_repl(false);
+        self.parse_state.set_has_retval(false);
+        self.parse_state.set_hoisted_code_len(0);
+        self.lexer.reset_to_pos(source_pos as usize);
+        self.emitter = BytecodeEmitter::new(self.source, 0, has_column);
+        self.break_stack = BreakStack::new();
+        self.dropped_result = false;
+        Ok(())
+    }
+
+    fn parse_function_decl(
+        &mut self,
+        func_type: JSParseFunction,
+        mut func_name: JSValue,
+    ) -> Result<(), ParserError> {
+        let is_expr = func_type != JSParseFunction::Statement;
+        let mut name_pos = self.lexer.token().source_pos();
+        if matches!(func_type, JSParseFunction::Statement | JSParseFunction::Expr) {
+            self.next_token()?;
+            name_pos = self.lexer.token().source_pos();
+            if self.lexer.token().val() != TOK_IDENT && !is_expr {
+                return Err(self.parser_error(ERR_FUNCTION_NAME_EXPECTED));
+            }
+            if self.lexer.token().val() == TOK_IDENT {
+                func_name = self.lexer.token().value();
+                self.next_token()?;
+            }
+        }
+
+        let source_pos = self.lexer.token().source_pos();
+        let header = FunctionBytecodeHeader::new(
+            false,
+            false,
+            self.parse_state.has_column(),
+            0,
+            false,
+        );
+        let fields = FunctionBytecodeFields {
+            func_name,
+            byte_code: JS_NULL,
+            cpool: JS_NULL,
+            vars: JS_NULL,
+            ext_vars: JS_NULL,
+            stack_size: 0,
+            ext_vars_len: 0,
+            filename: JS_NULL,
+            pc2line: JS_NULL,
+            source_pos,
+        };
+        let mut func = OwnedFunctionBytecode::new(header, fields);
+
+        parse_expect1(&self.lexer, TOK_PAREN_OPEN)?;
+        self.lexer.skip_parens(None).map_err(ParserError::from)?;
+
+        parse_expect1(&self.lexer, TOK_BRACE_OPEN)?;
+        let skip_bits = self
+            .lexer
+            .skip_parens(if is_expr { Some(func_name) } else { None })
+            .map_err(ParserError::from)?;
+        func.as_mut()
+            .set_has_arguments((skip_bits & SKIP_HAS_ARGUMENTS) != 0);
+        func.as_mut()
+            .set_has_local_func_name((skip_bits & SKIP_HAS_FUNC_NAME) != 0);
+
+        let func_value = func.value();
+        self.nested_funcs.push(func);
+
+        let idx = self.cpool_add(func_value)? as u32;
+
+        if is_expr {
+            self.emitter.emit_op(OP_FCLOSURE);
+            self.emitter.emit_u16(idx as u16);
+            return Ok(());
+        }
+
+        let (var_kind, var_idx) = define_var(&mut self.parse_state, &mut self.alloc, func_name)
+            .map_err(|err| Self::var_error(err, name_pos as usize))?;
+        self.parse_state.add_hoisted_code_len(6);
+
+        let mut hoist_idx = var_idx;
+        if var_kind == JSVarRefKind::Var {
+            let arg_count = self.current_func_ref()?.arg_count() as i32;
+            hoist_idx = hoist_idx.saturating_add(arg_count);
+        }
+        let hoist_idx = u16::try_from(hoist_idx)
+            .map_err(|_| self.parser_error(ERR_TOO_MANY_LOCAL_VARS))?;
+        self.function_mut(func_value)?
+            .set_arg_count(hoist_idx.saturating_add(1));
+        Ok(())
+    }
+
+    fn parse_function_body(&mut self) -> Result<(), ParserError> {
+        self.next_token()?;
+        parse_expect(&mut self.lexer, TOK_PAREN_OPEN)?;
+        while self.lexer.token().val() != TOK_PAREN_CLOSE {
+            if self.lexer.token().val() != TOK_IDENT {
+                return Err(self.parser_error(ERR_MISSING_FORMAL_PARAMETER));
+            }
+            let name = self.lexer.token().value();
+            if value_matches_bytes(name, b"eval") || value_matches_bytes(name, b"arguments") {
+                return Err(self.parser_error(ERR_INVALID_ARGUMENT_NAME));
+            }
+            if find_var(&self.parse_state, name).is_some() {
+                return Err(self.parser_error(ERR_DUPLICATE_ARGUMENT_NAME));
+            }
+            add_var(&mut self.parse_state, &mut self.alloc, name)
+                .map_err(|err| Self::var_error(err, self.lexer.token().source_pos() as usize))?;
+            self.next_token()?;
+            if self.lexer.token().val() == TOK_PAREN_CLOSE {
+                break;
+            }
+            parse_expect(&mut self.lexer, ',' as i32)?;
+        }
+
+        let arg_count = self.parse_state.local_vars_len();
+        self.current_func_mut()?.set_arg_count(arg_count);
+
+        self.next_token()?;
+        parse_expect(&mut self.lexer, TOK_BRACE_OPEN)?;
+
+        let arg_count = arg_count as i32;
+        let source_pos = self.emitter.pc2line_source_pos();
+        let (has_arguments, has_local_name, func_name) = {
+            let func = self.current_func_ref()?;
+            (
+                func.has_arguments(),
+                func.has_local_func_name(),
+                func.func_name(),
+            )
+        };
+
+        if has_arguments {
+            let name = self
+                .lexer
+                .intern_identifier(b"arguments", 0)
+                .map_err(ParserError::from)?;
+            let var_idx = add_var(&mut self.parse_state, &mut self.alloc, name)
+                .map_err(|err| Self::var_error(err, source_pos as usize))?;
+            self.emitter.emit_op(OP_ARGUMENTS);
+            put_var(
+                &mut self.emitter,
+                JSVarRefKind::Var,
+                i32::from(var_idx) - arg_count,
+                source_pos,
+            )
+            .map_err(|err| Self::var_error(err, source_pos as usize))?;
+        }
+
+        if has_local_name {
+            let var_idx = add_var(&mut self.parse_state, &mut self.alloc, func_name)
+                .map_err(|err| Self::var_error(err, source_pos as usize))?;
+            self.emitter.emit_op(OP_THIS_FUNC);
+            put_var(
+                &mut self.emitter,
+                JSVarRefKind::Var,
+                i32::from(var_idx) - arg_count,
+                source_pos,
+            )
+            .map_err(|err| Self::var_error(err, source_pos as usize))?;
+        }
+
+        while self.lexer.token().val() != TOK_BRACE_CLOSE {
+            self.parse_source_element()?;
+        }
+
+        if self.emitter.is_live_code() {
+            self.emitter.emit_op(OP_RETURN_UNDEF);
+        }
+
+        self.next_token()?;
+        self.store_current_function(false)
+    }
+
+    fn store_current_function(&mut self, is_eval: bool) -> Result<(), ParserError> {
+        let hoisted_len = self.parse_state.hoisted_code_len();
+        self.define_hoisted_functions(is_eval)?;
+
+        let byte_code = self.emitter.byte_code().to_vec();
+        let byte_code_val = self.alloc.alloc_byte_array(byte_code);
+        let byte_code_len = self.emitter.byte_code().len() as u32;
+
+        let pc2line = self.emitter.finalize_pc2line(hoisted_len);
+        let pc2line_val = self.alloc.alloc_byte_array(pc2line);
+
+        let func = self.function_mut(self.parse_state.cur_func())?;
+        func.set_byte_code(byte_code_val);
+        func.set_pc2line(pc2line_val);
+        self.parse_state.set_byte_code_len(byte_code_len);
+        Ok(())
+    }
+
+    fn define_hoisted_functions(&mut self, is_eval: bool) -> Result<(), ParserError> {
+        let hoisted_len = self.parse_state.hoisted_code_len() as usize;
+        if hoisted_len == 0 {
+            return Ok(());
+        }
+
+        let mut hoisted = Vec::with_capacity(hoisted_len);
+        let func = self.current_func_ref()?;
+        let arg_count = func.arg_count() as i32;
+        let cpool_val = func.cpool();
+        if cpool_val != JS_NULL {
+            let cpool = self.value_array_ref(cpool_val)?;
+            let cpool_len = self.parse_state.cpool_len() as usize;
+            for (idx, value) in cpool.values().iter().take(cpool_len).enumerate() {
+                let Some(ptr) = self.func_ptr(*value) else {
+                    continue;
+                };
+                // SAFETY: pointer is owned by this parser.
+                let func = unsafe { ptr.as_ref() };
+                let marker = func.arg_count();
+                if marker == 0 {
+                    continue;
+                }
+                let mut var_idx = marker as i32 - 1;
+                let opcode = if is_eval {
+                    OP_PUT_VAR_REF_NOCHECK
+                } else if var_idx < arg_count {
+                    OP_PUT_ARG
+                } else {
+                    var_idx -= arg_count;
+                    OP_PUT_LOC
+                };
+                hoisted.push(OP_FCLOSURE.0 as u8);
+                hoisted.extend_from_slice(&(idx as u16).to_le_bytes());
+                hoisted.push(opcode.0 as u8);
+                hoisted.extend_from_slice(&(var_idx as u16).to_le_bytes());
+            }
+        }
+
+        self.emitter.prepend_bytes(&hoisted);
+        Ok(())
+    }
+
+    fn finalize_parsed_function(&mut self) -> Result<(), ParserError> {
+        convert_ext_vars_to_local_vars(&mut self.parse_state)
+            .map_err(|err| Self::var_error(err, 0))?;
+
+        let func_val = self.parse_state.cur_func();
+        let (cpool_val, vars_val, byte_code_val) = {
+            let func = self.function_ref(func_val)?;
+            (func.cpool(), func.vars(), func.byte_code())
+        };
+        let cpool_len = self.parse_state.cpool_len() as usize;
+        let local_len = self.parse_state.local_vars_len() as usize;
+        let byte_code_len = self.parse_state.byte_code_len() as usize;
+
+        if cpool_val != JS_NULL {
+            let cpool = self.value_array_mut(cpool_val)?;
+            cpool.shrink_to(cpool_len);
+        }
+        if vars_val != JS_NULL {
+            let vars = self.value_array_mut(vars_val)?;
+            vars.shrink_to(local_len);
+        }
+
+        if byte_code_val != JS_NULL {
+            let byte_code = self.byte_array_mut(byte_code_val)?;
+            byte_code.shrink_to(byte_code_len);
+        }
+
+        let byte_code = self.byte_array_ref(byte_code_val)?.buf();
+        let stack_size = compute_stack_size(byte_code).map_err(Self::stack_size_error)?;
+        self.function_mut(func_val)?.set_stack_size(stack_size);
+        Ok(())
+    }
+
+    fn parse_local_functions(&mut self, top_func: JSValue) -> Result<(), ParserError> {
+        #[derive(Clone, Copy)]
+        struct Frame {
+            func: JSValue,
+            parent: JSValue,
+            cpool_pos: usize,
+        }
+
+        let mut stack = vec![Frame {
+            func: top_func,
+            parent: JS_NULL,
+            cpool_pos: 0,
+        }];
+
+        while let Some(mut frame) = stack.pop() {
+            if frame.cpool_pos == 0 {
+                self.finalize_parsed_function()?;
+            }
+
+            let cpool_values = {
+                let func = self.function_ref(frame.func)?;
+                let cpool_val = func.cpool();
+                if cpool_val == JS_NULL {
+                    Vec::new()
+                } else {
+                    self.value_array_ref(cpool_val)?.values().to_vec()
+                }
+            };
+            let mut pos = frame.cpool_pos;
+            let mut pushed_child = false;
+            while pos < cpool_values.len() {
+                let value = cpool_values[pos];
+                if self.func_ptr(value).is_some() {
+                    let child_func = value;
+                    let source_pos = self.function_ref(child_func)?.source_pos();
+                    self.reset_for_function(child_func, source_pos)?;
+                    self.parse_function_body()?;
+
+                    frame.cpool_pos = pos + 1;
+                    stack.push(frame);
+                    stack.push(Frame {
+                        func: child_func,
+                        parent: frame.func,
+                        cpool_pos: 0,
+                    });
+                    pushed_child = true;
+                    break;
+                }
+                pos += 1;
+            }
+            if pushed_child {
+                continue;
+            }
+
+            if frame.parent != JS_NULL {
+                resolve_var_refs(&mut self.alloc, frame.func, frame.parent)
+                    .map_err(|err| Self::var_error(err, 0))?;
+            }
+
+            let (ext_vars_val, ext_vars_len) = {
+                let func = self.function_ref(frame.func)?;
+                (func.ext_vars(), func.ext_vars_len())
+            };
+            if ext_vars_val != JS_NULL {
+                let ext_vars = self.value_array_mut(ext_vars_val)?;
+                ext_vars.shrink_to(ext_vars_len as usize * 2);
+            }
+        }
+
+        Ok(())
     }
 
     fn parse_var(&mut self, in_accepted: bool) -> Result<(), ParserError> {
@@ -1079,6 +1591,21 @@ impl<'a> ExprParser<'a> {
         ParserError::new(ParserErrorKind::Static(err.message()), err.position())
     }
 
+    fn stack_size_error(err: StackSizeError) -> ParserError {
+        let message = match err.kind() {
+            crate::parser::stack_size::StackSizeErrorKind::InvalidOpcode => "invalid opcode",
+            crate::parser::stack_size::StackSizeErrorKind::BufferOverflow => {
+                "bytecode buffer overflow"
+            }
+            crate::parser::stack_size::StackSizeErrorKind::StackUnderflow => "stack underflow",
+            crate::parser::stack_size::StackSizeErrorKind::StackOverflow => "stack overflow",
+            crate::parser::stack_size::StackSizeErrorKind::InconsistentStackSize { .. } => {
+                "unconsistent stack size"
+            }
+        };
+        ParserError::new(ParserErrorKind::Static(message), err.pc() as usize)
+    }
+
     fn maybe_drop_result(&self, parse_flags: i32) -> bool {
         if !has_flag(parse_flags, PF_DROP) {
             return false;
@@ -1331,7 +1858,8 @@ impl<'a> ExprParser<'a> {
                             ));
                         }
                         TOK_FUNCTION => {
-                            return Err(self.parser_error(ERR_FUNCTION_UNSUPPORTED));
+                            self.parse_function_decl(JSParseFunction::Expr, JS_NULL)?;
+                            phase = Phase::Suffix;
                         }
                         TOK_NULL => {
                             self.emitter.emit_op(OP_NULL);
@@ -1435,7 +1963,7 @@ impl<'a> ExprParser<'a> {
                         continue;
                     }
                     let (prop_type, name) = parse_property_name(&mut self.lexer)?;
-                    if prop_type == super::parse_state::ParseProp::Field
+                    if prop_type == ParseProp::Field
                         && value_matches_bytes(name, b"__proto__")
                     {
                         if has_proto {
@@ -1453,7 +1981,7 @@ impl<'a> ExprParser<'a> {
                         put_u16(&mut bytes[pos..pos + 2], new_count);
                     }
 
-                    if prop_type == super::parse_state::ParseProp::Field {
+                    if prop_type == ParseProp::Field {
                         self.expect(':' as i32)?;
                         stack.push_int(prop_idx).map_err(Self::stack_error)?;
                         stack.push_int(parse_flags).map_err(Self::stack_error)?;
@@ -1465,7 +1993,22 @@ impl<'a> ExprParser<'a> {
                             0,
                         ));
                     }
-                    return Err(self.parser_error(ERR_FUNCTION_UNSUPPORTED));
+                    self.parse_function_decl(JSParseFunction::Method, name)?;
+                    let opcode = match prop_type {
+                        ParseProp::Method => OP_DEFINE_FIELD,
+                        ParseProp::Get => OP_DEFINE_GETTER,
+                        ParseProp::Set => OP_DEFINE_SETTER,
+                        ParseProp::Field => unreachable!("handled above"),
+                    };
+                    self.emitter.emit_op(opcode);
+                    self.emitter.emit_u16(prop_idx as u16);
+                    if self.lexer.token().val() == ',' as i32 {
+                        self.next_token()?;
+                        phase = Phase::ObjectLoop;
+                    } else {
+                        self.expect('}' as i32)?;
+                        phase = Phase::Suffix;
+                    }
                 }
                 Phase::ObjectAfterValue => {
                     if prop_idx >= 0 {
@@ -2408,8 +2951,9 @@ impl<'a> ExprParser<'a> {
 mod tests {
     use super::*;
     use crate::opcode::{
-        OP_ADD, OP_ARRAY_FROM, OP_DROP, OP_DUP, OP_GOTO, OP_IF_FALSE, OP_MUL, OP_PUT_LOC0,
-        OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_FALSE, OP_PUSH_TRUE, OP_RETURN, OPCODES,
+        OP_ADD, OP_ARGUMENTS, OP_ARRAY_FROM, OP_DEFINE_GETTER, OP_DROP, OP_DUP, OP_FCLOSURE,
+        OP_GOTO, OP_IF_FALSE, OP_MUL, OP_PUT_LOC, OP_PUT_LOC0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3,
+        OP_PUSH_FALSE, OP_PUSH_TRUE, OP_RETURN, OP_RETURN_UNDEF, OP_THIS_FUNC, OPCODES,
     };
 
     fn decode_ops(bytes: &[u8]) -> Vec<OpCode> {
@@ -2437,6 +2981,17 @@ mod tests {
         let mut parser = ExprParser::new(input.as_bytes());
         parser.parse_statement().expect("parse");
         decode_ops(parser.bytecode())
+    }
+
+    fn parse_program_ops(parser: &ExprParser) -> Vec<OpCode> {
+        let root = parser
+            .function_ref(parser.func.value())
+            .expect("root func");
+        let byte_code = parser
+            .byte_array_ref(root.byte_code())
+            .expect("bytecode")
+            .buf();
+        decode_ops(byte_code)
     }
 
     #[test]
@@ -2485,5 +3040,84 @@ mod tests {
     fn stmt_return_with_value_emits_return() {
         let ops = parse_statement_ops("return 1;");
         assert_eq!(ops, [OP_PUSH_1, OP_RETURN]);
+    }
+
+    #[test]
+    fn program_function_decl_hoists() {
+        let mut parser = ExprParser::new(b"function foo(){}");
+        parser.parse_program().expect("parse");
+
+        let ops = parse_program_ops(&parser);
+        assert_eq!(ops, [OP_FCLOSURE, OP_PUT_LOC, OP_RETURN_UNDEF]);
+
+        let root = parser
+            .function_ref(parser.func.value())
+            .expect("root func");
+        let cpool = parser.value_array_ref(root.cpool()).expect("cpool");
+        assert_eq!(cpool.values().len(), 1);
+
+        let func_val = cpool.values()[0];
+        let func = parser.function_ref(func_val).expect("func");
+        assert_eq!(func.arg_count(), 0);
+        let func_ops = decode_ops(
+            parser
+                .byte_array_ref(func.byte_code())
+                .expect("func bytecode")
+                .buf(),
+        );
+        assert_eq!(func_ops, [OP_RETURN_UNDEF]);
+    }
+
+    #[test]
+    fn program_named_function_expr_binds_name() {
+        let mut parser = ExprParser::new(b"var f = function foo(){ foo; };");
+        parser.parse_program().expect("parse");
+
+        let root = parser
+            .function_ref(parser.func.value())
+            .expect("root func");
+        let cpool = parser.value_array_ref(root.cpool()).expect("cpool");
+        let func_val = cpool.values()[0];
+        let func = parser.function_ref(func_val).expect("func");
+        assert!(func.has_local_func_name());
+
+        let func_ops = decode_ops(
+            parser
+                .byte_array_ref(func.byte_code())
+                .expect("func bytecode")
+                .buf(),
+        );
+        assert!(func_ops.contains(&OP_THIS_FUNC));
+    }
+
+    #[test]
+    fn program_arguments_usage_sets_flag() {
+        let mut parser = ExprParser::new(b"function foo(){ arguments; }");
+        parser.parse_program().expect("parse");
+
+        let root = parser
+            .function_ref(parser.func.value())
+            .expect("root func");
+        let cpool = parser.value_array_ref(root.cpool()).expect("cpool");
+        let func_val = cpool.values()[0];
+        let func = parser.function_ref(func_val).expect("func");
+        assert!(func.has_arguments());
+
+        let func_ops = decode_ops(
+            parser
+                .byte_array_ref(func.byte_code())
+                .expect("func bytecode")
+                .buf(),
+        );
+        assert!(func_ops.contains(&OP_ARGUMENTS));
+    }
+
+    #[test]
+    fn program_object_getter_emits_define_getter() {
+        let mut parser = ExprParser::new(b"({ get foo() { return 1; } });");
+        parser.parse_program().expect("parse");
+
+        let ops = parse_program_ops(&parser);
+        assert!(ops.contains(&OP_DEFINE_GETTER));
     }
 }

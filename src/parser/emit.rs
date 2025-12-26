@@ -145,6 +145,15 @@ impl<'a> BytecodeEmitter<'a> {
         }
     }
 
+    pub fn prepend_bytes(&mut self, prefix: &[u8]) {
+        if prefix.is_empty() {
+            return;
+        }
+        self.emit_insert(0, prefix.len());
+        self.byte_code[..prefix.len()].copy_from_slice(prefix);
+        self.clear_last_opcode();
+    }
+
     pub fn get_prev_opcode(&self) -> OpCode {
         match self.last_opcode_pos {
             Some(pos) => OpCode(self.byte_code[pos] as u16),
@@ -170,6 +179,14 @@ impl<'a> BytecodeEmitter<'a> {
 
     pub fn clear_last_opcode(&mut self) {
         self.last_opcode_pos = None;
+    }
+
+    pub fn finalize_pc2line(&mut self, hoisted_len: u32) -> Vec<u8> {
+        self.pc2line.append_hoisted_len(hoisted_len);
+        let byte_len = self.pc2line.bit_len().div_ceil(8) as usize;
+        let mut bytes = self.pc2line.bytes().to_vec();
+        bytes.truncate(byte_len);
+        bytes
     }
 
     pub fn emit_push_short_int(&mut self, val: i32) {

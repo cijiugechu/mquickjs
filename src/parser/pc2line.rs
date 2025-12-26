@@ -128,6 +128,20 @@ impl Pc2LineEmitter {
         self.source_pos = source_pos;
     }
 
+    pub fn append_hoisted_len(&mut self, mut len: u32) {
+        self.pad_to_byte();
+        let mut high = 0u32;
+        loop {
+            let byte = (len & 0x7f) | high;
+            self.put_bits(8, byte);
+            len >>= 7;
+            if len == 0 {
+                break;
+            }
+            high |= 0x80;
+        }
+    }
+
     fn put_bits_short(&mut self, n: u32, bits: u32) {
         debug_assert!((1..=25).contains(&n));
         debug_assert!(bits < (1u32 << n));
