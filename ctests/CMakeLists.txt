@@ -155,3 +155,20 @@ target_link_libraries(parser_bytecode_catch2_test PRIVATE
 add_dependencies(parser_bytecode_catch2_test mqjs_stdlib_headers)
 
 catch_discover_tests(parser_bytecode_catch2_test)
+
+add_executable(js_call_catch2_test
+  js_call_catch2_test.cpp
+)
+target_include_directories(js_call_catch2_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${MQUICKJS_SOURCE_DIR}
+)
+target_link_libraries(js_call_catch2_test PRIVATE
+  mquickjs_core
+  mqjs_stdlib_data
+  Catch2::Catch2WithMain
+  m
+)
+add_dependencies(js_call_catch2_test mqjs_stdlib_headers)
+
+catch_discover_tests(js_call_catch2_test)
