@@ -1,3 +1,4 @@
+use crate::containers::StringHeader;
 use crate::cutils::{unicode_to_utf8, utf8_get};
 use crate::dtoa::{js_atod, js_dtoa, AtodFlags, JS_DTOA_FORMAT_FREE};
 use crate::jsvalue::{
@@ -6,15 +7,20 @@ use crate::jsvalue::{
     value_get_special_value,
     value_to_ptr,
     JSValue,
+    JSWord,
     JS_TAG_STRING_CHAR,
 };
-use crate::string::js_string::JSString;
+use crate::memblock::{MbHeader, MTag};
 use core::cmp::Ordering;
+use core::mem::size_of;
+use core::ptr::{self, NonNull};
+use core::slice;
 
 const STRING_CHAR_BUF_LEN: usize = 5;
 
 // Invariants:
 // - Atom tables are sorted with `js_string_compare` (UTF-16 ordering semantics).
+// - Atom tables store heap-backed JSString memblocks (MTag::String).
 // - Unique strings are JSString values with the `is_unique` flag set.
 // - Unique string entries are weak references and may be pruned after GC.
 #[derive(Debug, Default)]
@@ -50,11 +56,14 @@ impl AtomTables {
         if !is_ptr(val) {
             return val;
         }
-        let ptr = match value_to_ptr::<JSString>(val) {
+        let ptr = match value_to_ptr::<u8>(val) {
             Some(ptr) => ptr,
             None => return val,
         };
-        if unsafe { ptr.as_ref() }.is_unique() {
+        let Some(header) = string_header(ptr) else {
+            return val;
+        };
+        if header.is_unique() {
             return val;
         }
 
@@ -67,14 +76,20 @@ impl AtomTables {
         match find_atom(&self.unique_strings, val) {
             Ok(idx) => self.unique_strings[idx],
             Err(insert_at) => {
-                let is_numeric = unsafe { is_numeric_string(ptr.as_ref()) };
-                // SAFETY: `val` is expected to reference a live `JSString`.
-                unsafe {
-                    ptr.as_ref().set_unique_flags(true, is_numeric);
-                }
+                let bytes = string_bytes_from_ptr(ptr, header);
+                let is_numeric = is_numeric_string(bytes, header.is_ascii());
+                set_unique_flags(ptr, header, is_numeric);
                 self.unique_strings.insert(insert_at, val);
                 val
             }
+        }
+    }
+
+    pub fn empty_string_atom(&self) -> Option<JSValue> {
+        if let Some(table) = self.rom_tables.first() {
+            table.first().copied()
+        } else {
+            self.unique_strings.first().copied()
         }
     }
 
@@ -131,11 +146,10 @@ fn is_sorted_atoms(values: &[JSValue]) -> bool {
         .all(|pair| cmp_js_values(pair[0], pair[1]) != Ordering::Greater)
 }
 
-fn is_numeric_string(string: &JSString) -> bool {
-    if string.is_empty() || !string.is_ascii() {
+fn is_numeric_string(bytes: &[u8], is_ascii: bool) -> bool {
+    if bytes.is_empty() || !is_ascii {
         return false;
     }
-    let bytes = string.buf();
     let mut idx = 0usize;
     if bytes[0] == b'-' {
         if bytes.len() == 1 {
@@ -166,10 +180,10 @@ fn is_numeric_string(string: &JSString) -> bool {
 
 fn string_bytes(val: JSValue, scratch: &mut [u8; STRING_CHAR_BUF_LEN]) -> Option<&[u8]> {
     if is_ptr(val) {
-        let ptr = value_to_ptr::<JSString>(val)?;
-        // SAFETY: `val` is expected to reference a live `JSString`.
-        let string = unsafe { ptr.as_ref() };
-        return Some(string.buf());
+        let ptr = value_to_ptr::<u8>(val)?;
+        let header = string_header(ptr)?;
+        let bytes = string_bytes_from_ptr(ptr, header);
+        return Some(bytes);
     }
     if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
         let codepoint = value_get_special_value(val) as u32;
@@ -224,65 +238,132 @@ fn js_string_compare(val1: JSValue, val2: JSValue) -> i32 {
     }
 }
 
+fn string_header(ptr: NonNull<u8>) -> Option<StringHeader> {
+    let header_word = unsafe {
+        // SAFETY: `ptr` points to readable header storage.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = MbHeader::from_word(header_word);
+    if header.tag() != MTag::String {
+        return None;
+    }
+    Some(StringHeader::from(header))
+}
+
+fn string_bytes_from_ptr<'a>(ptr: NonNull<u8>, header: StringHeader) -> &'a [u8] {
+    let len = header.len() as usize;
+    unsafe {
+        // SAFETY: caller ensures `ptr` points to a string memblock with `len` bytes.
+        slice::from_raw_parts(ptr.as_ptr().add(size_of::<JSWord>()), len)
+    }
+}
+
+fn set_unique_flags(ptr: NonNull<u8>, header: StringHeader, is_numeric: bool) {
+    let new_header = StringHeader::new(
+        header.len(),
+        true,
+        header.is_ascii(),
+        is_numeric,
+        header.header().gc_mark(),
+    );
+    unsafe {
+        // SAFETY: `ptr` points to writable string header storage.
+        ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), MbHeader::from(new_header).word());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jsvalue::{value_from_ptr, value_make_special};
+    use crate::containers::{string_alloc_size, JS_STRING_LEN_MAX};
+    use crate::heap::HeapLayout;
+    use crate::jsvalue::{value_from_ptr, value_make_special, JSValue, JSW};
+    use crate::memblock::MTag;
     use crate::string::js_string::is_ascii_bytes;
-    use core::ptr::NonNull;
+    use core::ptr::{self, NonNull};
 
-    fn make_string(
-        keepalive: &mut Vec<Box<JSString>>,
-        bytes: &[u8],
-        is_unique: bool,
-    ) -> JSValue {
-        let is_ascii = is_ascii_bytes(bytes);
-        let string = JSString::new(bytes.to_vec(), is_unique, is_ascii, false).unwrap();
-        keepalive.push(Box::new(string));
-        let index = keepalive.len() - 1;
-        let ptr = NonNull::from(keepalive[index].as_ref());
-        value_from_ptr(ptr)
+    struct HeapArena {
+        _storage: Vec<JSWord>,
+        layout: HeapLayout,
+    }
+
+    impl HeapArena {
+        fn new(words: usize) -> Self {
+            let mut storage = vec![0 as JSWord; words];
+            let base = NonNull::new(storage.as_mut_ptr() as *mut u8).unwrap();
+            let stack_top =
+                unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSW as usize)) };
+            let stack_bottom =
+                unsafe { NonNull::new_unchecked(stack_top.as_ptr() as *mut JSValue) };
+            let layout = HeapLayout::new(base, base, stack_top, stack_bottom, 0);
+            Self {
+                _storage: storage,
+                layout,
+            }
+        }
+
+        fn alloc_string(&mut self, bytes: &[u8], is_unique: bool) -> JSValue {
+            let is_ascii = is_ascii_bytes(bytes);
+            let len = JSWord::try_from(bytes.len()).unwrap();
+            assert!(len <= JS_STRING_LEN_MAX);
+            let size = string_alloc_size(len);
+            let ptr = self
+                .layout
+                .malloc(size, MTag::String, |_| {})
+                .expect("alloc string");
+            let header = StringHeader::new(len, is_unique, is_ascii, false, false);
+            unsafe {
+                // SAFETY: `ptr` is a valid string memblock allocation.
+                ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), MbHeader::from(header).word());
+                let payload = ptr.as_ptr().add(size_of::<JSWord>());
+                ptr::write_bytes(payload, 0, size - size_of::<JSWord>());
+                ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
+            }
+            value_from_ptr(ptr)
+        }
+    }
+
+    fn header_for(val: JSValue) -> StringHeader {
+        let ptr = value_to_ptr::<u8>(val).expect("string ptr");
+        string_header(ptr).expect("string header")
     }
 
     #[test]
     fn make_unique_string_inserts_and_marks_numeric() {
         let mut tables = AtomTables::new();
-        let mut keepalive = Vec::with_capacity(1);
-        let val = make_string(&mut keepalive, b"123", false);
+        let mut arena = HeapArena::new(64);
+        let val = arena.alloc_string(b"123", false);
         let out = tables.make_unique_string(val);
         assert_eq!(out, val);
         assert_eq!(tables.unique_len(), 1);
-        let ptr = value_to_ptr::<JSString>(val).unwrap();
-        let string = unsafe { ptr.as_ref() };
-        assert!(string.is_unique());
-        assert!(string.is_numeric());
+        let header = header_for(val);
+        assert!(header.is_unique());
+        assert!(header.is_numeric());
     }
 
     #[test]
     fn make_unique_string_non_numeric_stays_false() {
         let mut tables = AtomTables::new();
-        let mut keepalive = Vec::with_capacity(1);
-        let val = make_string(&mut keepalive, b"01", false);
+        let mut arena = HeapArena::new(64);
+        let val = arena.alloc_string(b"01", false);
         tables.make_unique_string(val);
-        let ptr = value_to_ptr::<JSString>(val).unwrap();
-        let string = unsafe { ptr.as_ref() };
-        assert!(string.is_unique());
-        assert!(!string.is_numeric());
+        let header = header_for(val);
+        assert!(header.is_unique());
+        assert!(!header.is_numeric());
     }
 
     #[test]
     fn make_unique_string_reuses_rom_table_entry() {
         let mut tables = AtomTables::new();
-        let mut keepalive = Vec::with_capacity(2);
-        let rom_val = make_string(&mut keepalive, b"foo", true);
-        let val = make_string(&mut keepalive, b"foo", false);
+        let mut arena = HeapArena::new(128);
+        let rom_val = arena.alloc_string(b"foo", true);
+        let val = arena.alloc_string(b"foo", false);
         tables.add_rom_table(vec![rom_val]);
         let out = tables.make_unique_string(val);
         assert_eq!(out, rom_val);
         assert_eq!(tables.unique_len(), 0);
-        let ptr = value_to_ptr::<JSString>(val).unwrap();
-        let string = unsafe { ptr.as_ref() };
-        assert!(!string.is_unique());
+        let header = header_for(val);
+        assert!(!header.is_unique());
     }
 
     #[test]
@@ -297,9 +378,9 @@ mod tests {
     #[test]
     fn make_unique_string_keeps_table_sorted() {
         let mut tables = AtomTables::new();
-        let mut keepalive = Vec::with_capacity(2);
-        let val_b = make_string(&mut keepalive, b"b", false);
-        let val_a = make_string(&mut keepalive, b"a", false);
+        let mut arena = HeapArena::new(64);
+        let val_b = arena.alloc_string(b"b", false);
+        let val_a = arena.alloc_string(b"a", false);
         tables.make_unique_string(val_b);
         tables.make_unique_string(val_a);
         assert_eq!(tables.unique_strings(), &[val_a, val_b]);
@@ -308,10 +389,10 @@ mod tests {
     #[test]
     fn sweep_unique_strings_removes_unmarked() {
         let mut tables = AtomTables::new();
-        let mut keepalive = Vec::with_capacity(3);
-        let val_a = make_string(&mut keepalive, b"a", false);
-        let val_b = make_string(&mut keepalive, b"b", false);
-        let val_c = make_string(&mut keepalive, b"c", false);
+        let mut arena = HeapArena::new(128);
+        let val_a = arena.alloc_string(b"a", false);
+        let val_b = arena.alloc_string(b"b", false);
+        let val_c = arena.alloc_string(b"c", false);
         tables.make_unique_string(val_a);
         tables.make_unique_string(val_b);
         tables.make_unique_string(val_c);
@@ -323,9 +404,9 @@ mod tests {
 
     #[test]
     fn string_compare_respects_utf16_surrogate_order() {
-        let mut keepalive = Vec::with_capacity(2);
-        let bmp = make_string(&mut keepalive, &[0xee, 0x80, 0x80], false);
-        let non_bmp = make_string(&mut keepalive, &[0xf0, 0x90, 0x80, 0x80], false);
+        let mut arena = HeapArena::new(128);
+        let bmp = arena.alloc_string(&[0xee, 0x80, 0x80], false);
+        let non_bmp = arena.alloc_string(&[0xf0, 0x90, 0x80, 0x80], false);
         assert_eq!(js_string_compare(bmp, non_bmp), 1);
         assert_eq!(js_string_compare(non_bmp, bmp), -1);
     }

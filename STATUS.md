@@ -84,6 +84,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSWriteFunc` and `JSInterruptHandler` typedefs into `src/capi_defs.rs`.
 - Ported `JS_EVAL_*` flags into `src/capi_defs.rs` with constant-value tests.
 - Added writable runtime/context foundations in `src/context.rs` and `src/runtime.rs`, including JSContext initialization, ROM atom relocation, minimal object allocation, and tests covering heap layout and root initialization.
+- Integrated runtime atoms/strings: ROM atom decode now allocates heap-backed strings, added `JSContext` string creation/interning helpers, and atom tables operate on heap string headers with new tests for empty/char strings and ROM atom placement.
 
 ## Parser port scope (C -> Rust)
 
@@ -102,7 +103,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 
 1. **Runtime/Context foundations:** implement writable `JSRuntime`/`JSContext` (new `src/runtime.rs`, `src/context.rs`) and wire them to `src/heap.rs`, `src/gc.rs`, and `src/gc_runtime.rs` for real allocations; normalize use of `src/jsvalue.rs`/`src/tagged_ptr.rs` in runtime paths.
 2. **GC roots + invariants:** connect parse state, atom tables, string caches, and temporary roots to the GC root enumeration; ensure `src/memblock.rs`, `src/containers.rs`, and `src/memblock_views.rs` are used for allocation validation, not just layout tests.
-3. **Atoms + strings in runtime:** bind `src/atom.rs`, `src/string/js_string.rs`, `src/string/string_char_buf.rs`, and `src/string/string_pos_cache.rs` to runtime lifetime and GC ownership (no implicit NULs).
+3. **Atoms + strings in runtime:** bind `src/atom.rs`, `src/string/js_string.rs`, `src/string/string_char_buf.rs`, and `src/string/string_pos_cache.rs` to runtime lifetime and GC ownership (heap-backed strings + ROM atom decode wired; remaining string ops pending).
 4. **Object + property system:** finish runtime behavior in `src/object.rs`, `src/property.rs`, and `src/rom_class.rs` (prototype chain, property lookup/define/update, class initialization hooks).
 5. **Functions + bytecode objects:** make `src/function_bytecode.rs`, `src/bytecode.rs`, and `src/closure_data.rs` real GC-allocated objects; hook up cpool/ext_vars/varref storage, and wire native-call bridges from `src/cfunction_data.rs`.
 6. **Interpreter loop:** port the opcode execution loop and call frames from `mquickjs-c/mquickjs.c` into a Rust interpreter module (e.g. `src/interpreter.rs`) that executes `src/opcode.rs`.

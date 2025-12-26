@@ -1,15 +1,21 @@
 use crate::atom::AtomTables;
 use crate::capi_defs::{JSInterruptHandler, JSWriteFunc};
-use crate::containers::{value_array_alloc_size, StringHeader, ValueArrayHeader};
+use crate::containers::{
+    string_alloc_size, value_array_alloc_size, StringHeader, ValueArrayHeader, JS_STRING_LEN_MAX,
+};
+use crate::cutils::utf8_get;
 use crate::enums::JSObjectClass;
 use crate::gc_ref::GcRefState;
 use crate::heap::{HeapLayout, JS_MIN_FREE_SIZE};
-use crate::jsvalue::{from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_to_ptr};
+use crate::jsvalue::{
+    from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_make_special, value_to_ptr,
+    JS_TAG_STRING_CHAR,
+};
 use crate::jsvalue::{JSValue, JSWord, JSW, JS_NULL, JS_UNDEFINED};
 use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
 use crate::stdlib::stdlib_image::{StdlibImage, StdlibWord};
-use crate::string::js_string::JSString;
+use crate::string::js_string::is_ascii_bytes;
 use crate::string::string_pos_cache::{StringPosCacheEntry, JS_STRING_POS_CACHE_SIZE};
 use core::ffi::c_void;
 use core::mem::size_of;
@@ -40,6 +46,8 @@ pub enum ContextError {
     RomOffsetOutOfBounds { offset: usize, len: usize },
     InvalidValueArrayHeader { offset: usize, tag: MTag },
     InvalidRomString { offset: usize, tag: MTag },
+    MissingEmptyAtom,
+    StringTooLong { len: usize, max: JSWord },
     OutOfMemory,
 }
 
@@ -147,8 +155,6 @@ pub struct JSContext {
     class_obj_offset: usize,
     atom_tables: AtomTables,
     rom_table: Option<RomTable>,
-    #[allow(clippy::vec_box)]
-    rom_strings: Vec<Box<JSString>>,
     n_rom_atom_tables: u8,
     string_pos_cache: [StringPosCacheEntry; JS_STRING_POS_CACHE_SIZE],
     string_pos_cache_counter: u8,
@@ -209,7 +215,6 @@ impl JSContext {
             class_obj_offset: ROOT_PREFIX_LEN + class_count as usize,
             atom_tables: AtomTables::new(),
             rom_table: None,
-            rom_strings: Vec::new(),
             n_rom_atom_tables: 0,
             string_pos_cache: [StringPosCacheEntry::new(JS_NULL, 0, 0); JS_STRING_POS_CACHE_SIZE],
             string_pos_cache_counter: 0,
@@ -306,6 +311,29 @@ impl JSContext {
         self.class_roots[ROOT_MINUS_ZERO]
     }
 
+    pub fn new_string_len(&mut self, bytes: &[u8]) -> Result<JSValue, ContextError> {
+        if bytes.is_empty() {
+            return self
+                .atom_tables
+                .empty_string_atom()
+                .ok_or(ContextError::MissingEmptyAtom);
+        }
+        if let Some(codepoint) = single_codepoint(bytes) {
+            return Ok(value_make_special(JS_TAG_STRING_CHAR, codepoint));
+        }
+        let is_ascii = is_ascii_bytes(bytes);
+        self.alloc_string_bytes(bytes, false, is_ascii, false)
+    }
+
+    pub fn new_string(&mut self, input: &str) -> Result<JSValue, ContextError> {
+        self.new_string_len(input.as_bytes())
+    }
+
+    pub fn intern_string(&mut self, bytes: &[u8]) -> Result<JSValue, ContextError> {
+        let val = self.new_string_len(bytes)?;
+        Ok(self.atom_tables.make_unique_string(val))
+    }
+
     fn init_atoms(&mut self, image: &StdlibImage, prepare_compilation: bool) -> Result<(), ContextError> {
         let rom_table = RomTable::from_image(image)?;
         let raw_atoms = rom_table.value_array(image.sorted_atoms_offset as usize)?;
@@ -372,12 +400,7 @@ impl JSContext {
             // SAFETY: bytes are within the ROM table bounds.
             slice::from_raw_parts(ptr.as_ptr().add(size_of::<JSWord>()), len)
         };
-        let string = JSString::new(bytes.to_vec(), header.is_unique(), header.is_ascii(), header.is_numeric())
-            .ok_or(ContextError::OutOfMemory)?;
-        let boxed = Box::new(string);
-        let ptr = NonNull::from(boxed.as_ref());
-        self.rom_strings.push(boxed);
-        Ok(value_from_ptr(ptr))
+        self.alloc_string_bytes(bytes, header.is_unique(), header.is_ascii(), header.is_numeric())
     }
 
     fn init_roots(&mut self) -> Result<(), ContextError> {
@@ -472,6 +495,52 @@ impl JSContext {
         Ok(value_from_ptr(ptr))
     }
 
+    fn alloc_string_bytes(
+        &mut self,
+        bytes: &[u8],
+        is_unique: bool,
+        is_ascii: bool,
+        is_numeric: bool,
+    ) -> Result<JSValue, ContextError> {
+        let len = JSWord::try_from(bytes.len()).map_err(|_| ContextError::StringTooLong {
+            len: bytes.len(),
+            max: JS_STRING_LEN_MAX,
+        })?;
+        if len > JS_STRING_LEN_MAX {
+            return Err(ContextError::StringTooLong {
+                len: bytes.len(),
+                max: JS_STRING_LEN_MAX,
+            });
+        }
+        let size = string_alloc_size(len);
+        let ptr = self
+            .heap
+            .malloc(size, MTag::String, |_| {})
+            .ok_or(ContextError::OutOfMemory)?;
+        let header = StringHeader::new(len, is_unique, is_ascii, is_numeric, false);
+        unsafe {
+            // SAFETY: `ptr` is a valid string allocation in the heap.
+            ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), MbHeader::from(header).word());
+            let payload = ptr.as_ptr().add(size_of::<JSWord>());
+            ptr::write_bytes(payload, 0, size - size_of::<JSWord>());
+            ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
+        }
+        Ok(value_from_ptr(ptr))
+    }
+
+}
+
+fn single_codepoint(bytes: &[u8]) -> Option<u32> {
+    let mut clen = 0usize;
+    let c = utf8_get(bytes, &mut clen);
+    if c < 0 {
+        return None;
+    }
+    if clen == bytes.len() {
+        Some(c as u32)
+    } else {
+        None
+    }
 }
 
 unsafe extern "C" fn dummy_write_func(_opaque: *mut c_void, _buf: *const c_void, _buf_len: usize) {}
@@ -479,9 +548,13 @@ unsafe extern "C" fn dummy_write_func(_opaque: *mut c_void, _buf: *const c_void,
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
-    use crate::jsvalue::{is_int, is_ptr, value_get_int};
+    use crate::jsvalue::{
+        is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value,
+        JS_TAG_STRING_CHAR,
+    };
     use crate::memblock::Float64Header;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
+    use core::slice;
 
     #[test]
     fn context_initializes_layout_and_roots() {
@@ -556,6 +629,59 @@ mod tests {
             ptr::read_unaligned(ptr.as_ptr().add(size_of::<JSWord>()) as *const f64)
         };
         assert_eq!(payload.to_bits(), (-0.0f64).to_bits());
+    }
+
+    #[test]
+    fn context_new_string_len_handles_empty_and_char() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let empty_atom = ctx
+            .atom_tables()
+            .empty_string_atom()
+            .expect("empty atom");
+        let empty = ctx.new_string_len(b"").expect("empty string");
+        assert_eq!(empty, empty_atom);
+
+        let char_val = ctx.new_string_len(b"a").expect("char string");
+        assert_eq!(value_get_special_tag(char_val), JS_TAG_STRING_CHAR);
+        assert_eq!(value_get_special_value(char_val), b'a' as i32);
+
+        let string_val = ctx.new_string_len(b"ab").expect("string");
+        assert!(is_ptr(string_val));
+        let ptr = value_to_ptr::<u8>(string_val).expect("string ptr");
+        let header_word = unsafe {
+            // SAFETY: ptr points to a readable String header.
+            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+        };
+        let header = StringHeader::from(MbHeader::from_word(header_word));
+        assert_eq!(header.len(), 2);
+        let bytes = unsafe {
+            // SAFETY: string payload lies within the allocation.
+            slice::from_raw_parts(ptr.as_ptr().add(size_of::<JSWord>()), 2)
+        };
+        assert_eq!(bytes, b"ab");
+    }
+
+    #[test]
+    fn context_rom_atoms_live_in_heap() {
+        let ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let empty_atom = ctx
+            .atom_tables()
+            .empty_string_atom()
+            .expect("empty atom");
+        let ptr = value_to_ptr::<u8>(empty_atom).expect("empty atom ptr");
+        assert!(ctx.heap().ptr_in_heap(ptr));
     }
 
     #[test]

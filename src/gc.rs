@@ -97,9 +97,14 @@ impl<'a> GcSweepFinalizers<'a> {
 pub fn gc_mark_all(heap: &HeapLayout, roots: &mut GcRoots<'_>, config: GcMarkConfig) {
     let mut marker = GcMarker::new(heap, config.mark_stack_slots);
 
-    if config.keep_atoms && let Some(tables) = roots.atom_tables.as_ref() {
+    if let Some(tables) = roots.atom_tables.as_ref() {
         let tables = &**tables;
         tables.visit_rom_atoms(|val| marker.mark_root(val));
+        if config.keep_atoms {
+            for &val in tables.unique_strings() {
+                marker.mark_root(val);
+            }
+        }
     }
 
     for &val in roots.class_roots {
