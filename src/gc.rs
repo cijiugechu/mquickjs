@@ -1,9 +1,10 @@
 use crate::atom::AtomTables;
+use crate::capi_defs::{JSCFinalizer, JSContext};
 use crate::containers::ValueArrayHeader;
 use crate::enums::JSObjectClass;
 use crate::function_bytecode::FunctionBytecode;
 use crate::gc_ref::GcRefState;
-use crate::heap::{mblock_size, HeapLayout};
+use crate::heap::{mblock_size, set_free_block, HeapLayout};
 use crate::jsvalue::{value_from_ptr, value_to_ptr, JSValue, JSWord, JS_NULL};
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
@@ -72,6 +73,27 @@ impl<'a> GcRoots<'a> {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct GcSweepFinalizers<'a> {
+    ctx: NonNull<JSContext>,
+    table: &'a [Option<JSCFinalizer>],
+}
+
+impl<'a> GcSweepFinalizers<'a> {
+    pub fn new(ctx: NonNull<JSContext>, table: &'a [Option<JSCFinalizer>]) -> Self {
+        Self { ctx, table }
+    }
+
+    fn finalizer_for(self, class_id: u8) -> Option<JSCFinalizer> {
+        let base = JSObjectClass::User as u8;
+        if class_id < base {
+            return None;
+        }
+        let idx = (class_id - base) as usize;
+        self.table.get(idx).copied().flatten()
+    }
+}
+
 pub fn gc_mark_all(heap: &HeapLayout, roots: &mut GcRoots<'_>, config: GcMarkConfig) {
     let mut marker = GcMarker::new(heap, config.mark_stack_slots);
 
@@ -121,6 +143,96 @@ pub fn gc_is_marked(heap: &HeapLayout, val: JSValue) -> bool {
     }
     let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
     MbHeader::from_word(header_word).gc_mark()
+}
+
+/// # Safety
+/// The heap layout must refer to a valid, contiguous heap buffer with
+/// internally consistent memblocks.
+pub unsafe fn gc_sweep(heap: &mut HeapLayout, finalizers: Option<&GcSweepFinalizers<'_>>) {
+    let mut ptr = heap.heap_base().as_ptr();
+    let heap_free = heap.heap_free().as_ptr();
+
+    while ptr < heap_free {
+        let size = unsafe {
+            // SAFETY: `ptr` is within the heap and points at a memblock header.
+            mblock_size(NonNull::new_unchecked(ptr))
+        };
+        debug_assert!(size > 0);
+        let header_word = unsafe {
+            // SAFETY: `ptr` points to a readable header word.
+            ptr::read_unaligned(ptr.cast::<JSWord>())
+        };
+        let header = MbHeader::from_word(header_word);
+
+        if header.gc_mark() {
+            let cleared = header.with_gc_mark(false);
+            unsafe {
+                // SAFETY: `ptr` points to writable header storage.
+                ptr::write_unaligned(ptr.cast::<JSWord>(), cleared.word());
+            }
+            ptr = unsafe {
+                // SAFETY: `ptr` stays within the heap after advancing by `size`.
+                ptr.add(size)
+            };
+            continue;
+        }
+
+        if header.tag() == MTag::Object {
+            let obj_header = ObjectHeader::from_word(header_word);
+            if let Some(finalizers) = finalizers
+                && let Some(finalizer) = finalizers.finalizer_for(obj_header.class_id())
+            {
+                let obj = ptr as *mut Object;
+                let payload = unsafe {
+                    // SAFETY: `obj` points at a valid object payload within the heap.
+                    Object::payload_ptr(obj)
+                };
+                let user = unsafe {
+                    // SAFETY: payload layout matches the object header for user classes.
+                    core::ptr::addr_of!((*payload).user)
+                };
+                let opaque = unsafe {
+                    // SAFETY: `user` points at initialized user data.
+                    (*user).opaque()
+                };
+                unsafe {
+                    // SAFETY: caller guarantees `ctx` and `opaque` are valid for the finalizer.
+                    finalizer(finalizers.ctx.as_ptr(), opaque);
+                }
+            }
+        }
+
+        let mut next_ptr = unsafe {
+            // SAFETY: `ptr` stays within the heap after advancing by `size`.
+            ptr.add(size)
+        };
+        while next_ptr < heap_free {
+            let next_header_word = unsafe {
+                // SAFETY: `next_ptr` points to a readable header word.
+                ptr::read_unaligned(next_ptr.cast::<JSWord>())
+            };
+            let next_header = MbHeader::from_word(next_header_word);
+            if next_header.gc_mark() {
+                break;
+            }
+            let next_size = unsafe {
+                // SAFETY: `next_ptr` is within the heap and points at a memblock header.
+                mblock_size(NonNull::new_unchecked(next_ptr))
+            };
+            debug_assert!(next_size > 0);
+            next_ptr = unsafe {
+                // SAFETY: `next_ptr` stays within the heap after advancing by `next_size`.
+                next_ptr.add(next_size)
+            };
+        }
+
+        let span = next_ptr as usize - ptr as usize;
+        unsafe {
+            // SAFETY: `ptr` is a valid memblock start and `span` stays within the heap.
+            set_free_block(NonNull::new_unchecked(ptr), span);
+        }
+        ptr = next_ptr;
+    }
 }
 
 fn ptr_in_heap(heap: &HeapLayout, ptr: NonNull<u8>) -> bool {
@@ -436,9 +548,12 @@ mod tests {
     use crate::containers::{ByteArrayHeader, ValueArrayHeader};
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
     use crate::heap::HeapLayout;
-    use crate::jsvalue::{value_from_ptr, JSW};
+    use crate::jsvalue::{value_from_ptr, JSW, JS_NULL};
     use crate::memblock::{MbHeader, MTag};
-    use crate::object::Object;
+    use crate::object::{Object, ObjectUserData};
+    use crate::capi_defs::JSContext;
+    use core::ffi::c_void;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     struct HeapArena {
         _storage: Vec<JSWord>,
@@ -615,5 +730,106 @@ mod tests {
 
         assert_eq!(cache[0].str(), JS_NULL);
         assert_eq!(cache[1].str(), JS_NULL);
+    }
+
+    #[test]
+    fn sweep_coalesces_unmarked_blocks_and_calls_finalizer() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static LAST_OPAQUE: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn record_finalizer(_ctx: *mut JSContext, opaque: *mut c_void) {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            LAST_OPAQUE.store(opaque as usize, Ordering::SeqCst);
+        }
+
+        let mut arena = HeapArena::new(256, 16);
+
+        let live_size = crate::containers::byte_array_alloc_size(3);
+        let live_ptr = arena
+            .layout
+            .malloc(live_size, MTag::ByteArray, |_| {})
+            .unwrap();
+        let live_header = ByteArrayHeader::new(3, true);
+        unsafe {
+            // SAFETY: `live_ptr` comes from the heap allocator and is writable.
+            write_header(live_ptr, MbHeader::from(live_header));
+        }
+
+        let obj_size = Object::PAYLOAD_OFFSET + JSW as usize;
+        let obj_ptr = arena
+            .layout
+            .malloc(obj_size, MTag::Object, |_| {})
+            .unwrap();
+        let obj_header = ObjectHeader::new(JSObjectClass::User as u8, 1, false);
+        unsafe {
+            // SAFETY: `obj_ptr` comes from the heap allocator and is writable.
+            write_header(obj_ptr, obj_header.header());
+        }
+        let obj = obj_ptr.as_ptr() as *mut Object;
+        let mut opaque_byte = 0u8;
+        let opaque_ptr = core::ptr::addr_of_mut!(opaque_byte) as *mut c_void;
+        unsafe {
+            // SAFETY: object fields are within the allocated object payload.
+            *Object::proto_ptr(obj) = JS_NULL;
+            *Object::props_ptr(obj) = JS_NULL;
+            let payload = Object::payload_ptr(obj);
+            let user = core::ptr::addr_of_mut!((*payload).user);
+            *user = ObjectUserData::new(opaque_ptr);
+        }
+
+        let dead_size = crate::containers::byte_array_alloc_size(2);
+        let dead_ptr = arena
+            .layout
+            .malloc(dead_size, MTag::ByteArray, |_| {})
+            .unwrap();
+        let dead_header = ByteArrayHeader::new(2, false);
+        unsafe {
+            // SAFETY: `dead_ptr` comes from the heap allocator and is writable.
+            write_header(dead_ptr, MbHeader::from(dead_header));
+        }
+        let obj_block_size = unsafe {
+            // SAFETY: `obj_ptr` points at a valid memblock header.
+            crate::heap::mblock_size(obj_ptr)
+        };
+        let dead_block_size = unsafe {
+            // SAFETY: `dead_ptr` points at a valid memblock header.
+            crate::heap::mblock_size(dead_ptr)
+        };
+
+        let mut ctx_byte = 0u8;
+        let ctx_ptr = NonNull::new(&mut ctx_byte as *mut u8)
+            .unwrap()
+            .cast::<JSContext>();
+        let finalizers: [Option<JSCFinalizer>; 1] = [Some(record_finalizer)];
+        let finalizer_table = GcSweepFinalizers::new(ctx_ptr, finalizers.as_slice());
+
+        unsafe {
+            // SAFETY: the heap arena has valid, contiguous memblocks.
+            gc_sweep(&mut arena.layout, Some(&finalizer_table));
+        }
+
+        let live_word = unsafe {
+            // SAFETY: `live_ptr` points to a readable header word.
+            ptr::read_unaligned(live_ptr.as_ptr().cast::<JSWord>())
+        };
+        let live_header = MbHeader::from_word(live_word);
+        assert_eq!(live_header.tag(), MTag::ByteArray);
+        assert!(!live_header.gc_mark());
+
+        let free_word = unsafe {
+            // SAFETY: `obj_ptr` points to a readable header word.
+            ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
+        };
+        let free_header = MbHeader::from_word(free_word);
+        assert_eq!(free_header.tag(), MTag::Free);
+
+        let free_size = unsafe {
+            // SAFETY: `obj_ptr` now points to the free block header.
+            crate::heap::mblock_size(obj_ptr)
+        };
+        assert_eq!(free_size, obj_block_size + dead_block_size);
+
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(LAST_OPAQUE.load(Ordering::SeqCst), opaque_ptr as usize);
     }
 }
