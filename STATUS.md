@@ -18,7 +18,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Confirmed the `#if 0` opcodes in `mquickjs-c/mquickjs_opcode.h` are unused in both build and runtime code; only a debug-printing branch references them and is also disabled, so Rust should ignore them unless a future feature flag is desired.
 - Dropped trivial one-line wrappers and C-style `BOOL` aliases from `src/cutils.rs` in favor of direct Rust std/core usage, per the updated porting rule in `AGENTS.md`.
 - Ported `mquickjs-c/softfp_template_icvt.h` into `src/softfp.rs` (sf32/sf64 integer<->float conversions and rounding modes) with tests.
-- Ported a first libm slice from `mquickjs-c/libm.{c,h}` into `src/js_libm.rs` (floor/ceil/trunc/round_inf/fabs/sqrt/lrint/scalbn) with tests and wired into `src/lib.rs`.
+- Ported `mquickjs-c/libm.{c,h}` into `src/js_libm.rs` (floor/ceil/trunc/round_inf/fabs/sqrt/lrint/scalbn, rem_pio2 + sin/cos/tan, asin/acos/atan/atan2, exp/log/log2/log10/pow) with tests and wired into `src/lib.rs`.
 - Ported `js_fmod` using the `fmod_sf64` soft-float implementation in `src/softfp.rs`, with edge-case tests (NaN/Inf/signed zero).
 - Added a Rust `build.rs` + `crates/mquickjs-build` generator scaffold that mirrors `mquickjs_build.c` logic (atoms/properties/cfunc metadata) and emits a `stdlib_image.rs` table with tests around core invariants.
 - Ported `mquickjs-c/dtoa.{h,c}` into `src/dtoa.rs` using `ryu-js`, `lexical-core`, and `libm` for JS-style number formatting/parsing (radix handling, minus-zero, exponent modes, legacy octal, underscores) with tests; flag handling now uses `bitflags`.
