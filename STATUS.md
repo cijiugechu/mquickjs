@@ -75,6 +75,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added GC mark phase + root enumeration in `src/gc.rs` (bounded mark stack, overflow rescans, object/value-array traversal) with tests; exposed GC root helpers for atom ROM tables, parse state, GC refs, and string pos cache cleanup.
 - Added GC sweep/coalesce pass in `src/gc.rs` to reset marks, merge free blocks, and optionally call user-class finalizers, with tests covering finalizer calls and coalescing.
 - Added Rust-only stdlib/bytecode definitions in `src/stdlib_def.rs` (builtin prototype enum + bytecode header constants/structs), avoiding C ABI function tables.
+- Ported bytecode relocation helpers (`JS_IsBytecode`, `JS_RelocateBytecode2`, `JS_RelocateBytecode`) into `src/bytecode.rs` with strict-provenance-safe pointer rebasing, pointer-relocation tests, and a unique-string resolver hook.
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.
 - Ported C API layout definitions from `mquickjs.h` into `src/capi_defs.rs` (JSCStringBuf, JSCFunctionDefKind/JSCFunctionType/JSCFunctionDef, JSSTDLibraryDef) with size/align/offset tests and an opaque `JSContext` handle type.
 - Ported `JSWriteFunc` and `JSInterruptHandler` typedefs into `src/capi_defs.rs`.

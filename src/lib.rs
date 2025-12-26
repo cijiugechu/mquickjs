@@ -12,6 +12,7 @@ pub mod memblock;
 pub mod containers;
 pub mod enums;
 pub mod property;
+pub mod bytecode;
 pub mod array_data;
 pub mod error_data;
 pub mod cfunction_data;
