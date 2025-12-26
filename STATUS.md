@@ -83,6 +83,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported C API layout definitions from `mquickjs.h` into `src/capi_defs.rs` (JSCStringBuf, JSCFunctionDefKind/JSCFunctionType/JSCFunctionDef, JSSTDLibraryDef) with size/align/offset tests and an opaque `JSContext` handle type.
 - Ported `JSWriteFunc` and `JSInterruptHandler` typedefs into `src/capi_defs.rs`.
 - Ported `JS_EVAL_*` flags into `src/capi_defs.rs` with constant-value tests.
+- Added writable runtime/context foundations in `src/context.rs` and `src/runtime.rs`, including JSContext initialization, ROM atom relocation, minimal object allocation, and tests covering heap layout and root initialization.
 
 ## Parser port scope (C -> Rust)
 

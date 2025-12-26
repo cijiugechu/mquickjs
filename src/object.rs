@@ -141,6 +141,8 @@ pub struct Object {
 
 impl Object {
     pub const PAYLOAD_OFFSET: usize = core::mem::offset_of!(Object, payload);
+    pub const PROTO_OFFSET: usize = core::mem::offset_of!(Object, proto);
+    pub const PROPS_OFFSET: usize = core::mem::offset_of!(Object, props);
 
     pub const fn new(header: ObjectHeader, proto: JSValue, props: JSValue, payload: ObjectPayload) -> Self {
         Self {

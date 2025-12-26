@@ -31,6 +31,8 @@ pub mod heap;
 pub mod atom;
 pub mod gc;
 pub mod gc_runtime;
+pub mod context;
+pub mod runtime;
 
 pub use parser::pos as parser_pos;
 pub use parser::types as parser_types;

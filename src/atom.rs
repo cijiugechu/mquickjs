@@ -33,6 +33,11 @@ impl AtomTables {
         self.rom_tables.push(table);
     }
 
+    pub fn set_unique_strings(&mut self, values: Vec<JSValue>) {
+        debug_assert!(is_sorted_atoms(&values));
+        self.unique_strings = values;
+    }
+
     pub fn unique_strings(&self) -> &[JSValue] {
         &self.unique_strings
     }
