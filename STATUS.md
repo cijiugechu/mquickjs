@@ -97,6 +97,18 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Tests to port together: `test_json`, `test_large_eval_parse_stack`, `test_regexp`, `test_line_column_numbers` plus helpers `get_string_pos`, `check_error_pos`, `eval_error`.
 - Key invariants to preserve: non-recursive parser + explicit parse stack, `TOK_*` ordering tied to `JS_ATOM_*`, `got_lf` + `is_regexp_allowed` for ASI/regexp literal disambiguation, parse stack uses JSValue + `JS_STACK_SLACK`, error positions (JSON/RegExp use `buf_pos`, JS parser uses `token.source_pos`), `ctx->parse_state` must track GC moves of `source_buf`.
 
+## Runtime roadmap (no CLI, stdlib required)
+
+1. **Runtime/Context foundations:** implement writable `JSRuntime`/`JSContext` (new `src/runtime.rs`, `src/context.rs`) and wire them to `src/heap.rs`, `src/gc.rs`, and `src/gc_runtime.rs` for real allocations; normalize use of `src/jsvalue.rs`/`src/tagged_ptr.rs` in runtime paths.
+2. **GC roots + invariants:** connect parse state, atom tables, string caches, and temporary roots to the GC root enumeration; ensure `src/memblock.rs`, `src/containers.rs`, and `src/memblock_views.rs` are used for allocation validation, not just layout tests.
+3. **Atoms + strings in runtime:** bind `src/atom.rs`, `src/string/js_string.rs`, `src/string/string_char_buf.rs`, and `src/string/string_pos_cache.rs` to runtime lifetime and GC ownership (no implicit NULs).
+4. **Object + property system:** finish runtime behavior in `src/object.rs`, `src/property.rs`, and `src/rom_class.rs` (prototype chain, property lookup/define/update, class initialization hooks).
+5. **Functions + bytecode objects:** make `src/function_bytecode.rs`, `src/bytecode.rs`, and `src/closure_data.rs` real GC-allocated objects; hook up cpool/ext_vars/varref storage, and wire native-call bridges from `src/cfunction_data.rs`.
+6. **Interpreter loop:** port the opcode execution loop and call frames from `mquickjs-c/mquickjs.c` into a Rust interpreter module (e.g. `src/interpreter.rs`) that executes `src/opcode.rs`.
+7. **Parser integration:** replace the temporary allocator in `src/parser/runtime.rs` with GC-managed allocations; route `src/parser/entry.rs` through `JS_Parse2`/`JS_Parse`/`JS_Eval` and map `ParserError` to runtime exceptions.
+8. **Stdlib (no CLI):** port builtin initialization from `mquickjs-c/mqjs_stdlib.c` + `mquickjs-c/mquickjs.c`, registering globals via `src/stdlib/mod.rs`, `src/stdlib/stdlib_def.rs`, and `src/stdlib/stdlib_image.rs`.
+9. **Runtime tests:** drive eval-based tests from `mquickjs-c/tests/*.js` without CLI, validating parser/runtime/stdlib integration.
+
 ## Cutils assessment
 
 Port (custom Rust code required):
