@@ -53,6 +53,23 @@ impl<'a> GcRuntimeRoots<'a> {
         self.string_pos_cache = Some(cache);
         self
     }
+
+    pub(crate) fn mark_roots(&mut self) -> GcRoots<'_> {
+        let mut mark_roots = GcRoots::new(&*self.class_roots, &*self.stack_roots);
+        if let Some(refs) = self.gc_refs {
+            mark_roots = mark_roots.with_gc_refs(refs);
+        }
+        if let Some(state) = self.parse_state.as_deref() {
+            mark_roots = mark_roots.with_parse_state(state);
+        }
+        if let Some(tables) = self.atom_tables.as_deref_mut() {
+            mark_roots = mark_roots.with_atom_tables(tables);
+        }
+        if let Some(cache) = self.string_pos_cache.as_deref_mut() {
+            mark_roots = mark_roots.with_string_pos_cache(cache);
+        }
+        mark_roots
+    }
 }
 
 impl RootVisitor for GcRuntimeRoots<'_> {

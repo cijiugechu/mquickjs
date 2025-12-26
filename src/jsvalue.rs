@@ -44,11 +44,11 @@ pub const JS_EXCEPTION: JSValue = value_make_special(JS_TAG_EXCEPTION, JS_EX_NOR
 pub const JS_SHORTINT_MIN: i32 = -(1 << 30);
 pub const JS_SHORTINT_MAX: i32 = (1 << 30) - 1;
 
-const fn from_bits(bits: JSWord) -> JSValue {
+pub(crate) const fn from_bits(bits: JSWord) -> JSValue {
     JSValue(TaggedPtr::from_bits(bits as usize))
 }
 
-fn raw_bits(v: JSValue) -> JSWord {
+pub(crate) fn raw_bits(v: JSValue) -> JSWord {
     v.0.addr() as JSWord
 }
 
