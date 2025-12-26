@@ -2,6 +2,7 @@ pub mod pos;
 pub mod pc2line;
 pub mod emit;
 pub mod control_flow;
+pub mod entry;
 pub mod expr;
 pub mod error;
 pub mod lexer;

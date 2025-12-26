@@ -257,6 +257,14 @@ impl<'a> ExprParser<'a> {
         }
     }
 
+    pub fn has_column(&self) -> bool {
+        self.parse_state.has_column()
+    }
+
+    pub fn set_has_column(&mut self, has_column: bool) {
+        self.parse_state.set_has_column(has_column);
+    }
+
     pub fn parse_expression(&mut self, parse_flags: u32) -> Result<(), ParserError> {
         self.lexer.next_token().map_err(ParserError::from)?;
         self.parse_expr2(parse_flags as i32)
