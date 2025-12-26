@@ -40,6 +40,8 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added `JSString` backing storage in `src/string/js_string.rs` (raw bytes + header, no implicit NUL) and wired it into `src/string/mod.rs`.
 - Ported atom/unique-string table management into `src/atom.rs` (sorted lookup, UTF-16 compare semantics, numeric string detection, GC-style sweep) with tests.
 - Added full `JSProperty` layout and `JSClosureData` into `src/property.rs` and `src/closure_data.rs` with roundtrip tests.
+- Implemented runtime object property tables in `src/property.rs` (hash lookup, create/define/update/delete, ROM promotion, array index fast path) with unit tests.
+- Made ROM atom decoding Miri-safe and stabilized heap storage provenance in `src/context.rs` (`HeapStorage` + raw-bit ROM offsets) to avoid stacked-borrows UB.
 - Added a read-only `JSContext` shell (`ContextShell`) capturing memory map fields and invariants in `src/context_shell.rs` with validation tests.
 - Added read-only views for `JSFloat64`, `JSByteArray`, and `JSValueArray` in `src/memblock_views.rs` with roundtrip tests.
 - Ported `JSObject` layout plus `JSRegExp`/`JSObjectUserData` into `src/object.rs` with header/payload tests.

@@ -8,7 +8,7 @@ use crate::enums::JSObjectClass;
 use crate::gc_ref::GcRefState;
 use crate::heap::{HeapLayout, JS_MIN_FREE_SIZE};
 use crate::jsvalue::{
-    from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_make_special, value_to_ptr,
+    from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_make_special,
     JS_TAG_STRING_CHAR,
 };
 use crate::jsvalue::{JSValue, JSWord, JSW, JS_NULL, JS_UNDEFINED};
@@ -29,6 +29,32 @@ const ROOT_CURRENT_EXCEPTION: usize = 0;
 const ROOT_EMPTY_PROPS: usize = 1;
 const ROOT_GLOBAL_OBJ: usize = 2;
 const ROOT_MINUS_ZERO: usize = 3;
+
+struct HeapStorage {
+    ptr: NonNull<[JSWord]>,
+}
+
+impl HeapStorage {
+    fn new(words: usize) -> Self {
+        let boxed = vec![0 as JSWord; words].into_boxed_slice();
+        let ptr = NonNull::new(Box::into_raw(boxed)).expect("heap storage must be non-null");
+        Self { ptr }
+    }
+
+    fn base_ptr(&self) -> NonNull<u8> {
+        let data = self.ptr.as_ptr().cast::<JSWord>();
+        NonNull::new(data as *mut u8).expect("heap storage must be non-null")
+    }
+}
+
+impl Drop for HeapStorage {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: ptr was created from Box::into_raw in HeapStorage::new.
+            drop(Box::from_raw(self.ptr.as_ptr()));
+        }
+    }
+}
 
 /// C: JSContext initialization parameters (JS_NewContext2).
 pub struct ContextConfig<'a> {
@@ -145,7 +171,7 @@ impl RomTable {
 /// - ROM atoms remain alive via AtomTables/ROM table ownership.
 #[allow(dead_code)]
 pub struct JSContext {
-    heap_storage: Box<[JSWord]>,
+    heap_storage: HeapStorage,
     heap: HeapLayout,
     sp: NonNull<JSValue>,
     fp: NonNull<JSValue>,
@@ -189,9 +215,8 @@ impl JSContext {
             .map_err(|_| ContextError::ClassCountOverflow(config.image.class_count))?;
 
         let words = mem_size / word_bytes;
-        let mut heap_storage = vec![0 as JSWord; words].into_boxed_slice();
-        let base = NonNull::new(heap_storage.as_mut_ptr() as *mut u8)
-            .expect("heap storage must be non-null");
+        let heap_storage = HeapStorage::new(words);
+        let base = heap_storage.base_ptr();
         let stack_top = unsafe {
             // SAFETY: heap_storage has `mem_size` writable bytes.
             NonNull::new_unchecked(base.as_ptr().add(mem_size))
@@ -206,7 +231,13 @@ impl JSContext {
 
         let mut ctx = Self {
             heap_storage,
-            heap,
+            heap: HeapLayout::new(
+                NonNull::dangling(),
+                NonNull::dangling(),
+                NonNull::dangling(),
+                NonNull::dangling(),
+                JS_MIN_FREE_SIZE as usize,
+            ),
             sp: stack_bottom,
             fp: stack_bottom,
             class_roots,
@@ -228,6 +259,8 @@ impl JSContext {
             current_exception_is_uncatchable: false,
             js_call_rec_count: 0,
         };
+
+        ctx.heap = heap;
 
         ctx.init_atoms(config.image, config.prepare_compilation)?;
         ctx.init_roots()?;
@@ -311,6 +344,13 @@ impl JSContext {
         self.class_roots[ROOT_MINUS_ZERO]
     }
 
+    pub fn is_rom_ptr(&self, ptr: NonNull<u8>) -> bool {
+        let addr = ptr.as_ptr() as usize;
+        let base = self.heap.heap_base().as_ptr() as usize;
+        let end = self.stack_top().as_ptr() as usize;
+        addr < base || addr >= end
+    }
+
     pub fn new_string_len(&mut self, bytes: &[u8]) -> Result<JSValue, ContextError> {
         if bytes.is_empty() {
             return self
@@ -356,11 +396,9 @@ impl JSContext {
         if !is_ptr(val) {
             return Ok(val);
         }
-        let Some(ptr) = value_to_ptr::<u8>(val) else {
-            return Ok(val);
-        };
+        let tagged = raw_bits(val) as usize;
+        let addr = tagged & !((JSW as usize) - 1);
         let base = rom_table.base_ptr() as usize;
-        let addr = ptr.as_ptr() as usize;
         if addr < base {
             return Err(ContextError::RomOffsetOutOfBounds {
                 offset: addr,
@@ -368,6 +406,10 @@ impl JSContext {
             });
         }
         let offset = addr - base;
+        let ptr = unsafe {
+            // SAFETY: offset is bounds-checked against the ROM table size.
+            rom_table.base_ptr().add(offset)
+        };
         let end = offset + size_of::<JSWord>();
         if end > rom_table.bytes_len() {
             return Err(ContextError::RomOffsetOutOfBounds {
@@ -377,7 +419,7 @@ impl JSContext {
         }
         let header_word = unsafe {
             // SAFETY: ptr is within the ROM table bounds.
-            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+            ptr::read_unaligned(ptr.cast::<JSWord>())
         };
         let header = MbHeader::from_word(header_word);
         if header.tag() != MTag::String {
@@ -398,7 +440,7 @@ impl JSContext {
         }
         let bytes = unsafe {
             // SAFETY: bytes are within the ROM table bounds.
-            slice::from_raw_parts(ptr.as_ptr().add(size_of::<JSWord>()), len)
+            slice::from_raw_parts(ptr.add(size_of::<JSWord>()), len)
         };
         self.alloc_string_bytes(bytes, header.is_unique(), header.is_ascii(), header.is_numeric())
     }
@@ -434,7 +476,7 @@ impl JSContext {
         Ok(value_from_ptr(ptr))
     }
 
-    fn alloc_value_array(&mut self, size: usize) -> Result<NonNull<u8>, ContextError> {
+    pub(crate) fn alloc_value_array(&mut self, size: usize) -> Result<NonNull<u8>, ContextError> {
         let alloc_size = value_array_alloc_size(size as JSWord);
         let ptr = self
             .heap
@@ -452,7 +494,7 @@ impl JSContext {
         Ok(ptr)
     }
 
-    fn alloc_object(
+    pub(crate) fn alloc_object(
         &mut self,
         class_id: JSObjectClass,
         proto: JSValue,
@@ -549,7 +591,7 @@ unsafe extern "C" fn dummy_write_func(_opaque: *mut c_void, _buf: *const c_void,
 mod tests {
     use super::*;
     use crate::jsvalue::{
-        is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value,
+        is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value, value_to_ptr,
         JS_TAG_STRING_CHAR,
     };
     use crate::memblock::Float64Header;
