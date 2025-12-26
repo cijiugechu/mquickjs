@@ -81,6 +81,17 @@ impl AtomTables {
             .retain(|val| is_marked(*val));
         self.unique_strings.len()
     }
+
+    pub fn visit_rom_atoms<F>(&self, mut f: F)
+    where
+        F: FnMut(JSValue),
+    {
+        for table in &self.rom_tables {
+            for &val in table {
+                f(val);
+            }
+        }
+    }
 }
 
 fn find_atom(arr: &[JSValue], val: JSValue) -> Result<usize, usize> {

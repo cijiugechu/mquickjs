@@ -109,6 +109,18 @@ impl GcRefState {
         panic!("GC ref not found in list");
     }
 
+    pub fn visit_roots<F>(&self, mut f: F)
+    where
+        F: FnMut(JSValue),
+    {
+        for node in self.stack.iter() {
+            f(node.val());
+        }
+        for node in self.list.iter() {
+            f(node.val());
+        }
+    }
+
     pub fn is_stack_empty(&self) -> bool {
         self.stack.is_empty()
     }

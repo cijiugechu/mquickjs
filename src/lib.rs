@@ -28,6 +28,7 @@ pub mod parser;
 pub mod gc_ref;
 pub mod heap;
 pub mod atom;
+pub mod gc;
 
 pub use parser::pos as parser_pos;
 pub use parser::types as parser_types;

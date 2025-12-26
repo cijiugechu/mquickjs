@@ -258,6 +258,16 @@ impl JSParseState {
     pub fn set_eval_ret_idx(&mut self, idx: i32) {
         self.eval_ret_idx = idx;
     }
+
+    pub(crate) fn gc_roots(&self) -> [JSValue; 5] {
+        [
+            self.source_str,
+            self.filename_str,
+            self.token.value(),
+            self.cur_func,
+            self.byte_code,
+        ]
+    }
 }
 
 #[cfg(test)]
