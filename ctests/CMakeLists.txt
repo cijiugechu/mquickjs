@@ -172,3 +172,37 @@ target_link_libraries(js_call_catch2_test PRIVATE
 add_dependencies(js_call_catch2_test mqjs_stdlib_headers)
 
 catch_discover_tests(js_call_catch2_test)
+
+add_executable(lre_exec_catch2_test
+  lre_exec_catch2_test.cpp
+)
+target_include_directories(lre_exec_catch2_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${MQUICKJS_SOURCE_DIR}
+)
+target_link_libraries(lre_exec_catch2_test PRIVATE
+  mquickjs_core
+  mqjs_stdlib_data
+  Catch2::Catch2WithMain
+  m
+)
+add_dependencies(lre_exec_catch2_test mqjs_stdlib_headers)
+
+catch_discover_tests(lre_exec_catch2_test)
+
+add_executable(js_parse_statement_catch2_test
+  js_parse_statement_catch2_test.cpp
+)
+target_include_directories(js_parse_statement_catch2_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${MQUICKJS_SOURCE_DIR}
+)
+target_link_libraries(js_parse_statement_catch2_test PRIVATE
+  mquickjs_core
+  mqjs_stdlib_data
+  Catch2::Catch2WithMain
+  m
+)
+add_dependencies(js_parse_statement_catch2_test mqjs_stdlib_headers)
+
+catch_discover_tests(js_parse_statement_catch2_test)
