@@ -1,7 +1,8 @@
 use crate::atom::AtomTables;
 use crate::capi_defs::{JSInterruptHandler, JSWriteFunc};
 use crate::containers::{
-    string_alloc_size, value_array_alloc_size, StringHeader, ValueArrayHeader, JS_STRING_LEN_MAX,
+    byte_array_alloc_size, string_alloc_size, value_array_alloc_size, ByteArrayHeader, StringHeader,
+    ValueArrayHeader, JS_BYTE_ARRAY_SIZE_MAX, JS_STRING_LEN_MAX,
 };
 use crate::cutils::{float64_as_uint64, unicode_to_utf8, utf8_get};
 use crate::enums::JSObjectClass;
@@ -9,11 +10,13 @@ use crate::gc_ref::GcRefState;
 use crate::heap::{HeapLayout, JS_MIN_FREE_SIZE};
 use crate::jsvalue::{
     from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_get_special_tag,
-    value_get_special_value, value_make_special, JSValue, JSWord, JSW, JS_NULL, JS_SHORTINT_MAX,
-    JS_SHORTINT_MIN, JS_TAG_STRING_CHAR, JS_UNDEFINED,
+    value_get_special_value, value_make_special, value_to_ptr, JSValue, JSWord, JSW, JS_NULL,
+    JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_STRING_CHAR, JS_UNDEFINED,
 };
+use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
+use crate::closure_data::ClosureData;
 use crate::stdlib::stdlib_image::{StdlibImage, StdlibWord};
 use crate::string::js_string::is_ascii_bytes;
 use crate::string::runtime::{is_valid_len4_utf8, string_view, utf8_char_len};
@@ -77,6 +80,7 @@ pub enum ContextError {
     InvalidRomString { offset: usize, tag: MTag },
     MissingEmptyAtom,
     StringTooLong { len: usize, max: JSWord },
+    ByteArrayTooLong { len: usize, max: JSWord },
     OutOfMemory,
 }
 
@@ -283,8 +287,17 @@ impl JSContext {
         self.sp
     }
 
+    pub(crate) fn set_sp(&mut self, sp: NonNull<JSValue>) {
+        self.sp = sp;
+        self.heap.set_stack_bottom(sp);
+    }
+
     pub fn fp(&self) -> NonNull<JSValue> {
         self.fp
+    }
+
+    pub(crate) fn set_fp(&mut self, fp: NonNull<JSValue>) {
+        self.fp = fp;
     }
 
     pub fn stack_top(&self) -> NonNull<u8> {
@@ -293,6 +306,10 @@ impl JSContext {
 
     pub fn stack_bottom(&self) -> NonNull<JSValue> {
         self.heap.stack_bottom()
+    }
+
+    pub(crate) fn heap_free_ptr(&self) -> NonNull<u8> {
+        self.heap.heap_free()
     }
 
     pub fn class_count(&self) -> u16 {
@@ -681,6 +698,33 @@ impl JSContext {
         Ok(ptr)
     }
 
+    pub(crate) fn alloc_byte_array(&mut self, bytes: &[u8]) -> Result<JSValue, ContextError> {
+        let len = JSWord::try_from(bytes.len()).map_err(|_| ContextError::ByteArrayTooLong {
+            len: bytes.len(),
+            max: JS_BYTE_ARRAY_SIZE_MAX,
+        })?;
+        if len > JS_BYTE_ARRAY_SIZE_MAX {
+            return Err(ContextError::ByteArrayTooLong {
+                len: bytes.len(),
+                max: JS_BYTE_ARRAY_SIZE_MAX,
+            });
+        }
+        let size = byte_array_alloc_size(len);
+        let ptr = self
+            .heap
+            .malloc(size, MTag::ByteArray, |_| {})
+            .ok_or(ContextError::OutOfMemory)?;
+        let header = ByteArrayHeader::new(len, false);
+        unsafe {
+            // SAFETY: `ptr` points to writable byte array storage.
+            ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), MbHeader::from(header).word());
+            let payload = ptr.as_ptr().add(size_of::<JSWord>());
+            ptr::write_bytes(payload, 0, len as usize);
+            ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
+        }
+        Ok(value_from_ptr(ptr))
+    }
+
     pub(crate) fn alloc_object(
         &mut self,
         class_id: JSObjectClass,
@@ -706,6 +750,42 @@ impl JSContext {
             }
         }
         Ok(value_from_ptr(ptr))
+    }
+
+    pub(crate) fn alloc_function_bytecode(
+        &mut self,
+        header: FunctionBytecodeHeader,
+        fields: FunctionBytecodeFields,
+    ) -> Result<JSValue, ContextError> {
+        let size = size_of::<FunctionBytecode>();
+        let ptr = self
+            .heap
+            .malloc(size, MTag::FunctionBytecode, |_| {})
+            .ok_or(ContextError::OutOfMemory)?;
+        let func = FunctionBytecode::from_fields(header, fields);
+        unsafe {
+            // SAFETY: `ptr` points to writable function bytecode storage.
+            ptr::write(ptr.as_ptr() as *mut FunctionBytecode, func);
+        }
+        Ok(value_from_ptr(ptr))
+    }
+
+    pub(crate) fn alloc_closure(
+        &mut self,
+        func_bytecode: JSValue,
+        var_refs_len: usize,
+    ) -> Result<JSValue, ContextError> {
+        let proto = self.class_proto()[JSObjectClass::Closure as usize];
+        let extra_size_bytes = (1usize + var_refs_len) * size_of::<JSValue>();
+        let closure = self.alloc_object(JSObjectClass::Closure, proto, extra_size_bytes)?;
+        let obj_ptr = value_to_ptr::<Object>(closure).expect("closure allocation must be a pointer");
+        unsafe {
+            // SAFETY: closure points at a writable closure object allocation.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let closure_data = core::ptr::addr_of_mut!((*payload).closure);
+            *ClosureData::func_bytecode_ptr(closure_data) = func_bytecode;
+        }
+        Ok(closure)
     }
 
     fn alloc_float64(&mut self, value: f64) -> Result<JSValue, ContextError> {

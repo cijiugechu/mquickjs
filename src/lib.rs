@@ -33,6 +33,7 @@ pub mod gc;
 pub mod gc_runtime;
 pub mod context;
 pub mod runtime;
+pub mod interpreter;
 
 pub use parser::pos as parser_pos;
 pub use parser::types as parser_types;
