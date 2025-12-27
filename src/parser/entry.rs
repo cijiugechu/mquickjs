@@ -2,6 +2,7 @@ use crate::capi_defs::{
     JS_EVAL_JSON, JS_EVAL_REGEXP, JS_EVAL_REGEXP_FLAGS_SHIFT, JS_EVAL_REPL, JS_EVAL_RETVAL,
     JS_EVAL_STRIP_COL,
 };
+use crate::context::JSContext;
 use crate::parser::expr::ExprParser;
 use crate::parser::json::{parse_json, JsonError, JsonValue};
 use crate::parser::pos::get_line_col;
@@ -44,13 +45,17 @@ impl ParseError {
     }
 }
 
-pub enum ParseOutput<'a> {
-    Program(Box<ExprParser<'a>>),
+pub enum ParseOutput<'a, 'ctx> {
+    Program(Box<ExprParser<'a, 'ctx>>),
     Json(JsonValue),
     RegExp(RegExpBytecode),
 }
 
-pub fn parse_source<'a>(source: &'a [u8], eval_flags: u32) -> Result<ParseOutput<'a>, ParseError> {
+pub fn parse_source<'a, 'ctx>(
+    ctx: &'ctx mut JSContext,
+    source: &'a [u8],
+    eval_flags: u32,
+) -> Result<ParseOutput<'a, 'ctx>, ParseError> {
     if (eval_flags & JS_EVAL_JSON) != 0 {
         parse_json(source)
             .map(ParseOutput::Json)
@@ -61,7 +66,7 @@ pub fn parse_source<'a>(source: &'a [u8], eval_flags: u32) -> Result<ParseOutput
             .map(ParseOutput::RegExp)
             .map_err(|err| parse_regexp_error(err, source))
     } else {
-        let mut parser = ExprParser::new(source);
+        let mut parser = ExprParser::new(ctx, source);
         let has_column = (eval_flags & JS_EVAL_STRIP_COL) == 0;
         let has_retval = (eval_flags & JS_EVAL_RETVAL) != 0;
         let is_repl = (eval_flags & JS_EVAL_REPL) != 0;
@@ -96,17 +101,30 @@ mod tests {
     use crate::capi_defs::{
         JS_EVAL_JSON, JS_EVAL_REGEXP, JS_EVAL_REGEXP_FLAGS_SHIFT, JS_EVAL_STRIP_COL,
     };
+    use crate::context::{ContextConfig, JSContext};
     use crate::parser::regexp_flags::LRE_FLAG_STICKY;
+    use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
+
+    fn new_context() -> JSContext {
+        JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init")
+    }
 
     #[test]
     fn parse_source_program_has_column_flag() {
-        let output = parse_source(b"1", 0).expect("parse");
+        let mut ctx = new_context();
+        let output = parse_source(&mut ctx, b"1", 0).expect("parse");
         let ParseOutput::Program(parser) = output else {
             panic!("expected program");
         };
         assert!(parser.has_column());
 
-        let output = parse_source(b"1", JS_EVAL_STRIP_COL).expect("parse");
+        let mut ctx = new_context();
+        let output = parse_source(&mut ctx, b"1", JS_EVAL_STRIP_COL).expect("parse");
         let ParseOutput::Program(parser) = output else {
             panic!("expected program");
         };
@@ -116,7 +134,8 @@ mod tests {
     #[test]
     fn parse_source_program_error_line_col() {
         let input = b"var x = 1;\nreturn x;";
-        let err = match parse_source(input, 0) {
+        let mut ctx = new_context();
+        let err = match parse_source(&mut ctx, input, 0) {
             Ok(_) => panic!("expected parse error"),
             Err(err) => err,
         };
@@ -129,7 +148,8 @@ mod tests {
     #[test]
     fn parse_source_json_error_line_col() {
         let input = b"{\n\"a\": }";
-        let err = match parse_source(input, JS_EVAL_JSON) {
+        let mut ctx = new_context();
+        let err = match parse_source(&mut ctx, input, JS_EVAL_JSON) {
             Ok(_) => panic!("expected parse error"),
             Err(err) => err,
         };
@@ -143,7 +163,8 @@ mod tests {
     fn parse_source_regexp_flags() {
         let eval_flags =
             JS_EVAL_REGEXP | (LRE_FLAG_STICKY << JS_EVAL_REGEXP_FLAGS_SHIFT);
-        let output = parse_source(b"a+", eval_flags).expect("parse");
+        let mut ctx = new_context();
+        let output = parse_source(&mut ctx, b"a+", eval_flags).expect("parse");
         let ParseOutput::RegExp(bytecode) = output else {
             panic!("expected regexp");
         };

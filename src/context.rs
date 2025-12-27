@@ -3,15 +3,14 @@ use crate::capi_defs::{JSInterruptHandler, JSWriteFunc};
 use crate::containers::{
     string_alloc_size, value_array_alloc_size, StringHeader, ValueArrayHeader, JS_STRING_LEN_MAX,
 };
-use crate::cutils::utf8_get;
+use crate::cutils::{float64_as_uint64, utf8_get};
 use crate::enums::JSObjectClass;
 use crate::gc_ref::GcRefState;
 use crate::heap::{HeapLayout, JS_MIN_FREE_SIZE};
 use crate::jsvalue::{
-    from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_make_special,
-    JS_TAG_STRING_CHAR,
+    from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_make_special, JSValue, JSWord,
+    JSW, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_STRING_CHAR, JS_UNDEFINED,
 };
-use crate::jsvalue::{JSValue, JSWord, JSW, JS_NULL, JS_UNDEFINED};
 use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
 use crate::stdlib::stdlib_image::{StdlibImage, StdlibWord};
@@ -344,6 +343,32 @@ impl JSContext {
         self.class_roots[ROOT_MINUS_ZERO]
     }
 
+    pub fn new_float64(&mut self, value: f64) -> Result<JSValue, ContextError> {
+        if value >= JS_SHORTINT_MIN as f64 && value <= JS_SHORTINT_MAX as f64 {
+            let val = value as i32;
+            if float64_as_uint64(value) == float64_as_uint64(val as f64) {
+                return Ok(new_short_int(val));
+            }
+        }
+        self.new_float64_slow(value)
+    }
+
+    fn new_float64_slow(&mut self, value: f64) -> Result<JSValue, ContextError> {
+        if float64_as_uint64(value) == 0x8000_0000_0000_0000 {
+            return Ok(self.minus_zero());
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            let abs = value.abs();
+            let min = 2.0_f64.powi(-127);
+            let max = 2.0_f64.powi(128);
+            if abs >= min && abs <= max {
+                return Ok(crate::jsvalue::short_float_from_f64(value));
+            }
+        }
+        self.alloc_float64(value)
+    }
+
     pub fn is_rom_ptr(&self, ptr: NonNull<u8>) -> bool {
         let addr = ptr.as_ptr() as usize;
         let base = self.heap.heap_base().as_ptr() as usize;
@@ -591,8 +616,8 @@ unsafe extern "C" fn dummy_write_func(_opaque: *mut c_void, _buf: *const c_void,
 mod tests {
     use super::*;
     use crate::jsvalue::{
-        is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value, value_to_ptr,
-        JS_TAG_STRING_CHAR,
+        is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value,
+        value_to_ptr, JS_TAG_STRING_CHAR,
     };
     use crate::memblock::Float64Header;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
@@ -671,6 +696,62 @@ mod tests {
             ptr::read_unaligned(ptr.as_ptr().add(size_of::<JSWord>()) as *const f64)
         };
         assert_eq!(payload.to_bits(), (-0.0f64).to_bits());
+    }
+
+    #[test]
+    fn context_new_float64_int_roundtrip() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let val = ctx.new_float64(42.0).expect("alloc");
+        assert!(is_int(val));
+        assert_eq!(value_get_int(val), 42);
+    }
+
+    #[test]
+    fn context_new_float64_allocates_large_value() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let val = ctx.new_float64(1.0e300).expect("alloc");
+        assert!(is_ptr(val));
+    }
+
+    #[test]
+    fn context_new_float64_caches_minus_zero() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let first = ctx.new_float64(-0.0).expect("alloc");
+        let second = ctx.new_float64(-0.0).expect("alloc");
+        assert_eq!(first, second);
+        assert_eq!(first, ctx.minus_zero());
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn context_new_float64_uses_short_float() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let val = ctx.new_float64(1.5).expect("alloc");
+        assert!(crate::jsvalue::is_short_float(val));
     }
 
     #[test]

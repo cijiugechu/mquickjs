@@ -11,7 +11,6 @@ pub mod json;
 pub mod parse_stack;
 pub mod stack_size;
 pub mod parse_state;
-pub mod runtime;
 pub mod property_name;
 pub mod regexp_flags;
 pub mod regexp;

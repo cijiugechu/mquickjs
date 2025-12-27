@@ -87,6 +87,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JS_EVAL_*` flags into `src/capi_defs.rs` with constant-value tests.
 - Added writable runtime/context foundations in `src/context.rs` and `src/runtime.rs`, including JSContext initialization, ROM atom relocation, minimal object allocation, and tests covering heap layout and root initialization.
 - Integrated runtime atoms/strings: ROM atom decode now allocates heap-backed strings, added `JSContext` string creation/interning helpers, and atom tables operate on heap string headers with new tests for empty/char strings and ROM atom placement.
+- Ported `JS_NewFloat64` behavior into `JSContext::new_float64` (short-int fast path, minus-zero cache, short-float range) and wired parser numeric constant allocation through the runtime; removed the temporary `src/parser/runtime.rs` allocator.
 
 ## Parser port scope (C -> Rust)
 

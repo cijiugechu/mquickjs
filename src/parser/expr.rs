@@ -1,5 +1,6 @@
 use core::ptr::NonNull;
 
+use crate::context::JSContext;
 use crate::cutils::{get_u16, put_u16, unicode_to_utf8, UTF8_CHAR_LEN_MAX};
 use crate::enums::JSVarRefKind;
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
@@ -39,7 +40,6 @@ use crate::parser::parse_state::{
 };
 use crate::parser::property_name::parse_property_name;
 use crate::parser::regexp::{compile_regexp, RegExpError};
-use crate::parser::runtime::ParserRuntime;
 use crate::parser::stack_size::{compute_stack_size, StackSizeError};
 use crate::parser::tokens::{
     TOK_BREAK, TOK_CASE, TOK_CATCH, TOK_CONTINUE, TOK_DEC, TOK_DEFAULT, TOK_DO, TOK_ELSE, TOK_EOF,
@@ -207,13 +207,13 @@ impl Drop for OwnedFunctionBytecode {
     }
 }
 
-pub struct ExprParser<'a> {
+pub struct ExprParser<'a, 'ctx> {
+    ctx: &'ctx mut JSContext,
     source: &'a [u8],
     lexer: ParseState<'a>,
     emitter: BytecodeEmitter<'a>,
     parse_state: JSParseState,
     alloc: VarAllocator,
-    runtime: ParserRuntime,
     func: OwnedFunctionBytecode,
     nested_funcs: Vec<OwnedFunctionBytecode>,
     break_stack: BreakStack,
@@ -221,8 +221,8 @@ pub struct ExprParser<'a> {
     atoms: AtomCache,
 }
 
-impl<'a> ExprParser<'a> {
-    pub fn new(source: &'a [u8]) -> Self {
+impl<'a, 'ctx> ExprParser<'a, 'ctx> {
+    pub fn new(ctx: &'ctx mut JSContext, source: &'a [u8]) -> Self {
         let header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let fields = FunctionBytecodeFields {
             func_name: JS_NULL,
@@ -243,12 +243,12 @@ impl<'a> ExprParser<'a> {
         parse_state.set_eval_ret_idx(-1);
         parse_state.set_source(source.as_ptr(), lexer.buf_len() as u32);
         Self {
+            ctx,
             source,
             lexer,
             emitter: BytecodeEmitter::new(source, 0, false),
             parse_state,
             alloc: VarAllocator::new(),
-            runtime: ParserRuntime::new_default(),
             func,
             nested_funcs: Vec::new(),
             break_stack: BreakStack::new(),
@@ -1709,7 +1709,7 @@ impl<'a> ExprParser<'a> {
             self.emitter.emit_push_short_int(value as i32);
             return Ok(());
         }
-        let js_val = self.runtime.new_float64(value).ok_or_else(|| {
+        let js_val = self.ctx.new_float64(value).map_err(|_| {
             ParserError::new(
                 ParserErrorKind::Static(ERR_NO_MEM),
                 self.lexer.token().source_pos() as usize,
@@ -2958,11 +2958,13 @@ impl<'a> ExprParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{ContextConfig, JSContext};
     use crate::opcode::{
         OP_ADD, OP_ARGUMENTS, OP_ARRAY_FROM, OP_DEFINE_GETTER, OP_DROP, OP_DUP, OP_FCLOSURE,
         OP_GOTO, OP_IF_FALSE, OP_MUL, OP_PUT_LOC, OP_PUT_LOC0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3,
         OP_PUSH_FALSE, OP_PUSH_TRUE, OP_RETURN, OP_RETURN_UNDEF, OP_THIS_FUNC, OPCODES,
     };
+    use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
     fn decode_ops(bytes: &[u8]) -> Vec<OpCode> {
         let mut ops = Vec::new();
@@ -2979,19 +2981,30 @@ mod tests {
         ops
     }
 
+    fn new_context() -> JSContext {
+        JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init")
+    }
+
     fn parse_ops(input: &str) -> Vec<OpCode> {
-        let mut parser = ExprParser::new(input.as_bytes());
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, input.as_bytes());
         parser.parse_expression(0).expect("parse");
         decode_ops(parser.bytecode())
     }
 
     fn parse_statement_ops(input: &str) -> Vec<OpCode> {
-        let mut parser = ExprParser::new(input.as_bytes());
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, input.as_bytes());
         parser.parse_statement().expect("parse");
         decode_ops(parser.bytecode())
     }
 
-    fn parse_program_ops(parser: &ExprParser) -> Vec<OpCode> {
+    fn parse_program_ops(parser: &ExprParser<'_, '_>) -> Vec<OpCode> {
         let root = parser
             .function_ref(parser.func.value())
             .expect("root func");
@@ -3016,7 +3029,8 @@ mod tests {
 
     #[test]
     fn expr_assignment_emits_put_loc() {
-        let mut parser = ExprParser::new(b"x=1");
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, b"x=1");
         parser.add_local_var("x").expect("var");
         parser.parse_expression(0).expect("parse");
         let ops = decode_ops(parser.bytecode());
@@ -3052,7 +3066,8 @@ mod tests {
 
     #[test]
     fn program_function_decl_hoists() {
-        let mut parser = ExprParser::new(b"function foo(){}");
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, b"function foo(){}");
         parser.parse_program().expect("parse");
 
         let ops = parse_program_ops(&parser);
@@ -3078,7 +3093,8 @@ mod tests {
 
     #[test]
     fn program_named_function_expr_binds_name() {
-        let mut parser = ExprParser::new(b"var f = function foo(){ foo; };");
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, b"var f = function foo(){ foo; };");
         parser.parse_program().expect("parse");
 
         let root = parser
@@ -3100,7 +3116,8 @@ mod tests {
 
     #[test]
     fn program_arguments_usage_sets_flag() {
-        let mut parser = ExprParser::new(b"function foo(){ arguments; }");
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, b"function foo(){ arguments; }");
         parser.parse_program().expect("parse");
 
         let root = parser
@@ -3122,7 +3139,8 @@ mod tests {
 
     #[test]
     fn program_object_getter_emits_define_getter() {
-        let mut parser = ExprParser::new(b"({ get foo() { return 1; } });");
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, b"({ get foo() { return 1; } });");
         parser.parse_program().expect("parse");
 
         let ops = parse_program_ops(&parser);
