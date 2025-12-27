@@ -38,6 +38,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JSArrayBuffer` into `src/array_buffer.rs` with roundtrip tests.
 - Ported `JSROMClass` and `JSStringCharBuf` into `src/rom_class.rs` and `src/string_char_buf.rs` with tests.
 - Added `JSString` backing storage in `src/string/js_string.rs` (raw bytes + header, no implicit NUL) and wired it into `src/string/mod.rs`.
+- Ported core JS string runtime helpers into `src/string/runtime.rs` (UTF-8/UTF-16 position conversion, length/getc, surrogate-aware substring splitting) and wired them into `src/context.rs` with tests.
 - Ported atom/unique-string table management into `src/atom.rs` (sorted lookup, UTF-16 compare semantics, numeric string detection, GC-style sweep) with tests.
 - Added full `JSProperty` layout and `JSClosureData` into `src/property.rs` and `src/closure_data.rs` with roundtrip tests.
 - Implemented runtime object property tables in `src/property.rs` (hash lookup, create/define/update/delete, ROM promotion, array index fast path) with unit tests.

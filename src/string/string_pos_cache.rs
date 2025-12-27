@@ -40,6 +40,14 @@ impl StringPosCacheEntry {
         &mut self.str
     }
 
+    pub fn pos(self, pos_type: StringPosType) -> u32 {
+        self.str_pos[pos_type as usize]
+    }
+
+    pub fn set_positions(&mut self, utf8_pos: u32, utf16_pos: u32) {
+        self.str_pos = [utf8_pos, utf16_pos];
+    }
+
     pub const fn utf8_pos(self) -> u32 {
         self.str_pos[0]
     }

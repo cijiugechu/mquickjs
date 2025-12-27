@@ -3,19 +3,23 @@ use crate::capi_defs::{JSInterruptHandler, JSWriteFunc};
 use crate::containers::{
     string_alloc_size, value_array_alloc_size, StringHeader, ValueArrayHeader, JS_STRING_LEN_MAX,
 };
-use crate::cutils::{float64_as_uint64, utf8_get};
+use crate::cutils::{float64_as_uint64, unicode_to_utf8, utf8_get};
 use crate::enums::JSObjectClass;
 use crate::gc_ref::GcRefState;
 use crate::heap::{HeapLayout, JS_MIN_FREE_SIZE};
 use crate::jsvalue::{
-    from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_make_special, JSValue, JSWord,
-    JSW, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_STRING_CHAR, JS_UNDEFINED,
+    from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_get_special_tag,
+    value_get_special_value, value_make_special, JSValue, JSWord, JSW, JS_NULL, JS_SHORTINT_MAX,
+    JS_SHORTINT_MIN, JS_TAG_STRING_CHAR, JS_UNDEFINED,
 };
 use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
 use crate::stdlib::stdlib_image::{StdlibImage, StdlibWord};
 use crate::string::js_string::is_ascii_bytes;
-use crate::string::string_pos_cache::{StringPosCacheEntry, JS_STRING_POS_CACHE_SIZE};
+use crate::string::runtime::{is_valid_len4_utf8, string_view, utf8_char_len};
+use crate::string::string_pos_cache::{
+    StringPosCacheEntry, StringPosType, JS_STRING_POS_CACHE_MIN_LEN, JS_STRING_POS_CACHE_SIZE,
+};
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
@@ -399,6 +403,164 @@ impl JSContext {
         Ok(self.atom_tables.make_unique_string(val))
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn string_utf16_to_utf8_pos(&mut self, val: JSValue, utf16_pos: u32) -> u32 {
+        string_convert_pos(
+            &mut self.string_pos_cache,
+            &mut self.string_pos_cache_counter,
+            val,
+            utf16_pos,
+            StringPosType::Utf16,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn string_utf8_to_utf16_pos(&mut self, val: JSValue, utf8_pos: u32) -> u32 {
+        string_convert_pos(
+            &mut self.string_pos_cache,
+            &mut self.string_pos_cache_counter,
+            val,
+            utf8_pos,
+            StringPosType::Utf8,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn string_len(&mut self, val: JSValue) -> u32 {
+        if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
+            let codepoint = value_get_special_value(val) as u32;
+            return if codepoint >= 0x10000 { 2 } else { 1 };
+        }
+        let mut scratch = [0u8; 5];
+        let Some(view) = string_view(val, &mut scratch) else {
+            debug_assert!(false, "expected string value");
+            return 0;
+        };
+        let len = view.bytes().len() as u32;
+        if view.is_ascii() {
+            len
+        } else {
+            self.string_utf8_to_utf16_pos(val, len * 2)
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn string_getcp(&mut self, val: JSValue, utf16_pos: u32, is_codepoint: bool) -> i32 {
+        let utf8_pos = self.string_utf16_to_utf8_pos(val, utf16_pos);
+        let surrogate_flag = (utf8_pos & 1) != 0;
+        let utf8_pos = (utf8_pos >> 1) as usize;
+        let mut scratch = [0u8; 5];
+        let Some(view) = string_view(val, &mut scratch) else {
+            debug_assert!(false, "expected string value");
+            return -1;
+        };
+        if utf8_pos >= view.bytes().len() {
+            return -1;
+        }
+        let mut clen = 0usize;
+        let c = utf8_get(&view.bytes()[utf8_pos..], &mut clen);
+        if c < 0 {
+            return -1;
+        }
+        let c = c as u32;
+        if c < 0x10000 || (!surrogate_flag && is_codepoint) {
+            return c as i32;
+        }
+        let c = c - 0x10000;
+        if !surrogate_flag {
+            (0xd800 + (c >> 10)) as i32
+        } else {
+            (0xdc00 + (c & 0x3ff)) as i32
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn string_getc(&mut self, val: JSValue, utf16_pos: u32) -> i32 {
+        self.string_getcp(val, utf16_pos, false)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn sub_string_utf8(
+        &mut self,
+        val: JSValue,
+        start0: u32,
+        end0: u32,
+    ) -> Result<JSValue, ContextError> {
+        if end0 <= start0 {
+            return self.new_string_len(b"");
+        }
+        let start_surrogate = (start0 & 1) != 0;
+        let end_surrogate = (end0 & 1) != 0;
+        let mut start = (start0 >> 1) as usize;
+        let end = (end0 >> 1) as usize;
+        let len = end.saturating_sub(start);
+        let mut scratch = [0u8; 5];
+        let Some(view) = string_view(val, &mut scratch) else {
+            debug_assert!(false, "expected string value");
+            return self.new_string_len(b"");
+        };
+        let bytes = view.bytes();
+        if !start_surrogate && !end_surrogate {
+            if len == 0 {
+                return self.new_string_len(b"");
+            }
+            if start < bytes.len() && utf8_char_len(bytes[start]) == len {
+                let mut clen = 0usize;
+                let c = utf8_get(&bytes[start..], &mut clen);
+                if c >= 0 {
+                    return Ok(value_make_special(JS_TAG_STRING_CHAR, c as u32));
+                }
+            }
+            let slice = if start <= end && end <= bytes.len() {
+                &bytes[start..end]
+            } else {
+                &bytes[0..0]
+            };
+            let is_ascii = if view.is_ascii() { true } else { is_ascii_bytes(slice) };
+            return self.alloc_string_bytes(slice, false, is_ascii, false);
+        }
+
+        let extra = if end_surrogate { 3 } else { 0 };
+        let target_len = len.saturating_sub(start_surrogate as usize) + extra;
+        let mut out = Vec::with_capacity(target_len);
+        if start_surrogate && start < bytes.len() {
+            let mut clen = 0usize;
+            let c = utf8_get(&bytes[start..], &mut clen) as u32;
+            let c = 0xdc00 + (c.wrapping_sub(0x10000) & 0x3ff);
+            let mut tmp = [0u8; 4];
+            let written = unicode_to_utf8(&mut tmp, c);
+            out.extend_from_slice(&tmp[..written]);
+            start = start.saturating_add(4);
+        }
+        if start <= end && end <= bytes.len() {
+            out.extend_from_slice(&bytes[start..end]);
+        }
+        if end_surrogate && end <= bytes.len() {
+            let mut clen = 0usize;
+            let c = utf8_get(&bytes[end..], &mut clen) as u32;
+            let c = 0xd800 + (c.wrapping_sub(0x10000) >> 10);
+            let mut tmp = [0u8; 4];
+            let written = unicode_to_utf8(&mut tmp, c);
+            out.extend_from_slice(&tmp[..written]);
+        }
+        self.alloc_string_bytes(&out, false, false, false)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn sub_string(
+        &mut self,
+        val: JSValue,
+        start: u32,
+        end: u32,
+    ) -> Result<JSValue, ContextError> {
+        if end <= start {
+            return self.new_string_len(b"");
+        }
+        let start_utf8 = self.string_utf16_to_utf8_pos(val, start);
+        let end_utf8 = self.string_utf16_to_utf8_pos(val, end);
+        self.sub_string_utf8(val, start_utf8, end_utf8)
+    }
+
     fn init_atoms(&mut self, image: &StdlibImage, prepare_compilation: bool) -> Result<(), ContextError> {
         let rom_table = RomTable::from_image(image)?;
         let raw_atoms = rom_table.value_array(image.sorted_atoms_offset as usize)?;
@@ -562,7 +724,7 @@ impl JSContext {
         Ok(value_from_ptr(ptr))
     }
 
-    fn alloc_string_bytes(
+    pub(crate) fn alloc_string_bytes(
         &mut self,
         bytes: &[u8],
         is_unique: bool,
@@ -597,6 +759,130 @@ impl JSContext {
 
 }
 
+#[allow(dead_code)]
+fn string_convert_pos(
+    cache: &mut [StringPosCacheEntry; JS_STRING_POS_CACHE_SIZE],
+    cache_counter: &mut u8,
+    val: JSValue,
+    mut pos: u32,
+    pos_type: StringPosType,
+) -> u32 {
+    let mut scratch = [0u8; 5];
+    let Some(view) = string_view(val, &mut scratch) else {
+        debug_assert!(false, "expected string value");
+        return 0;
+    };
+    let bytes = view.bytes();
+    let len = bytes.len() as u32;
+    if view.is_ascii() {
+        return match pos_type {
+            StringPosType::Utf8 => len.min(pos / 2),
+            StringPosType::Utf16 => len.min(pos) * 2,
+        };
+    }
+
+    let mut has_surrogate = 0u32;
+    if pos_type == StringPosType::Utf8 {
+        has_surrogate = pos & 1;
+        pos >>= 1;
+    }
+
+    let mut ce_index = None;
+    let mut i = 0usize;
+    let mut j = 0u32;
+    if len >= JS_STRING_POS_CACHE_MIN_LEN {
+        let mut d_min = pos;
+        for (idx, entry) in cache.iter().enumerate() {
+            if entry.str() == val {
+                let entry_pos = entry.pos(pos_type);
+                let d = entry_pos.abs_diff(pos);
+                if d < d_min {
+                    d_min = d;
+                    ce_index = Some(idx);
+                }
+            }
+        }
+        if ce_index.is_none() {
+            let idx = *cache_counter as usize;
+            *cache_counter += 1;
+            if (*cache_counter as usize) == JS_STRING_POS_CACHE_SIZE {
+                *cache_counter = 0;
+            }
+            cache[idx].set_str(val);
+            cache[idx].set_positions(0, 0);
+            ce_index = Some(idx);
+        }
+        if let Some(idx) = ce_index {
+            i = cache[idx].pos(StringPosType::Utf8) as usize;
+            j = cache[idx].pos(StringPosType::Utf16);
+        }
+    }
+
+    let ce_pos = ce_index.map(|idx| cache[idx].pos(pos_type)).unwrap_or(0);
+    let forward = ce_index.is_none() || ce_pos <= pos;
+    let mut surrogate_flag = 0u32;
+    if forward {
+        let mut limit = u32::MAX;
+        let mut len_limit = bytes.len();
+        if pos_type == StringPosType::Utf8 {
+            len_limit = (pos as usize).min(bytes.len());
+        } else {
+            limit = pos;
+        }
+        while i < len_limit {
+            if j == limit {
+                break;
+            }
+            let clen = utf8_char_len(bytes[i]);
+            if clen == 4 && is_valid_len4_utf8(&bytes[i..]) {
+                if (j + 1) == limit {
+                    surrogate_flag = 1;
+                    break;
+                }
+                j = j.saturating_add(2);
+            } else {
+                j = j.saturating_add(1);
+            }
+            i = i.saturating_add(clen);
+        }
+    } else {
+        let (start, limit) = if pos_type == StringPosType::Utf8 {
+            (pos as usize, u32::MAX)
+        } else {
+            (0usize, pos)
+        };
+        while i > start {
+            let i0 = i;
+            i -= 1;
+            while i > 0 && (bytes[i] & 0xc0) == 0x80 {
+                i -= 1;
+            }
+            let clen = i0 - i;
+            if clen == 4 && is_valid_len4_utf8(&bytes[i..]) {
+                j = j.saturating_sub(2);
+                if (j + 1) == limit {
+                    surrogate_flag = 1;
+                    break;
+                }
+            } else {
+                j = j.saturating_sub(1);
+            }
+            if j == limit {
+                break;
+            }
+        }
+    }
+
+    if let Some(idx) = ce_index {
+        cache[idx].set_positions(i as u32, j);
+    }
+
+    match pos_type {
+        StringPosType::Utf8 => j + has_surrogate,
+        StringPosType::Utf16 => (i.saturating_mul(2) as u32) + surrogate_flag,
+    }
+}
+
 fn single_codepoint(bytes: &[u8]) -> Option<u32> {
     let mut clen = 0usize;
     let c = utf8_get(bytes, &mut clen);
@@ -615,13 +901,21 @@ unsafe extern "C" fn dummy_write_func(_opaque: *mut c_void, _buf: *const c_void,
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
+    use crate::cutils::unicode_to_utf8;
     use crate::jsvalue::{
         is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value,
         value_to_ptr, JS_TAG_STRING_CHAR,
     };
     use crate::memblock::Float64Header;
+    use crate::string::runtime::string_view;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
     use core::slice;
+
+    fn bytes_from_val(val: JSValue) -> Vec<u8> {
+        let mut scratch = [0u8; 5];
+        let view = string_view(val, &mut scratch).expect("string view");
+        view.bytes().to_vec()
+    }
 
     #[test]
     fn context_initializes_layout_and_roots() {
@@ -788,6 +1082,80 @@ mod tests {
             slice::from_raw_parts(ptr.as_ptr().add(size_of::<JSWord>()), 2)
         };
         assert_eq!(bytes, b"ab");
+    }
+
+    #[test]
+    fn string_pos_ascii_roundtrip() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let val = ctx.new_string("hello").expect("string");
+        let utf8_pos = ctx.string_utf16_to_utf8_pos(val, 3);
+        assert_eq!(utf8_pos, 6);
+        let utf16_pos = ctx.string_utf8_to_utf16_pos(val, utf8_pos);
+        assert_eq!(utf16_pos, 3);
+    }
+
+    #[test]
+    fn string_len_and_getc_handles_surrogates() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let mut bytes = Vec::new();
+        bytes.push(b'a');
+        let mut tmp = [0u8; 4];
+        let n = unicode_to_utf8(&mut tmp, 0x1f600);
+        bytes.extend_from_slice(&tmp[..n]);
+        bytes.push(b'b');
+
+        let val = ctx.new_string_len(&bytes).expect("string");
+        assert_eq!(ctx.string_len(val), 4);
+        assert_eq!(ctx.string_getc(val, 0), b'a' as i32);
+        assert_eq!(ctx.string_getc(val, 1), 0xd83d);
+        assert_eq!(ctx.string_getc(val, 2), 0xde00);
+        assert_eq!(ctx.string_getc(val, 3), b'b' as i32);
+    }
+
+    #[test]
+    fn sub_string_utf8_splits_surrogate_pair() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let mut buf = [0u8; 4];
+        let len = unicode_to_utf8(&mut buf, 0x1f600);
+        let emoji = ctx.new_string_len(&buf[..len]).expect("emoji");
+
+        let start = ctx.string_utf16_to_utf8_pos(emoji, 0);
+        let mid = ctx.string_utf16_to_utf8_pos(emoji, 1);
+        let end = ctx.string_utf16_to_utf8_pos(emoji, 2);
+
+        let left = ctx.sub_string_utf8(emoji, start, mid).expect("left");
+        let right = ctx.sub_string_utf8(emoji, mid, end).expect("right");
+        assert!(is_ptr(left));
+        assert!(is_ptr(right));
+
+        let mut hi = [0u8; 4];
+        let hi_len = unicode_to_utf8(&mut hi, 0xd83d);
+        let mut lo = [0u8; 4];
+        let lo_len = unicode_to_utf8(&mut lo, 0xde00);
+        assert_eq!(bytes_from_val(left), hi[..hi_len]);
+        assert_eq!(bytes_from_val(right), lo[..lo_len]);
+
+        let full = ctx.sub_string(emoji, 0, 2).expect("full");
+        assert_eq!(value_get_special_tag(full), JS_TAG_STRING_CHAR);
+        assert_eq!(value_get_special_value(full), 0x1f600);
     }
 
     #[test]
