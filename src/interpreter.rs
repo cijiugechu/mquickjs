@@ -8,8 +8,8 @@ use crate::js_libm::js_fmod;
 use crate::jsvalue::{
     from_bits, is_bool, is_int, is_null, is_ptr, is_short_float, is_undefined, new_bool,
     new_short_int, short_float_to_f64, value_get_int, value_get_special_tag,
-    value_get_special_value, value_to_ptr, JSValue, JSWord, JSW, JS_NULL, JS_TAG_SHORT_FUNC,
-    JS_UNDEFINED,
+    value_get_special_value, value_make_special, value_to_ptr, JSValue, JSWord, JSW, JS_NULL,
+    JS_TAG_CATCH_OFFSET, JS_TAG_SHORT_FUNC, JS_UNDEFINED,
 };
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
@@ -33,6 +33,7 @@ pub enum InterpreterError {
     MissingCFunction(&'static str),
     NotAFunction,
     StackOverflow,
+    Thrown(JSValue),
     TypeError(&'static str),
     UnsupportedOpcode(u8),
 }
@@ -214,6 +215,81 @@ fn to_bool(val: JSValue) -> Result<bool, InterpreterError> {
         return Ok(num != 0.0 && !num.is_nan());
     }
     Ok(true)
+}
+
+fn read_i32(byte_slice: &[u8], pc: usize, opname: &'static str) -> Result<i32, InterpreterError> {
+    if pc + 3 >= byte_slice.len() {
+        return Err(InterpreterError::InvalidBytecode(opname));
+    }
+    Ok(i32::from_le_bytes([
+        byte_slice[pc],
+        byte_slice[pc + 1],
+        byte_slice[pc + 2],
+        byte_slice[pc + 3],
+    ]))
+}
+
+fn pc_with_offset(
+    pc: usize,
+    diff: i32,
+    byte_len: usize,
+    opname: &'static str,
+) -> Result<usize, InterpreterError> {
+    let target = (pc as i64).wrapping_add(diff as i64);
+    if target < 0 || target >= byte_len as i64 {
+        return Err(InterpreterError::InvalidBytecode(opname));
+    }
+    Ok(target as usize)
+}
+
+fn handle_exception(
+    ctx: &mut JSContext,
+    byte_len: usize,
+    fp: *mut JSValue,
+    n_vars: usize,
+    sp: &mut *mut JSValue,
+    exception: JSValue,
+) -> Result<Option<usize>, InterpreterError> {
+    ctx.set_current_exception(exception);
+    let stack_top = unsafe { fp.offset(FRAME_OFFSET_VAR0 + 1 - n_vars as isize) };
+    if ctx.current_exception_is_uncatchable() {
+        *sp = stack_top;
+        let sp_ptr = NonNull::new(*sp).expect("stack pointer");
+        ctx.set_sp(sp_ptr);
+        return Ok(None);
+    }
+    let mut cursor = *sp;
+    while cursor < stack_top {
+        let val = unsafe {
+            // SAFETY: cursor is within the current stack slice.
+            ptr::read_unaligned(cursor)
+        };
+        cursor = unsafe { cursor.add(1) };
+        if value_get_special_tag(val) == JS_TAG_CATCH_OFFSET {
+            let offset = value_get_special_value(val);
+            if offset < 0 {
+                return Err(InterpreterError::InvalidBytecode("catch"));
+            }
+            let offset = offset as usize;
+            if offset >= byte_len {
+                return Err(InterpreterError::InvalidBytecode("catch"));
+            }
+            let exception = ctx.take_current_exception();
+            let new_sp = unsafe { cursor.sub(1) };
+            unsafe {
+                // SAFETY: new_sp points to the catch marker slot.
+                ptr::write_unaligned(new_sp, exception);
+            }
+            *sp = new_sp;
+            let sp_ptr = NonNull::new(*sp).expect("stack pointer");
+            ctx.set_sp(sp_ptr);
+            return Ok(Some(offset));
+        }
+    }
+    *sp = cursor;
+    let sp_ptr = NonNull::new(*sp).expect("stack pointer");
+    ctx.set_sp(sp_ptr);
+    Ok(None)
 }
 
 fn encode_stack_ptr(stack_top: *mut JSValue, sp: *mut JSValue) -> Result<JSValue, InterpreterError> {
@@ -409,18 +485,139 @@ pub fn call_with_this(
                 break Ok(val);
             },
             op if op == crate::opcode::OP_RETURN_UNDEF.0 as u8 => break Ok(JS_UNDEFINED),
+            op if op == crate::opcode::OP_THROW.0 as u8 => unsafe {
+                let val = pop(ctx, &mut sp);
+                let handled = try_or_break!(handle_exception(
+                    ctx,
+                    byte_slice.len(),
+                    fp,
+                    n_vars,
+                    &mut sp,
+                    val
+                ));
+                if let Some(target) = handled {
+                    pc = target;
+                } else {
+                    break Err(InterpreterError::Thrown(val));
+                }
+            },
+            op if op == crate::opcode::OP_CATCH.0 as u8 => unsafe {
+                let diff = try_or_break!(read_i32(byte_slice, pc, "catch"));
+                let target = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "catch"));
+                let offset = u32::try_from(target)
+                    .map_err(|_| InterpreterError::InvalidBytecode("catch"))?;
+                push(ctx, &mut sp, value_make_special(JS_TAG_CATCH_OFFSET, offset));
+                pc += 4;
+            },
+            op if op == crate::opcode::OP_GOSUB.0 as u8 => unsafe {
+                let diff = try_or_break!(read_i32(byte_slice, pc, "gosub"));
+                let return_pc = pc + 4;
+                let return_pc =
+                    i32::try_from(return_pc).map_err(|_| InterpreterError::InvalidBytecode("gosub"))?;
+                push(ctx, &mut sp, new_short_int(return_pc));
+                pc = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "gosub"));
+            },
+            op if op == crate::opcode::OP_RET.0 as u8 => unsafe {
+                let val = ptr::read_unaligned(sp);
+                if !is_int(val) {
+                    break Err(InterpreterError::InvalidBytecode("ret"));
+                }
+                let pos = value_get_int(val);
+                if pos < 0 || (pos as usize) >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("ret"));
+                }
+                let _ = pop(ctx, &mut sp);
+                pc = pos as usize;
+            },
+            op if op == crate::opcode::OP_GOTO.0 as u8 => {
+                let diff = try_or_break!(read_i32(byte_slice, pc, "goto"));
+                pc = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "goto"));
+            }
+            op if op == crate::opcode::OP_IF_FALSE.0 as u8 => unsafe {
+                let diff = try_or_break!(read_i32(byte_slice, pc, "if_false"));
+                let target = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "if_false"));
+                pc += 4;
+                let cond = try_or_break!(to_bool(pop(ctx, &mut sp)));
+                if !cond {
+                    pc = target;
+                }
+            },
+            op if op == crate::opcode::OP_IF_TRUE.0 as u8 => unsafe {
+                let diff = try_or_break!(read_i32(byte_slice, pc, "if_true"));
+                let target = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "if_true"));
+                pc += 4;
+                let cond = try_or_break!(to_bool(pop(ctx, &mut sp)));
+                if cond {
+                    pc = target;
+                }
+            },
             op if op == crate::opcode::OP_DROP.0 as u8 => unsafe {
+                let _ = pop(ctx, &mut sp);
+            },
+            op if op == crate::opcode::OP_NIP.0 as u8 => unsafe {
+                let val = ptr::read_unaligned(sp);
+                ptr::write_unaligned(sp.add(1), val);
                 let _ = pop(ctx, &mut sp);
             },
             op if op == crate::opcode::OP_DUP.0 as u8 => unsafe {
                 let val = ptr::read_unaligned(sp);
                 push(ctx, &mut sp, val);
             },
+            op if op == crate::opcode::OP_DUP2.0 as u8 => unsafe {
+                sp = sp.sub(2);
+                let a = ptr::read_unaligned(sp.add(2));
+                let b = ptr::read_unaligned(sp.add(3));
+                ptr::write_unaligned(sp, a);
+                ptr::write_unaligned(sp.add(1), b);
+                ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+            },
+            op if op == crate::opcode::OP_INSERT2.0 as u8 => unsafe {
+                let top = ptr::read_unaligned(sp);
+                let next = ptr::read_unaligned(sp.add(1));
+                ptr::write_unaligned(sp.sub(1), top);
+                ptr::write_unaligned(sp, next);
+                ptr::write_unaligned(sp.add(1), top);
+                sp = sp.sub(1);
+                ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+            },
+            op if op == crate::opcode::OP_INSERT3.0 as u8 => unsafe {
+                let top = ptr::read_unaligned(sp);
+                let next = ptr::read_unaligned(sp.add(1));
+                let next2 = ptr::read_unaligned(sp.add(2));
+                ptr::write_unaligned(sp.sub(1), top);
+                ptr::write_unaligned(sp, next);
+                ptr::write_unaligned(sp.add(1), next2);
+                ptr::write_unaligned(sp.add(2), top);
+                sp = sp.sub(1);
+                ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+            },
+            op if op == crate::opcode::OP_PERM3.0 as u8 => unsafe {
+                let tmp = ptr::read_unaligned(sp.add(1));
+                let val = ptr::read_unaligned(sp.add(2));
+                ptr::write_unaligned(sp.add(1), val);
+                ptr::write_unaligned(sp.add(2), tmp);
+            },
+            op if op == crate::opcode::OP_PERM4.0 as u8 => unsafe {
+                let tmp = ptr::read_unaligned(sp.add(1));
+                let val = ptr::read_unaligned(sp.add(2));
+                let val2 = ptr::read_unaligned(sp.add(3));
+                ptr::write_unaligned(sp.add(1), val);
+                ptr::write_unaligned(sp.add(2), val2);
+                ptr::write_unaligned(sp.add(3), tmp);
+            },
             op if op == crate::opcode::OP_SWAP.0 as u8 => unsafe {
                 let a = ptr::read_unaligned(sp);
                 let b = ptr::read_unaligned(sp.add(1));
                 ptr::write_unaligned(sp, b);
                 ptr::write_unaligned(sp.add(1), a);
+            },
+            op if op == crate::opcode::OP_ROT3L.0 as u8 => unsafe {
+                let tmp = ptr::read_unaligned(sp.add(2));
+                let mid = ptr::read_unaligned(sp.add(1));
+                let top = ptr::read_unaligned(sp);
+                ptr::write_unaligned(sp.add(2), mid);
+                ptr::write_unaligned(sp.add(1), top);
+                ptr::write_unaligned(sp, tmp);
             },
             op if op == crate::opcode::OP_PUSH_MINUS1.0 as u8 => unsafe {
                 push(ctx, &mut sp, new_short_int(-1));
@@ -690,7 +887,11 @@ mod tests {
     use crate::context::{ContextConfig, JSContext};
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
     use crate::jsvalue::{is_int, value_get_int, JS_NULL};
-    use crate::opcode::{OP_ADD, OP_PUSH_1, OP_PUSH_2, OP_RETURN};
+    use crate::opcode::{
+        OP_ADD, OP_CATCH, OP_DUP2, OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE, OP_INSERT2,
+        OP_INSERT3, OP_NIP, OP_PERM3, OP_PERM4, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4,
+        OP_PUSH_TRUE, OP_RET, OP_RETURN, OP_ROT3L, OP_SUB, OP_THROW,
+    };
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
     fn new_context() -> JSContext {
@@ -702,15 +903,11 @@ mod tests {
         .expect("context init")
     }
 
-    #[test]
-    fn call_simple_add() {
-        let mut ctx = new_context();
-        let bytecode = vec![
-            OP_PUSH_1.0 as u8,
-            OP_PUSH_2.0 as u8,
-            OP_ADD.0 as u8,
-            OP_RETURN.0 as u8,
-        ];
+    fn emit_i32(buf: &mut Vec<u8>, value: i32) {
+        buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn call_bytecode(ctx: &mut JSContext, bytecode: Vec<u8>) -> JSValue {
         let byte_code_val = ctx.alloc_byte_array(&bytecode).expect("bytecode");
         let header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let fields = FunctionBytecodeFields {
@@ -719,7 +916,7 @@ mod tests {
             cpool: JS_NULL,
             vars: JS_NULL,
             ext_vars: JS_NULL,
-            stack_size: 2,
+            stack_size: 4,
             ext_vars_len: 0,
             filename: JS_NULL,
             pc2line: JS_NULL,
@@ -729,8 +926,187 @@ mod tests {
             .alloc_function_bytecode(header, fields)
             .expect("func");
         let closure = ctx.alloc_closure(func, 0).expect("closure");
-        let result = call(&mut ctx, closure, &[]).expect("call");
+        call(ctx, closure, &[]).expect("call")
+    }
+
+    #[test]
+    fn call_simple_add() {
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![OP_PUSH_1.0 as u8, OP_PUSH_2.0 as u8, OP_ADD.0 as u8, OP_RETURN.0 as u8],
+        );
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 3);
+    }
+
+    #[test]
+    fn control_flow_if_false_goto() {
+        let mut ctx = new_context();
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_TRUE.0 as u8);
+        bytecode.push(OP_IF_FALSE.0 as u8);
+        emit_i32(&mut bytecode, 10);
+        bytecode.push(OP_PUSH_1.0 as u8);
+        bytecode.push(OP_GOTO.0 as u8);
+        emit_i32(&mut bytecode, 5);
+        bytecode.push(OP_PUSH_2.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+        let result = call_bytecode(&mut ctx, bytecode);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 1);
+    }
+
+    #[test]
+    fn control_flow_if_true() {
+        let mut ctx = new_context();
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_TRUE.0 as u8);
+        bytecode.push(OP_IF_TRUE.0 as u8);
+        emit_i32(&mut bytecode, 6);
+        bytecode.push(OP_PUSH_1.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_PUSH_2.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+        let result = call_bytecode(&mut ctx, bytecode);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 2);
+    }
+
+    #[test]
+    fn control_flow_gosub_ret() {
+        let mut ctx = new_context();
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_1.0 as u8);
+        bytecode.push(OP_GOSUB.0 as u8);
+        emit_i32(&mut bytecode, 7);
+        bytecode.push(OP_PUSH_2.0 as u8);
+        bytecode.push(OP_ADD.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_RET.0 as u8);
+        let result = call_bytecode(&mut ctx, bytecode);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 3);
+    }
+
+    #[test]
+    fn exception_flow_catch_throw() {
+        let mut ctx = new_context();
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_CATCH.0 as u8);
+        emit_i32(&mut bytecode, 8);
+        bytecode.push(OP_PUSH_1.0 as u8);
+        bytecode.push(OP_THROW.0 as u8);
+        bytecode.push(OP_PUSH_2.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+        let result = call_bytecode(&mut ctx, bytecode);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 1);
+    }
+
+    #[test]
+    fn stack_ops_shuffle() {
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![OP_PUSH_1.0 as u8, OP_PUSH_2.0 as u8, OP_NIP.0 as u8, OP_RETURN.0 as u8],
+        );
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 2);
+
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![
+                OP_PUSH_1.0 as u8,
+                OP_PUSH_2.0 as u8,
+                OP_DUP2.0 as u8,
+                OP_ADD.0 as u8,
+                OP_ADD.0 as u8,
+                OP_ADD.0 as u8,
+                OP_RETURN.0 as u8,
+            ],
+        );
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 6);
+
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![
+                OP_PUSH_1.0 as u8,
+                OP_PUSH_2.0 as u8,
+                OP_INSERT2.0 as u8,
+                OP_ADD.0 as u8,
+                OP_ADD.0 as u8,
+                OP_RETURN.0 as u8,
+            ],
+        );
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 5);
+
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![
+                OP_PUSH_1.0 as u8,
+                OP_PUSH_2.0 as u8,
+                OP_PUSH_3.0 as u8,
+                OP_INSERT3.0 as u8,
+                OP_ADD.0 as u8,
+                OP_ADD.0 as u8,
+                OP_ADD.0 as u8,
+                OP_RETURN.0 as u8,
+            ],
+        );
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 9);
+
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![
+                OP_PUSH_1.0 as u8,
+                OP_PUSH_2.0 as u8,
+                OP_PUSH_3.0 as u8,
+                OP_PERM3.0 as u8,
+                OP_SUB.0 as u8,
+                OP_RETURN.0 as u8,
+            ],
+        );
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), -2);
+
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![
+                OP_PUSH_1.0 as u8,
+                OP_PUSH_2.0 as u8,
+                OP_PUSH_3.0 as u8,
+                OP_ROT3L.0 as u8,
+                OP_SUB.0 as u8,
+                OP_RETURN.0 as u8,
+            ],
+        );
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 2);
+
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![
+                OP_PUSH_1.0 as u8,
+                OP_PUSH_2.0 as u8,
+                OP_PUSH_3.0 as u8,
+                OP_PUSH_4.0 as u8,
+                OP_PERM4.0 as u8,
+                OP_SUB.0 as u8,
+                OP_RETURN.0 as u8,
+            ],
+        );
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), -2);
     }
 }

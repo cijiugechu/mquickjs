@@ -559,6 +559,20 @@ impl JSContext {
         self.class_roots[ROOT_MINUS_ZERO]
     }
 
+    pub(crate) fn set_current_exception(&mut self, value: JSValue) {
+        self.class_roots[ROOT_CURRENT_EXCEPTION] = value;
+    }
+
+    pub(crate) fn take_current_exception(&mut self) -> JSValue {
+        let value = self.class_roots[ROOT_CURRENT_EXCEPTION];
+        self.class_roots[ROOT_CURRENT_EXCEPTION] = JS_NULL;
+        value
+    }
+
+    pub(crate) fn current_exception_is_uncatchable(&self) -> bool {
+        self.current_exception_is_uncatchable
+    }
+
     pub fn new_float64(&mut self, value: f64) -> Result<JSValue, ContextError> {
         if value >= JS_SHORTINT_MIN as f64 && value <= JS_SHORTINT_MAX as f64 {
             let val = value as i32;
