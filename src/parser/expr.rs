@@ -208,7 +208,7 @@ pub struct ExprParser<'a, 'ctx> {
     source: &'a [u8],
     lexer: ParseState<'a>,
     emitter: BytecodeEmitter<'a>,
-    parse_state: JSParseState,
+    parse_state_ptr: NonNull<JSParseState>,
     prev_parse_state: Option<NonNull<JSParseState>>,
     parse_state_attached: bool,
     alloc: VarAllocator,
@@ -236,16 +236,19 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         };
         let func = OwnedFunctionBytecode::new(header, fields);
         let lexer = ParseState::new(source, ctx);
-        let parse_state = JSParseState::new(NonNull::dangling(), false);
+        let parse_state = Box::new(JSParseState::new(NonNull::dangling(), false));
         parse_state.set_cur_func(func.value());
         parse_state.set_eval_ret_idx(-1);
         parse_state.set_source(source.as_ptr(), lexer.buf_len() as u32);
+        // Keep parse_state in a stable heap allocation so raw pointers survive parser reborrows.
+        let parse_state_ptr = NonNull::new(Box::into_raw(parse_state))
+            .expect("parse_state allocation must be non-null");
         Self {
             ctx_marker: PhantomData,
             source,
             lexer,
             emitter: BytecodeEmitter::new(source, 0, false),
-            parse_state,
+            parse_state_ptr,
             prev_parse_state: None,
             parse_state_attached: false,
             alloc: VarAllocator::new(),
@@ -258,25 +261,23 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn parse_state_ref(&self) -> &JSParseState {
-        &self.parse_state
+        // SAFETY: JSParseState relies on interior mutability (Cells) and we never hand out
+        // &mut JSParseState, so shared references are safe.
+        unsafe { self.parse_state_ptr.as_ref() }
     }
 
     fn with_parse_state_and_alloc<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&JSParseState, &mut VarAllocator) -> R,
     {
-        f(&self.parse_state, &mut self.alloc)
+        let alloc = &mut self.alloc;
+        // SAFETY: JSParseState relies on interior mutability and the pointer is valid here.
+        let parse_state = unsafe { self.parse_state_ptr.as_ref() };
+        f(parse_state, alloc)
     }
 
     pub(crate) fn attach_parse_state(&mut self) {
-        let parse_state_ptr = unsafe {
-            // SAFETY: parse_state lives inside ExprParser; callers must not move the parser
-            // after attaching the parse state.
-            let raw = core::ptr::addr_of_mut!(self.parse_state);
-            #[cfg(miri)]
-            let raw = raw as usize as *mut JSParseState;
-            NonNull::new_unchecked(raw)
-        };
+        let parse_state_ptr = self.parse_state_ptr;
         if !self.parse_state_attached {
             self.prev_parse_state = self.lexer.ctx_mut().swap_parse_state(Some(parse_state_ptr));
             self.parse_state_attached = true;
@@ -3003,6 +3004,10 @@ impl Drop for ExprParser<'_, '_> {
         if self.parse_state_attached {
             let prev = self.prev_parse_state;
             let _ = self.lexer.ctx_mut().swap_parse_state(prev);
+        }
+        unsafe {
+            // SAFETY: parse_state_ptr was created from Box::into_raw in ExprParser::new.
+            drop(Box::from_raw(self.parse_state_ptr.as_ptr()));
         }
     }
 }
