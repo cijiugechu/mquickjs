@@ -14,7 +14,7 @@ pub struct GcRuntimeRoots<'a> {
     class_roots: &'a mut [JSValue],
     stack_roots: &'a mut [JSValue],
     gc_refs: Option<&'a GcRefState>,
-    parse_state: Option<&'a mut JSParseState>,
+    parse_state: Option<&'a JSParseState>,
     atom_tables: Option<&'a mut AtomTables>,
     string_pos_cache: Option<&'a mut [StringPosCacheEntry; JS_STRING_POS_CACHE_SIZE]>,
 }
@@ -36,7 +36,7 @@ impl<'a> GcRuntimeRoots<'a> {
         self
     }
 
-    pub fn with_parse_state(mut self, state: &'a mut JSParseState) -> Self {
+    pub fn with_parse_state(mut self, state: &'a JSParseState) -> Self {
         self.parse_state = Some(state);
         self
     }
@@ -59,7 +59,7 @@ impl<'a> GcRuntimeRoots<'a> {
         if let Some(refs) = self.gc_refs {
             mark_roots = mark_roots.with_gc_refs(refs);
         }
-        if let Some(state) = self.parse_state.as_deref() {
+        if let Some(state) = self.parse_state {
             mark_roots = mark_roots.with_parse_state(state);
         }
         if let Some(tables) = self.atom_tables.as_deref_mut() {
@@ -86,8 +86,8 @@ impl RootVisitor for GcRuntimeRoots<'_> {
         if let Some(refs) = self.gc_refs {
             refs.visit_root_slots(&mut f);
         }
-        if let Some(state) = self.parse_state.as_deref_mut() {
-            for slot in state.gc_root_slots_mut() {
+        if let Some(state) = self.parse_state {
+            for slot in state.gc_root_slots() {
                 f(slot);
             }
         }
@@ -115,7 +115,7 @@ pub unsafe fn gc_collect(
         if let Some(refs) = roots.gc_refs {
             mark_roots = mark_roots.with_gc_refs(refs);
         }
-        if let Some(state) = roots.parse_state.as_deref() {
+        if let Some(state) = roots.parse_state {
             mark_roots = mark_roots.with_parse_state(state);
         }
         if let Some(tables) = roots.atom_tables.as_deref_mut() {
@@ -134,7 +134,7 @@ pub unsafe fn gc_collect(
         compact_heap(heap, roots);
     }
 
-    if let Some(state) = roots.parse_state.as_deref_mut() {
+    if let Some(state) = roots.parse_state {
         state.refresh_source_buf_from_str();
     }
 }

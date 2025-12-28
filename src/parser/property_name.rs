@@ -33,7 +33,7 @@ pub fn parse_property_name(state: &mut ParseState) -> Result<(ParseProp, JSValue
                 || val == b'}' as i32
                 || val == TOK_PAREN_OPEN
             {
-                let name = ident_value;
+                let name = state.atomize_value(ident_value);
                 if token.val() == TOK_PAREN_OPEN {
                     prop_type = ParseProp::Method;
                 }
@@ -66,6 +66,7 @@ pub fn parse_property_name(state: &mut ParseState) -> Result<(ParseProp, JSValue
         ));
     };
 
+    let name = state.atomize_value(name);
     state.next_token().map_err(ParserError::from)?;
     if prop_type == ParseProp::Field && state.token().val() == TOK_PAREN_OPEN {
         prop_type = ParseProp::Method;
@@ -89,26 +90,28 @@ fn number_to_property_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cutils::{unicode_to_utf8, UTF8_CHAR_LEN_MAX};
-    use crate::jsvalue::{
-        value_get_special_tag, value_get_special_value, value_to_ptr, JS_TAG_STRING_CHAR,
-    };
-    use crate::string::js_string::JSString;
+    use crate::context::{ContextConfig, JSContext};
+    use crate::string::runtime::string_view;
+    use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
     fn value_bytes(value: JSValue) -> Vec<u8> {
-        if value_get_special_tag(value) == JS_TAG_STRING_CHAR {
-            let code = value_get_special_value(value) as u32;
-            let mut buf = [0u8; UTF8_CHAR_LEN_MAX];
-            let len = unicode_to_utf8(&mut buf, code);
-            return buf[..len].to_vec();
-        }
-        let ptr = value_to_ptr::<JSString>(value).expect("string pointer");
-        // SAFETY: ParseState owns the JSString backing this JSValue in these tests.
-        unsafe { ptr.as_ref().buf().to_vec() }
+        let mut scratch = [0u8; 5];
+        let view = string_view(value, &mut scratch).expect("string view");
+        view.bytes().to_vec()
+    }
+
+    fn new_context() -> JSContext {
+        JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init")
     }
 
     fn parse_name(input: &str) -> (ParseProp, Vec<u8>, i32) {
-        let mut state = ParseState::new(input.as_bytes());
+        let mut ctx = new_context();
+        let mut state = ParseState::new(input.as_bytes(), &mut ctx);
         state.next_token().expect("next token");
         let (prop, name) = parse_property_name(&mut state).expect("property name");
         let bytes = value_bytes(name);

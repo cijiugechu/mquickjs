@@ -1,13 +1,14 @@
+use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use crate::context::JSContext;
-use crate::cutils::{get_u16, put_u16, unicode_to_utf8, UTF8_CHAR_LEN_MAX};
+use crate::cutils::{get_u16, put_u16};
 use crate::enums::JSVarRefKind;
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::jsvalue::{
     is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value, value_from_ptr,
     value_to_ptr, JSValue, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT,
-    JS_TAG_SPECIAL_BITS, JS_TAG_STRING_CHAR,
+    JS_TAG_SPECIAL_BITS,
 };
 use crate::opcode::{
     OpCode, OP_ADD, OP_AND, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR,
@@ -54,7 +55,7 @@ use crate::parser::vars::{
     add_ext_var, add_var, convert_ext_vars_to_local_vars, define_var, find_ext_var, find_var,
     get_ext_var_name, put_var, resolve_var_refs, ByteArray, VarAllocator, VarError, ValueArray,
 };
-use crate::string::js_string::JSString;
+use crate::string::runtime::string_view;
 
 const ERR_TOO_MANY_CONSTANTS: &str = "too many constants";
 const ERR_TOO_MANY_CALL_ARGUMENTS: &str = "too many call arguments";
@@ -139,16 +140,11 @@ fn encode_jsvalue(val: JSValue) -> u32 {
 }
 
 fn value_bytes(val: JSValue) -> Result<Vec<u8>, ParserError> {
-    if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
-        let mut buf = [0u8; UTF8_CHAR_LEN_MAX];
-        let len = unicode_to_utf8(&mut buf, value_get_special_value(val) as u32);
-        return Ok(buf[..len].to_vec());
-    }
-    let Some(ptr) = value_to_ptr::<JSString>(val) else {
+    let mut scratch = [0u8; 5];
+    let Some(view) = string_view(val, &mut scratch) else {
         return Err(ParserError::new(ParserErrorKind::Static(ERR_INVALID_STRING), 0));
     };
-    // SAFETY: ExprParser owns the JSString allocations used by its lexer.
-    Ok(unsafe { ptr.as_ref().buf().to_vec() })
+    Ok(view.bytes().to_vec())
 }
 
 fn is_short_float_value(val: JSValue) -> bool {
@@ -208,12 +204,13 @@ impl Drop for OwnedFunctionBytecode {
 }
 
 pub struct ExprParser<'a, 'ctx> {
-    ctx: &'ctx mut JSContext,
+    ctx_marker: PhantomData<&'ctx mut JSContext>,
     source: &'a [u8],
     lexer: ParseState<'a>,
     emitter: BytecodeEmitter<'a>,
     parse_state: JSParseState,
     prev_parse_state: Option<NonNull<JSParseState>>,
+    parse_state_attached: bool,
     alloc: VarAllocator,
     func: OwnedFunctionBytecode,
     nested_funcs: Vec<OwnedFunctionBytecode>,
@@ -238,44 +235,73 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             source_pos: 0,
         };
         let func = OwnedFunctionBytecode::new(header, fields);
-        let lexer = ParseState::new(source);
-        let mut parse_state = JSParseState::new(NonNull::dangling(), false);
+        let lexer = ParseState::new(source, ctx);
+        let parse_state = JSParseState::new(NonNull::dangling(), false);
         parse_state.set_cur_func(func.value());
         parse_state.set_eval_ret_idx(-1);
         parse_state.set_source(source.as_ptr(), lexer.buf_len() as u32);
-        let mut parser = Self {
-            ctx,
+        Self {
+            ctx_marker: PhantomData,
             source,
             lexer,
             emitter: BytecodeEmitter::new(source, 0, false),
             parse_state,
             prev_parse_state: None,
+            parse_state_attached: false,
             alloc: VarAllocator::new(),
             func,
             nested_funcs: Vec::new(),
             break_stack: BreakStack::new(),
             dropped_result: false,
             atoms: AtomCache::default(),
+        }
+    }
+
+    fn parse_state_ref(&self) -> &JSParseState {
+        &self.parse_state
+    }
+
+    fn with_parse_state_and_alloc<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&JSParseState, &mut VarAllocator) -> R,
+    {
+        f(&self.parse_state, &mut self.alloc)
+    }
+
+    pub(crate) fn attach_parse_state(&mut self) {
+        let parse_state_ptr = unsafe {
+            // SAFETY: parse_state lives inside ExprParser; callers must not move the parser
+            // after attaching the parse state.
+            let raw = core::ptr::addr_of_mut!(self.parse_state);
+            #[cfg(miri)]
+            let raw = raw as usize as *mut JSParseState;
+            NonNull::new_unchecked(raw)
         };
-        let parse_state_ptr = NonNull::from(&mut parser.parse_state);
-        parser.prev_parse_state = parser.ctx.swap_parse_state(Some(parse_state_ptr));
-        parser
+        if !self.parse_state_attached {
+            self.prev_parse_state = self.lexer.ctx_mut().swap_parse_state(Some(parse_state_ptr));
+            self.parse_state_attached = true;
+        } else {
+            let _ = self.lexer.ctx_mut().swap_parse_state(Some(parse_state_ptr));
+        }
+        self.lexer.set_parse_state(Some(parse_state_ptr));
     }
 
     pub fn has_column(&self) -> bool {
-        self.parse_state.has_column()
+        self.parse_state_ref().has_column()
     }
 
     pub fn set_has_column(&mut self, has_column: bool) {
-        self.parse_state.set_has_column(has_column);
+        self.parse_state_ref().set_has_column(has_column);
     }
 
     pub fn parse_expression(&mut self, parse_flags: u32) -> Result<(), ParserError> {
+        self.attach_parse_state();
         self.lexer.next_token().map_err(ParserError::from)?;
         self.parse_expr2(parse_flags as i32)
     }
 
     pub fn parse_statement(&mut self) -> Result<(), ParserError> {
+        self.attach_parse_state();
         self.lexer.next_token().map_err(ParserError::from)?;
         let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
         let mut stack = ParseStack::new(&mut storage);
@@ -292,37 +318,40 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         has_retval: bool,
         is_repl: bool,
     ) -> Result<(), ParserError> {
+        self.attach_parse_state();
         let func_val = self.func.value();
         self.nested_funcs.clear();
-        self.parse_state.reset_parse_state(0, func_val);
-        self.parse_state.set_is_eval(is_eval);
-        self.parse_state.set_is_repl(is_repl);
-        self.parse_state.set_has_retval(has_retval);
-        self.parse_state.set_hoisted_code_len(0);
-        self.func.as_mut().set_has_column(self.parse_state.has_column());
+        self.parse_state_ref().reset_parse_state(0, func_val);
+        self.parse_state_ref().set_is_eval(is_eval);
+        self.parse_state_ref().set_is_repl(is_repl);
+        self.parse_state_ref().set_has_retval(has_retval);
+        self.parse_state_ref().set_hoisted_code_len(0);
+        let has_column = self.parse_state_ref().has_column();
+        self.func.as_mut().set_has_column(has_column);
 
         self.lexer.reset_to_pos(0);
-        self.emitter = BytecodeEmitter::new(self.source, 0, self.parse_state.has_column());
+        self.emitter = BytecodeEmitter::new(self.source, 0, has_column);
         self.break_stack = BreakStack::new();
         self.dropped_result = false;
 
         self.lexer.next_token().map_err(ParserError::from)?;
 
-        if self.parse_state.has_retval() {
+        if self.parse_state_ref().has_retval() {
             let name = self
                 .lexer
                 .intern_identifier(b"_ret_", 0)
                 .map_err(ParserError::from)?;
-            let idx = add_var(&mut self.parse_state, &mut self.alloc, name)
+            let idx = self
+                .with_parse_state_and_alloc(|state, alloc| add_var(state, alloc, name))
                 .map_err(|err| Self::var_error(err, 0))?;
-            self.parse_state.set_eval_ret_idx(i32::from(idx));
+            self.parse_state_ref().set_eval_ret_idx(i32::from(idx));
         }
 
         while self.lexer.token().val() != TOK_EOF {
             self.parse_source_element()?;
         }
 
-        let eval_ret_idx = self.parse_state.eval_ret_idx();
+        let eval_ret_idx = self.parse_state_ref().eval_ret_idx();
         if eval_ret_idx >= 0 {
             let idx = eval_ret_idx as u32;
             let source_pos = self.emitter.pc2line_source_pos();
@@ -346,17 +375,17 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             .lexer
             .intern_identifier(name.as_bytes(), 0)
             .map_err(ParserError::from)?;
-        add_var(&mut self.parse_state, &mut self.alloc, value)
+        self.with_parse_state_and_alloc(|state, alloc| add_var(state, alloc, value))
             .map_err(|err| Self::var_error(err, 0))?;
         Ok(value)
     }
 
     fn current_func_ref(&self) -> Result<&FunctionBytecode, ParserError> {
-        self.function_ref(self.parse_state.cur_func())
+        self.function_ref(self.parse_state_ref().cur_func())
     }
 
     fn current_func_mut(&mut self) -> Result<&mut FunctionBytecode, ParserError> {
-        self.function_mut(self.parse_state.cur_func())
+        self.function_mut(self.parse_state_ref().cur_func())
     }
 
     fn function_ref(&self, value: JSValue) -> Result<&FunctionBytecode, ParserError> {
@@ -487,11 +516,11 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn reset_for_function(&mut self, func: JSValue, source_pos: u32) -> Result<(), ParserError> {
         let has_column = self.function_ref(func)?.has_column();
-        self.parse_state.reset_parse_state(source_pos, func);
-        self.parse_state.set_is_eval(false);
-        self.parse_state.set_is_repl(false);
-        self.parse_state.set_has_retval(false);
-        self.parse_state.set_hoisted_code_len(0);
+        self.parse_state_ref().reset_parse_state(source_pos, func);
+        self.parse_state_ref().set_is_eval(false);
+        self.parse_state_ref().set_is_repl(false);
+        self.parse_state_ref().set_has_retval(false);
+        self.parse_state_ref().set_hoisted_code_len(0);
         self.lexer.reset_to_pos(source_pos as usize);
         self.emitter = BytecodeEmitter::new(self.source, 0, has_column);
         self.break_stack = BreakStack::new();
@@ -522,7 +551,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         let header = FunctionBytecodeHeader::new(
             false,
             false,
-            self.parse_state.has_column(),
+            self.parse_state_ref().has_column(),
             0,
             false,
         );
@@ -564,9 +593,10 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             return Ok(());
         }
 
-        let (var_kind, var_idx) = define_var(&mut self.parse_state, &mut self.alloc, func_name)
+        let (var_kind, var_idx) = self
+            .with_parse_state_and_alloc(|state, alloc| define_var(state, alloc, func_name))
             .map_err(|err| Self::var_error(err, name_pos as usize))?;
-        self.parse_state.add_hoisted_code_len(6);
+        self.parse_state_ref().add_hoisted_code_len(6);
 
         let mut hoist_idx = var_idx;
         if var_kind == JSVarRefKind::Var {
@@ -591,10 +621,10 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             if value_matches_bytes(name, b"eval") || value_matches_bytes(name, b"arguments") {
                 return Err(self.parser_error(ERR_INVALID_ARGUMENT_NAME));
             }
-            if find_var(&self.parse_state, name).is_some() {
+            if find_var(self.parse_state_ref(), name).is_some() {
                 return Err(self.parser_error(ERR_DUPLICATE_ARGUMENT_NAME));
             }
-            add_var(&mut self.parse_state, &mut self.alloc, name)
+            self.with_parse_state_and_alloc(|state, alloc| add_var(state, alloc, name))
                 .map_err(|err| Self::var_error(err, self.lexer.token().source_pos() as usize))?;
             self.next_token()?;
             if self.lexer.token().val() == TOK_PAREN_CLOSE {
@@ -603,7 +633,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             parse_expect(&mut self.lexer, ',' as i32)?;
         }
 
-        let arg_count = self.parse_state.local_vars_len();
+        let arg_count = self.parse_state_ref().local_vars_len();
         self.current_func_mut()?.set_arg_count(arg_count);
 
         self.next_token()?;
@@ -625,7 +655,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 .lexer
                 .intern_identifier(b"arguments", 0)
                 .map_err(ParserError::from)?;
-            let var_idx = add_var(&mut self.parse_state, &mut self.alloc, name)
+            let var_idx = self
+                .with_parse_state_and_alloc(|state, alloc| add_var(state, alloc, name))
                 .map_err(|err| Self::var_error(err, source_pos as usize))?;
             self.emitter.emit_op(OP_ARGUMENTS);
             put_var(
@@ -638,7 +669,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         }
 
         if has_local_name {
-            let var_idx = add_var(&mut self.parse_state, &mut self.alloc, func_name)
+            let var_idx = self
+                .with_parse_state_and_alloc(|state, alloc| add_var(state, alloc, func_name))
                 .map_err(|err| Self::var_error(err, source_pos as usize))?;
             self.emitter.emit_op(OP_THIS_FUNC);
             put_var(
@@ -663,7 +695,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn store_current_function(&mut self, is_eval: bool) -> Result<(), ParserError> {
-        let hoisted_len = self.parse_state.hoisted_code_len();
+        let hoisted_len = self.parse_state_ref().hoisted_code_len();
         self.define_hoisted_functions(is_eval)?;
 
         let byte_code = self.emitter.byte_code().to_vec();
@@ -673,15 +705,15 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         let pc2line = self.emitter.finalize_pc2line(hoisted_len);
         let pc2line_val = self.alloc.alloc_byte_array(pc2line);
 
-        let func = self.function_mut(self.parse_state.cur_func())?;
+        let func = self.function_mut(self.parse_state_ref().cur_func())?;
         func.set_byte_code(byte_code_val);
         func.set_pc2line(pc2line_val);
-        self.parse_state.set_byte_code_len(byte_code_len);
+        self.parse_state_ref().set_byte_code_len(byte_code_len);
         Ok(())
     }
 
     fn define_hoisted_functions(&mut self, is_eval: bool) -> Result<(), ParserError> {
-        let hoisted_len = self.parse_state.hoisted_code_len() as usize;
+        let hoisted_len = self.parse_state_ref().hoisted_code_len() as usize;
         if hoisted_len == 0 {
             return Ok(());
         }
@@ -692,7 +724,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         let cpool_val = func.cpool();
         if cpool_val != JS_NULL {
             let cpool = self.value_array_ref(cpool_val)?;
-            let cpool_len = self.parse_state.cpool_len() as usize;
+            let cpool_len = self.parse_state_ref().cpool_len() as usize;
             for (idx, value) in cpool.values().iter().take(cpool_len).enumerate() {
                 let Some(ptr) = self.func_ptr(*value) else {
                     continue;
@@ -724,17 +756,17 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn finalize_parsed_function(&mut self) -> Result<(), ParserError> {
-        convert_ext_vars_to_local_vars(&mut self.parse_state)
+        convert_ext_vars_to_local_vars(self.parse_state_ref())
             .map_err(|err| Self::var_error(err, 0))?;
 
-        let func_val = self.parse_state.cur_func();
+        let func_val = self.parse_state_ref().cur_func();
         let (cpool_val, vars_val, byte_code_val) = {
             let func = self.function_ref(func_val)?;
             (func.cpool(), func.vars(), func.byte_code())
         };
-        let cpool_len = self.parse_state.cpool_len() as usize;
-        let local_len = self.parse_state.local_vars_len() as usize;
-        let byte_code_len = self.parse_state.byte_code_len() as usize;
+        let cpool_len = self.parse_state_ref().cpool_len() as usize;
+        let local_len = self.parse_state_ref().local_vars_len() as usize;
+        let byte_code_len = self.parse_state_ref().byte_code_len() as usize;
 
         if cpool_val != JS_NULL {
             let cpool = self.value_array_mut(cpool_val)?;
@@ -838,7 +870,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             if value_matches_bytes(name, b"arguments") {
                 return Err(self.parser_error(ERR_INVALID_VARIABLE_NAME));
             }
-            let (var_kind, var_idx) = define_var(&mut self.parse_state, &mut self.alloc, name)
+            let (var_kind, var_idx) = self
+                .with_parse_state_and_alloc(|state, alloc| define_var(state, alloc, name))
                 .map_err(|err| Self::var_error(err, ident_source_pos as usize))?;
             self.next_token()?;
             if self.lexer.token().val() == '=' as i32 {
@@ -857,7 +890,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn set_eval_ret_undefined(&mut self) {
-        let eval_ret_idx = self.parse_state.eval_ret_idx();
+        let eval_ret_idx = self.parse_state_ref().eval_ret_idx();
         if eval_ret_idx < 0 {
             return;
         }
@@ -1011,7 +1044,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 match self.lexer.token().val() {
                     TOK_BRACE_OPEN => Ok(encode_call(0, ParseExprFunc::JsParseBlock, 0)),
                     TOK_RETURN => {
-                        if self.parse_state.is_eval() {
+                        if self.parse_state_ref().is_eval() {
                             return Err(self.parser_error(ERR_RETURN_NOT_IN_FUNCTION));
                         }
                         let op_source_pos = self.lexer.token().source_pos();
@@ -1113,11 +1146,13 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                                 }
                                 let name = self.lexer.token().value();
                                 let ident_source_pos = self.lexer.token().source_pos();
-                                let (var_kind, var_idx) =
-                                    define_var(&mut self.parse_state, &mut self.alloc, name)
-                                        .map_err(|err| {
-                                            Self::var_error(err, ident_source_pos as usize)
-                                        })?;
+                                let (var_kind, var_idx) = self
+                                    .with_parse_state_and_alloc(|state, alloc| {
+                                        define_var(state, alloc, name)
+                                    })
+                                    .map_err(|err| {
+                                        Self::var_error(err, ident_source_pos as usize)
+                                    })?;
                                 let source_pos = self.emitter.pc2line_source_pos();
                                 put_var(
                                     &mut self.emitter,
@@ -1133,12 +1168,13 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                                 self.parse_assign_expr2(PF_NO_IN as i32)?;
                                 let lvalue = get_lvalue(&mut self.emitter, false)
                                     .map_err(Self::lvalue_error)?;
+                                let is_repl = self.parse_state_ref().is_repl();
                                 let length_idx = self.length_atom_index()?;
                                 put_lvalue(
                                     &mut self.emitter,
                                     lvalue,
                                     PutLValue::NoKeepBottom,
-                                    self.parse_state.is_repl(),
+                                    is_repl,
                                     length_idx,
                                 )
                                 .map_err(Self::lvalue_error)?;
@@ -1262,7 +1298,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                         Ok(PARSE_STATE_RET as i32)
                     }
                     _ => {
-                        let eval_ret_idx = self.parse_state.eval_ret_idx();
+                        let eval_ret_idx = self.parse_state_ref().eval_ret_idx();
                         if eval_ret_idx >= 0 {
                             self.parse_expr()?;
                             let idx = eval_ret_idx as u32;
@@ -1392,16 +1428,14 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                     }
                     let name = self.lexer.token().value();
                     let ident_source_pos = self.lexer.token().source_pos();
-                    if find_var(&self.parse_state, name).is_some()
-                        || find_ext_var(&self.parse_state, name).is_some()
+                    if find_var(self.parse_state_ref(), name).is_some()
+                        || find_ext_var(self.parse_state_ref(), name).is_some()
                     {
                         return Err(self.parser_error(ERR_CATCH_VAR_EXISTS));
                     }
-                    let var_idx =
-                        add_var(&mut self.parse_state, &mut self.alloc, name)
-                            .map_err(|err| {
-                                Self::var_error(err, ident_source_pos as usize)
-                            })?;
+                    let var_idx = self
+                        .with_parse_state_and_alloc(|state, alloc| add_var(state, alloc, name))
+                        .map_err(|err| Self::var_error(err, ident_source_pos as usize))?;
                     self.next_token()?;
                     parse_expect(&mut self.lexer, ')' as i32)?;
 
@@ -1628,7 +1662,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn cpool_add(&mut self, val: JSValue) -> Result<u16, ParserError> {
-        let len = self.parse_state.cpool_len() as usize;
+        let len = self.parse_state_ref().cpool_len() as usize;
         let mut cpool_val = self.func.as_ref().cpool();
         if cpool_val != JS_NULL {
             let ptr = value_to_ptr::<ValueArray>(cpool_val).ok_or_else(|| {
@@ -1666,7 +1700,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         // SAFETY: cpool array is owned by the allocator and mutated here.
         let arr = unsafe { ptr.as_mut() };
         arr.values_mut()[len] = val;
-        self.parse_state.set_cpool_len((len + 1) as u16);
+        self.parse_state_ref().set_cpool_len((len + 1) as u16);
         Ok(len as u16)
     }
 
@@ -1714,7 +1748,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             self.emitter.emit_push_short_int(value as i32);
             return Ok(());
         }
-        let js_val = self.ctx.new_float64(value).map_err(|_| {
+        let js_val = self.lexer.ctx_mut().new_float64(value).map_err(|_| {
             ParserError::new(
                 ParserErrorKind::Static(ERR_NO_MEM),
                 self.lexer.token().source_pos() as usize,
@@ -1896,7 +1930,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                         }
                         TOK_IDENT => {
                             let name = token.value();
-                            let var_idx = find_var(&self.parse_state, name);
+                            let var_idx = find_var(self.parse_state_ref(), name);
                             if let Some(var_idx) = var_idx {
                                 let arg_count = self.func.as_ref().arg_count() as i32;
                                 let mut idx = i32::from(var_idx);
@@ -1908,19 +1942,20 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                                 };
                                 self.emitter.emit_var(opcode, idx as u32, token.source_pos());
                             } else {
-                                let var_idx = find_ext_var(&self.parse_state, name);
+                                let var_idx = find_ext_var(self.parse_state_ref(), name);
                                 let var_idx = if let Some(var_idx) = var_idx {
                                     i32::from(var_idx)
                                 } else {
                                     let decl =
                                         (JSVarRefKind::Global as i32) << 16;
-                                    i32::from(add_ext_var(
-                                        &self.parse_state,
-                                        &mut self.alloc,
-                                        name,
-                                        decl,
+                                    i32::from(
+                                        self.with_parse_state_and_alloc(|state, alloc| {
+                                            add_ext_var(state, alloc, name, decl)
+                                        })
+                                        .map_err(|err| {
+                                            Self::var_error(err, token.source_pos() as usize)
+                                        })?,
                                     )
-                                    .map_err(|err| Self::var_error(err, token.source_pos() as usize))?)
                                 };
                                 self.emitter.emit_var(OP_GET_VAR_REF, var_idx as u32, token.source_pos());
                             }
@@ -2188,7 +2223,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                                         let var_idx =
                                             crate::parser::vars::ExtVarIndex::from(var_idx);
                                         if let Some(name) =
-                                            get_ext_var_name(&self.parse_state, var_idx)
+                                            get_ext_var_name(self.parse_state_ref(), var_idx)
                                             && value_matches_bytes(name, b"eval")
                                         {
                                             return Err(self.parser_error(ERR_DIRECT_EVAL));
@@ -2283,6 +2318,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                         self.next_token()?;
                         let lvalue =
                             get_lvalue(&mut self.emitter, true).map_err(Self::lvalue_error)?;
+                        let is_repl = self.parse_state_ref().is_repl();
                         if self.maybe_drop_result(parse_flags) {
                             self.dropped_result = true;
                             let op = OpCode(OP_DEC.0 + (op - TOK_DEC) as u16);
@@ -2292,7 +2328,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                                 &mut self.emitter,
                                 lvalue,
                                 PutLValue::NoKeepTop,
-                                self.parse_state.is_repl(),
+                                is_repl,
                                 length,
                             )
                             .map_err(Self::lvalue_error)?;
@@ -2304,7 +2340,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                                 &mut self.emitter,
                                 lvalue,
                                 PutLValue::KeepSecond,
-                                self.parse_state.is_repl(),
+                                is_repl,
                                 length,
                             )
                             .map_err(Self::lvalue_error)?;
@@ -2444,12 +2480,13 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 } else {
                     PutLValue::KeepTop
                 };
+                let is_repl = self.parse_state_ref().is_repl();
                 let length = self.length_atom_index()?;
                 put_lvalue(
                     &mut self.emitter,
                     lvalue,
                     special,
-                    self.parse_state.is_repl(),
+                    is_repl,
                     length,
                 )
                 .map_err(Self::lvalue_error)?;
@@ -2884,13 +2921,14 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 } else {
                     PutLValue::KeepTop
                 };
+                let is_repl = self.parse_state_ref().is_repl();
                 let length = self.length_atom_index()?;
                 let lvalue = crate::parser::lvalue::LValue::new(opcode, var_idx, source_pos);
                 put_lvalue(
                     &mut self.emitter,
                     lvalue,
                     special,
-                    self.parse_state.is_repl(),
+                    is_repl,
                     length,
                 )
                 .map_err(Self::lvalue_error)?;
@@ -2962,7 +3000,10 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
 impl Drop for ExprParser<'_, '_> {
     fn drop(&mut self) {
-        let _ = self.ctx.swap_parse_state(self.prev_parse_state);
+        if self.parse_state_attached {
+            let prev = self.prev_parse_state;
+            let _ = self.lexer.ctx_mut().swap_parse_state(prev);
+        }
     }
 }
 
@@ -3004,6 +3045,7 @@ mod tests {
     fn parse_ops(input: &str) -> Vec<OpCode> {
         let mut ctx = new_context();
         let mut parser = ExprParser::new(&mut ctx, input.as_bytes());
+        parser.attach_parse_state();
         parser.parse_expression(0).expect("parse");
         decode_ops(parser.bytecode())
     }
@@ -3011,6 +3053,7 @@ mod tests {
     fn parse_statement_ops(input: &str) -> Vec<OpCode> {
         let mut ctx = new_context();
         let mut parser = ExprParser::new(&mut ctx, input.as_bytes());
+        parser.attach_parse_state();
         parser.parse_statement().expect("parse");
         decode_ops(parser.bytecode())
     }
@@ -3042,6 +3085,7 @@ mod tests {
     fn expr_assignment_emits_put_loc() {
         let mut ctx = new_context();
         let mut parser = ExprParser::new(&mut ctx, b"x=1");
+        parser.attach_parse_state();
         parser.add_local_var("x").expect("var");
         parser.parse_expression(0).expect("parse");
         let ops = decode_ops(parser.bytecode());
@@ -3079,6 +3123,7 @@ mod tests {
     fn program_function_decl_hoists() {
         let mut ctx = new_context();
         let mut parser = ExprParser::new(&mut ctx, b"function foo(){}");
+        parser.attach_parse_state();
         parser.parse_program().expect("parse");
 
         let ops = parse_program_ops(&parser);
@@ -3106,6 +3151,7 @@ mod tests {
     fn program_named_function_expr_binds_name() {
         let mut ctx = new_context();
         let mut parser = ExprParser::new(&mut ctx, b"var f = function foo(){ foo; };");
+        parser.attach_parse_state();
         parser.parse_program().expect("parse");
 
         let root = parser
@@ -3129,6 +3175,7 @@ mod tests {
     fn program_arguments_usage_sets_flag() {
         let mut ctx = new_context();
         let mut parser = ExprParser::new(&mut ctx, b"function foo(){ arguments; }");
+        parser.attach_parse_state();
         parser.parse_program().expect("parse");
 
         let root = parser
@@ -3152,6 +3199,7 @@ mod tests {
     fn program_object_getter_emits_define_getter() {
         let mut ctx = new_context();
         let mut parser = ExprParser::new(&mut ctx, b"({ get foo() { return 1; } });");
+        parser.attach_parse_state();
         parser.parse_program().expect("parse");
 
         let ops = parse_program_ops(&parser);

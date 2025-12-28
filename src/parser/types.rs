@@ -93,9 +93,6 @@ impl Token {
         self.value
     }
 
-    pub(crate) fn value_ptr(&mut self) -> *mut JSValue {
-        &mut self.value
-    }
 }
 
 // C: `JSToken` union payload in mquickjs.c.

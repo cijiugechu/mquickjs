@@ -1093,10 +1093,10 @@ impl JSContext {
             })
             .with_atom_tables(atom_tables)
             .with_string_pos_cache(string_pos_cache);
-        if let Some(mut state) = parse_state {
+        if let Some(state) = parse_state {
             roots = roots.with_parse_state(unsafe {
                 // SAFETY: parse_state is registered by the parser and valid while set.
-                state.as_mut()
+                state.as_ref()
             });
         }
         unsafe {

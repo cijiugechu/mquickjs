@@ -95,6 +95,8 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported `JS_NewFloat64` behavior into `JSContext::new_float64` (short-int fast path, minus-zero cache, short-float range) and wired parser numeric constant allocation through the runtime; removed the temporary `src/parser/runtime.rs` allocator.
 - Added runtime helpers for byte arrays/function bytecode/closure objects in `src/context.rs`, updated `JSClosureData` to a flexible-array layout in `src/closure_data.rs`, and introduced a minimal interpreter loop in `src/interpreter.rs` (stack/frame setup, basic opcodes, Miri-safe stack restore) with tests.
 - Integrated GC collection into runtime allocations: `JSContext` now triggers mark/sweep/compact during heap pressure with stack/class roots, atom tables, string pos cache, GC refs, and registered parser state; parser registers/restores its `JSParseState` for GC safety.
+- Routed parser strings/atoms through the runtime: lexer now interns/allocates via `JSContext`, property names are atomized, lexer tokens sync into `JSParseState` roots, and parser attach/detach runs after boxing for stable GC-visible pointers.
+- Fixed Miri stacked-borrows in parser parse-state tracking by switching `JSParseState` fields to interior mutability (`Cell`), syncing lexer tokens via raw pointer writes to avoid aliasing, and using a Miri-only pointer exposure when attaching parse state so GC/lexer pointers survive interior updates.
 
 ## Parser port scope (C -> Rust)
 

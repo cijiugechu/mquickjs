@@ -66,15 +66,16 @@ pub fn parse_source<'a, 'ctx>(
             .map(ParseOutput::RegExp)
             .map_err(|err| parse_regexp_error(err, source))
     } else {
-        let mut parser = ExprParser::new(ctx, source);
+        let mut parser = Box::new(ExprParser::new(ctx, source));
         let has_column = (eval_flags & JS_EVAL_STRIP_COL) == 0;
         let has_retval = (eval_flags & JS_EVAL_RETVAL) != 0;
         let is_repl = (eval_flags & JS_EVAL_REPL) != 0;
         parser.set_has_column(has_column);
+        parser.attach_parse_state();
         parser
             .parse_program_with_flags(true, has_retval, is_repl)
             .map_err(|err| parse_js_error(err, source))?;
-        Ok(ParseOutput::Program(Box::new(parser)))
+        Ok(ParseOutput::Program(parser))
     }
 }
 

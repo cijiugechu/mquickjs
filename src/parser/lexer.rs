@@ -1,13 +1,12 @@
+use crate::context::JSContext;
 use crate::cutils::{from_hex, unicode_from_utf8, unicode_to_utf8, utf8_get, UTF8_CHAR_LEN_MAX};
 use crate::dtoa::{js_atod, JS_ATOD_ACCEPT_BIN_OCT, JS_ATOD_ACCEPT_UNDERSCORES};
-use crate::jsvalue::{
-    value_from_ptr, value_get_special_tag, value_get_special_value, value_make_special,
-    value_to_ptr, JSValue, JS_NULL, JS_TAG_STRING_CHAR,
-};
-use crate::string::js_string::{is_ascii_bytes, JSString};
-use std::pin::Pin;
+use crate::jsvalue::{JSValue, JS_NULL};
+use crate::string::js_string::is_ascii_bytes;
+use crate::string::runtime::string_view;
 use std::ptr::NonNull;
 
+use super::parse_state::JSParseState;
 use super::regexp_flags::parse_regexp_flags;
 use super::tokens::*;
 use super::types::{ParsePos, SourcePos, Token, TokenExtra};
@@ -165,36 +164,59 @@ impl ParseError {
 }
 
 pub struct ParseState<'a> {
+    ctx: NonNull<JSContext>,
     source: &'a [u8],
     buf_len: usize,
     buf_pos: usize,
     got_lf: bool,
     token: Token,
-    // Pinned to keep stable addresses for JSValue pointer tagging.
-    strings: Vec<Pin<Box<JSString>>>,
-    interned: Vec<usize>,
+    parse_state: Option<NonNull<JSParseState>>,
 }
 
 impl<'a> ParseState<'a> {
-    pub fn new(source: &'a [u8]) -> Self {
+    pub fn new(source: &'a [u8], ctx: &mut JSContext) -> Self {
         let buf_len = if source.last() == Some(&0) {
             source.len().saturating_sub(1)
         } else {
             source.len()
         };
         Self {
+            ctx: NonNull::from(ctx),
             source,
             buf_len,
             buf_pos: 0,
             got_lf: false,
             token: Token::new(b' ' as i32, 0, TokenExtra::None, JS_NULL),
-            strings: Vec::new(),
-            interned: Vec::new(),
+            parse_state: None,
         }
+    }
+
+    pub(crate) fn set_parse_state(&mut self, state: Option<NonNull<JSParseState>>) {
+        self.parse_state = state;
+        self.sync_parse_state_token();
     }
 
     pub fn token(&self) -> Token {
         self.token
+    }
+
+    pub(crate) fn ctx_mut(&mut self) -> &mut JSContext {
+        unsafe { self.ctx.as_mut() }
+    }
+
+    fn set_token(&mut self, token: Token) {
+        self.token = token;
+        self.sync_parse_state_token();
+    }
+
+    fn sync_parse_state_token(&mut self) {
+        let Some(state) = self.parse_state else {
+            return;
+        };
+        unsafe {
+            // SAFETY: parse_state pointer is valid while attached to the parser.
+            JSParseState::set_token_raw(state.as_ptr(), self.token);
+        }
     }
 
     pub fn source(&self) -> &[u8] {
@@ -220,7 +242,12 @@ impl<'a> ParseState<'a> {
     pub fn reset_to_pos(&mut self, pos: usize) {
         self.buf_pos = pos.min(self.buf_len);
         self.got_lf = false;
-        self.token = Token::new(b' ' as i32, self.buf_pos as SourcePos, TokenExtra::None, JS_NULL);
+        self.set_token(Token::new(
+            b' ' as i32,
+            self.buf_pos as SourcePos,
+            TokenExtra::None,
+            JS_NULL,
+        ));
     }
 
     pub fn get_pos(&self) -> ParsePos {
@@ -239,7 +266,12 @@ impl<'a> ParseState<'a> {
         } else {
             b')' as i32
         };
-        self.token = Token::new(prev_val, pos.source_pos(), TokenExtra::None, JS_NULL);
+        self.set_token(Token::new(
+            prev_val,
+            pos.source_pos(),
+            TokenExtra::None,
+            JS_NULL,
+        ));
         self.next_token()
     }
 
@@ -340,7 +372,7 @@ impl<'a> ParseState<'a> {
             let c = self.byte_at(pos);
             match c {
                 0 => {
-                    self.token = Token::new(TOK_EOF, source_pos, TokenExtra::None, JS_NULL);
+                    self.set_token(Token::new(TOK_EOF, source_pos, TokenExtra::None, JS_NULL));
                     self.buf_pos = pos;
                     return Ok(());
                 }
@@ -348,7 +380,7 @@ impl<'a> ParseState<'a> {
                     pos += 1;
                     let (value, new_pos) = self.parse_string(pos, c)?;
                     pos = new_pos;
-                    self.token = Token::new(TOK_STRING, source_pos, TokenExtra::None, value);
+                    self.set_token(Token::new(TOK_STRING, source_pos, TokenExtra::None, value));
                     self.buf_pos = pos;
                     return Ok(());
                 }
@@ -387,17 +419,17 @@ impl<'a> ParseState<'a> {
                         pos += 1;
                         let (value, extra, new_pos) = self.parse_regexp_token(pos)?;
                         pos = new_pos;
-                        self.token = Token::new(TOK_REGEXP, source_pos, extra, value);
+                        self.set_token(Token::new(TOK_REGEXP, source_pos, extra, value));
                         self.buf_pos = pos;
                         return Ok(());
                     } else if next == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_DIV_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_DIV_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                         self.buf_pos = pos;
                         return Ok(());
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'/' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'/' as i32, source_pos, TokenExtra::None, JS_NULL));
                         self.buf_pos = pos;
                         return Ok(());
                     }
@@ -406,7 +438,7 @@ impl<'a> ParseState<'a> {
                     pos += 1;
                     let (token, new_pos) = self.parse_ident(pos, c, source_pos)?;
                     pos = new_pos;
-                    self.token = token;
+                    self.set_token(token);
                     self.buf_pos = pos;
                     return Ok(());
                 }
@@ -414,11 +446,11 @@ impl<'a> ParseState<'a> {
                     if is_num(self.byte_at(pos + 1)) {
                         let (value, new_pos) = self.parse_number(pos, source_pos as usize)?;
                         pos = new_pos;
-                        self.token = Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL);
+                        self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL));
                         self.buf_pos = pos;
                         return Ok(());
                     }
-                    self.token = Token::new(b'.' as i32, source_pos, TokenExtra::None, JS_NULL);
+                    self.set_token(Token::new(b'.' as i32, source_pos, TokenExtra::None, JS_NULL));
                     self.buf_pos = pos + 1;
                     return Ok(());
                 }
@@ -428,32 +460,32 @@ impl<'a> ParseState<'a> {
                     }
                     let (value, new_pos) = self.parse_number(pos, source_pos as usize)?;
                     pos = new_pos;
-                    self.token = Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL);
+                    self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL));
                     self.buf_pos = pos;
                     return Ok(());
                 }
                 b'1'..=b'9' => {
                     let (value, new_pos) = self.parse_number(pos, source_pos as usize)?;
                     pos = new_pos;
-                    self.token = Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL);
+                    self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL));
                     self.buf_pos = pos;
                     return Ok(());
                 }
                 b'*' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_MUL_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_MUL_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                     } else if self.byte_at(pos + 1) == b'*' {
                         if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.token = Token::new(TOK_POW_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_POW_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                         } else {
                             pos += 2;
-                            self.token = Token::new(TOK_POW, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_POW, source_pos, TokenExtra::None, JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'*' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'*' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -461,10 +493,10 @@ impl<'a> ParseState<'a> {
                 b'%' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_MOD_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_MOD_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'%' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'%' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -472,13 +504,13 @@ impl<'a> ParseState<'a> {
                 b'+' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_PLUS_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_PLUS_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                     } else if self.byte_at(pos + 1) == b'+' {
                         pos += 2;
-                        self.token = Token::new(TOK_INC, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_INC, source_pos, TokenExtra::None, JS_NULL));
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'+' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'+' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -486,13 +518,13 @@ impl<'a> ParseState<'a> {
                 b'-' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_MINUS_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_MINUS_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                     } else if self.byte_at(pos + 1) == b'-' {
                         pos += 2;
-                        self.token = Token::new(TOK_DEC, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_DEC, source_pos, TokenExtra::None, JS_NULL));
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'-' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'-' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -500,18 +532,18 @@ impl<'a> ParseState<'a> {
                 b'<' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_LTE, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_LTE, source_pos, TokenExtra::None, JS_NULL));
                     } else if self.byte_at(pos + 1) == b'<' {
                         if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.token = Token::new(TOK_SHL_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_SHL_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                         } else {
                             pos += 2;
-                            self.token = Token::new(TOK_SHL, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_SHL, source_pos, TokenExtra::None, JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'<' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'<' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -519,26 +551,26 @@ impl<'a> ParseState<'a> {
                 b'>' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_GTE, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_GTE, source_pos, TokenExtra::None, JS_NULL));
                     } else if self.byte_at(pos + 1) == b'>' {
                         if self.byte_at(pos + 2) == b'>' {
                             if self.byte_at(pos + 3) == b'=' {
                                 pos += 4;
-                                self.token = Token::new(TOK_SHR_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                                self.set_token(Token::new(TOK_SHR_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                             } else {
                                 pos += 3;
-                                self.token = Token::new(TOK_SHR, source_pos, TokenExtra::None, JS_NULL);
+                                self.set_token(Token::new(TOK_SHR, source_pos, TokenExtra::None, JS_NULL));
                             }
                         } else if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.token = Token::new(TOK_SAR_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_SAR_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                         } else {
                             pos += 2;
-                            self.token = Token::new(TOK_SAR, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_SAR, source_pos, TokenExtra::None, JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'>' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'>' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -547,14 +579,14 @@ impl<'a> ParseState<'a> {
                     if self.byte_at(pos + 1) == b'=' {
                         if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.token = Token::new(TOK_STRICT_EQ, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_STRICT_EQ, source_pos, TokenExtra::None, JS_NULL));
                         } else {
                             pos += 2;
-                            self.token = Token::new(TOK_EQ, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_EQ, source_pos, TokenExtra::None, JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'=' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'=' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -563,14 +595,14 @@ impl<'a> ParseState<'a> {
                     if self.byte_at(pos + 1) == b'=' {
                         if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.token = Token::new(TOK_STRICT_NEQ, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_STRICT_NEQ, source_pos, TokenExtra::None, JS_NULL));
                         } else {
                             pos += 2;
-                            self.token = Token::new(TOK_NEQ, source_pos, TokenExtra::None, JS_NULL);
+                            self.set_token(Token::new(TOK_NEQ, source_pos, TokenExtra::None, JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'!' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'!' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -578,13 +610,13 @@ impl<'a> ParseState<'a> {
                 b'&' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_AND_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_AND_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                     } else if self.byte_at(pos + 1) == b'&' {
                         pos += 2;
-                        self.token = Token::new(TOK_LAND, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_LAND, source_pos, TokenExtra::None, JS_NULL));
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'&' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'&' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -592,10 +624,10 @@ impl<'a> ParseState<'a> {
                 b'^' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_XOR_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_XOR_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'^' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'^' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -603,13 +635,13 @@ impl<'a> ParseState<'a> {
                 b'|' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.token = Token::new(TOK_OR_ASSIGN, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_OR_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
                     } else if self.byte_at(pos + 1) == b'|' {
                         pos += 2;
-                        self.token = Token::new(TOK_LOR, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(TOK_LOR, source_pos, TokenExtra::None, JS_NULL));
                     } else {
                         pos += 1;
-                        self.token = Token::new(b'|' as i32, source_pos, TokenExtra::None, JS_NULL);
+                        self.set_token(Token::new(b'|' as i32, source_pos, TokenExtra::None, JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -619,7 +651,7 @@ impl<'a> ParseState<'a> {
                         return Err(ParseError::new(ERR_UNEXPECTED_CHARACTER, source_pos as usize));
                     }
                     pos += 1;
-                    self.token = Token::new(c as i32, source_pos, TokenExtra::None, JS_NULL);
+                    self.set_token(Token::new(c as i32, source_pos, TokenExtra::None, JS_NULL));
                     self.buf_pos = pos;
                     return Ok(());
                 }
@@ -775,46 +807,26 @@ impl<'a> ParseState<'a> {
     }
 
     fn intern_bytes(&mut self, bytes: &[u8], err_pos: usize) -> Result<JSValue, ParseError> {
-        if let Some(codepoint) = single_codepoint(bytes) {
-            return Ok(value_make_special(JS_TAG_STRING_CHAR, codepoint));
-        }
-        let insert_at = match self.interned.binary_search_by(|&index| {
-            compare_string_bytes(bytes, self.strings[index].as_ref().get_ref().buf())
-        }) {
-            Ok(pos) => {
-                let index = self.interned[pos];
-                let ptr = NonNull::from(self.strings[index].as_ref().get_ref());
-                return Ok(value_from_ptr(ptr));
-            }
-            Err(pos) => pos,
-        };
-        let is_ascii = is_ascii_bytes(bytes);
-        let string = JSString::new(bytes.to_vec(), true, is_ascii, false)
-            .ok_or_else(|| ParseError::new(ERR_NO_MEM, err_pos))?;
-        let boxed = Box::pin(string);
-        let index = self.strings.len();
-        self.strings.push(boxed);
-        // Derive the tagged pointer only after the Box is stored to avoid Miri retag UB.
-        let ptr = NonNull::from(self.strings[index].as_ref().get_ref());
-        let value = value_from_ptr(ptr);
-        self.interned.insert(insert_at, index);
-        Ok(value)
+        let ctx = self.ctx_mut();
+        ctx.intern_string(bytes)
+            .map_err(|_| ParseError::new(ERR_NO_MEM, err_pos))
     }
 
     pub(crate) fn value_from_bytes(
         &mut self,
         bytes: Vec<u8>,
-        is_ascii: bool,
+        _is_ascii: bool,
         is_unique: bool,
         err_pos: usize,
     ) -> Result<JSValue, ParseError> {
-        if bytes.is_empty() {
-            return self.alloc_string(bytes, is_ascii, is_unique, err_pos);
+        let ctx = self.ctx_mut();
+        let value = ctx
+            .new_string_len(&bytes)
+            .map_err(|_| ParseError::new(ERR_NO_MEM, err_pos))?;
+        if !is_unique {
+            return Ok(value);
         }
-        if let Some(codepoint) = single_codepoint(&bytes) {
-            return Ok(value_make_special(JS_TAG_STRING_CHAR, codepoint));
-        }
-        self.alloc_string(bytes, is_ascii, is_unique, err_pos)
+        Ok(ctx.atom_tables_mut().make_unique_string(value))
     }
 
     pub(crate) fn intern_identifier(
@@ -825,21 +837,8 @@ impl<'a> ParseState<'a> {
         self.intern_bytes(bytes, err_pos)
     }
 
-    fn alloc_string(
-        &mut self,
-        bytes: Vec<u8>,
-        is_ascii: bool,
-        is_unique: bool,
-        err_pos: usize,
-    ) -> Result<JSValue, ParseError> {
-        let string = JSString::new(bytes, is_unique, is_ascii, false)
-            .ok_or_else(|| ParseError::new(ERR_NO_MEM, err_pos))?;
-        let boxed = Box::pin(string);
-        let index = self.strings.len();
-        self.strings.push(boxed);
-        // Obtain the pointer from the stored Box to keep its provenance valid.
-        let ptr = NonNull::from(self.strings[index].as_ref().get_ref());
-        Ok(value_from_ptr(ptr))
+    pub(crate) fn atomize_value(&mut self, value: JSValue) -> JSValue {
+        self.ctx_mut().atom_tables_mut().make_unique_string(value)
     }
 
     fn byte_at(&self, pos: usize) -> u8 {
@@ -925,61 +924,6 @@ fn keyword_token(bytes: &[u8]) -> Option<i32> {
     }
 }
 
-fn single_codepoint(bytes: &[u8]) -> Option<u32> {
-    let mut clen = 0usize;
-    let c = utf8_get(bytes, &mut clen);
-    if c >= 0 && clen == bytes.len() {
-        Some(c as u32)
-    } else {
-        None
-    }
-}
-
-fn compare_string_bytes(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
-    let len = a.len().min(b.len());
-    let mut idx = 0usize;
-    while idx < len {
-        if a[idx] != b[idx] {
-            break;
-        }
-        idx += 1;
-    }
-    if idx == len {
-        return a.len().cmp(&b.len());
-    }
-    let c1 = string_get_cp(a, idx);
-    let c2 = string_get_cp(b, idx);
-    if c1 < 0 || c2 < 0 {
-        return a[idx].cmp(&b[idx]);
-    }
-    if (c1 < 0x10000 && c2 < 0x10000) || (c1 >= 0x10000 && c2 >= 0x10000) {
-        return c1.cmp(&c2);
-    }
-    if c1 < 0x10000 {
-        let c2 = 0xd800 + ((c2 - 0x10000) >> 10);
-        if c1 <= c2 {
-            core::cmp::Ordering::Less
-        } else {
-            core::cmp::Ordering::Greater
-        }
-    } else {
-        let c1 = 0xd800 + ((c1 - 0x10000) >> 10);
-        if c1 < c2 {
-            core::cmp::Ordering::Less
-        } else {
-            core::cmp::Ordering::Greater
-        }
-    }
-}
-
-fn string_get_cp(buf: &[u8], mut idx: usize) -> i32 {
-    while idx > 0 && (buf[idx] & 0xc0) == 0x80 {
-        idx -= 1;
-    }
-    let mut clen = 0usize;
-    utf8_get(&buf[idx..], &mut clen)
-}
-
 struct StringBuffer {
     buf: Vec<u8>,
     is_ascii: bool,
@@ -1060,37 +1004,39 @@ fn expecting_close_error(expected: i32) -> &'static str {
 }
 
 pub(crate) fn value_matches_bytes(value: JSValue, bytes: &[u8]) -> bool {
-    if value_get_special_tag(value) == JS_TAG_STRING_CHAR {
-        if bytes.len() != 1 {
-            return false;
-        }
-        return value_get_special_value(value) as u32 == bytes[0] as u32;
-    }
-    let Some(ptr) = value_to_ptr::<JSString>(value) else {
+    let mut scratch = [0u8; 5];
+    let Some(view) = string_view(value, &mut scratch) else {
         return false;
     };
-    // SAFETY: ParseState owns all JSString allocations used in tokens.
-    unsafe { ptr.as_ref().buf() == bytes }
+    view.bytes() == bytes
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cutils::UTF8_CHAR_LEN_MAX;
-    use crate::jsvalue::{value_get_special_tag, value_get_special_value, value_to_ptr};
+    use crate::context::{ContextConfig, JSContext};
+    use crate::jsvalue::{value_get_special_tag, value_get_special_value, JS_TAG_STRING_CHAR};
     use crate::parser::regexp_flags::{LRE_FLAG_GLOBAL, LRE_FLAG_IGNORECASE};
     use crate::parser::types::ParsePos;
+    use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
     fn string_bytes(val: JSValue) -> Vec<u8> {
-        if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
-            let c = value_get_special_value(val) as u32;
-            let mut buf = [0u8; UTF8_CHAR_LEN_MAX];
-            let len = unicode_to_utf8(&mut buf, c);
-            return buf[..len].to_vec();
-        }
-        let ptr = value_to_ptr::<JSString>(val).expect("string pointer");
-        // SAFETY: ParseState owns the JSString backing this JSValue in these tests.
-        unsafe { ptr.as_ref().buf().to_vec() }
+        let mut scratch = [0u8; 5];
+        let view = string_view(val, &mut scratch).expect("string view");
+        view.bytes().to_vec()
+    }
+
+    fn new_context() -> JSContext {
+        JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init")
+    }
+
+    fn new_state<'a>(input: &'a [u8], ctx: &mut JSContext) -> ParseState<'a> {
+        ParseState::new(input, ctx)
     }
 
     #[test]
@@ -1151,7 +1097,8 @@ mod tests {
 
     #[test]
     fn parse_identifier_keywords() {
-        let mut state = ParseState::new(b"if yield foo");
+        let mut ctx = new_context();
+        let mut state = new_state(b"if yield foo", &mut ctx);
         state.next_token().unwrap();
         assert_eq!(state.token().val(), TOK_IF);
         state.next_token().unwrap();
@@ -1162,7 +1109,8 @@ mod tests {
 
     #[test]
     fn parse_identifier_interns() {
-        let mut state = ParseState::new(b"foo foo");
+        let mut ctx = new_context();
+        let mut state = new_state(b"foo foo", &mut ctx);
         state.next_token().unwrap();
         let first = state.token().value();
         state.next_token().unwrap();
@@ -1172,7 +1120,8 @@ mod tests {
 
     #[test]
     fn parse_string_surrogate_pair_merges() {
-        let mut state = ParseState::new(br#""\uD83D\uDE00""#);
+        let mut ctx = new_context();
+        let mut state = new_state(br#""\uD83D\uDE00""#, &mut ctx);
         state.next_token().unwrap();
         let token = state.token();
         assert_eq!(token.val(), TOK_STRING);
@@ -1182,14 +1131,16 @@ mod tests {
 
     #[test]
     fn parse_string_invalid_escape_errors() {
-        let mut state = ParseState::new(br#""\xZ1""#);
+        let mut ctx = new_context();
+        let mut state = new_state(br#""\xZ1""#, &mut ctx);
         let err = state.next_token().unwrap_err();
         assert_eq!(err.message(), ERR_INVALID_ESCAPE);
     }
 
     #[test]
     fn parse_regexp_token_basic() {
-        let mut state = ParseState::new(b"/ab+c/gi");
+        let mut ctx = new_context();
+        let mut state = new_state(b"/ab+c/gi", &mut ctx);
         state.next_token().unwrap();
         let token = state.token();
         assert_eq!(token.val(), TOK_REGEXP);
@@ -1205,14 +1156,16 @@ mod tests {
 
     #[test]
     fn parse_regexp_invalid_flags_errors() {
-        let mut state = ParseState::new(b"/a/gg");
+        let mut ctx = new_context();
+        let mut state = new_state(b"/a/gg", &mut ctx);
         let err = state.next_token().unwrap_err();
         assert_eq!(err.message(), ERR_INVALID_REGEXP_FLAGS);
     }
 
     #[test]
     fn next_token_skips_line_comment_and_sets_got_lf() {
-        let mut state = ParseState::new(b"//x\n1");
+        let mut ctx = new_context();
+        let mut state = new_state(b"//x\n1", &mut ctx);
         state.next_token().unwrap();
         assert_eq!(state.token().val(), TOK_NUMBER);
         assert!(state.got_lf());
@@ -1220,7 +1173,8 @@ mod tests {
 
     #[test]
     fn block_comment_does_not_set_got_lf() {
-        let mut state = ParseState::new(b"/*x\n*/1");
+        let mut ctx = new_context();
+        let mut state = new_state(b"/*x\n*/1", &mut ctx);
         state.next_token().unwrap();
         assert_eq!(state.token().val(), TOK_NUMBER);
         assert!(!state.got_lf());
@@ -1228,7 +1182,8 @@ mod tests {
 
     #[test]
     fn regexp_disallowed_after_ident() {
-        let mut state = ParseState::new(b"a / b");
+        let mut ctx = new_context();
+        let mut state = new_state(b"a / b", &mut ctx);
         state.next_token().unwrap();
         assert_eq!(state.token().val(), TOK_IDENT);
         state.next_token().unwrap();
@@ -1237,14 +1192,16 @@ mod tests {
 
     #[test]
     fn number_leading_zero_is_invalid() {
-        let mut state = ParseState::new(b"012");
+        let mut ctx = new_context();
+        let mut state = new_state(b"012", &mut ctx);
         let err = state.next_token().unwrap_err();
         assert_eq!(err.message(), ERR_INVALID_NUMBER);
     }
 
     #[test]
     fn parse_number_hex_literal() {
-        let mut state = ParseState::new(b"0x10");
+        let mut ctx = new_context();
+        let mut state = new_state(b"0x10", &mut ctx);
         state.next_token().unwrap();
         let token = state.token();
         assert_eq!(token.val(), TOK_NUMBER);
@@ -1256,7 +1213,8 @@ mod tests {
 
     #[test]
     fn skip_parens_sets_bits_and_advances_token() {
-        let mut state = ParseState::new(b"(arguments; foo) bar");
+        let mut ctx = new_context();
+        let mut state = new_state(b"(arguments; foo) bar", &mut ctx);
         state.next_token().unwrap();
         let bits = state.skip_parens(None).unwrap();
         assert_eq!(bits & SKIP_HAS_ARGUMENTS, SKIP_HAS_ARGUMENTS);
@@ -1269,7 +1227,8 @@ mod tests {
 
     #[test]
     fn skip_parens_detects_func_name() {
-        let mut state = ParseState::new(b"foo (foo)");
+        let mut ctx = new_context();
+        let mut state = new_state(b"foo (foo)", &mut ctx);
         state.next_token().unwrap();
         let func_name = state.token().value();
         state.next_token().unwrap();
@@ -1280,7 +1239,8 @@ mod tests {
 
     #[test]
     fn skip_parens_token_restores_state() {
-        let mut state = ParseState::new(b"(a + b) c");
+        let mut ctx = new_context();
+        let mut state = new_state(b"(a + b) c", &mut ctx);
         state.next_token().unwrap();
         let pos = state.get_pos();
         let bits = state.skip_parens_token().unwrap();
@@ -1291,7 +1251,8 @@ mod tests {
 
     #[test]
     fn parse_pos_roundtrip_restores_token() {
-        let mut state = ParseState::new(b"foo + bar");
+        let mut ctx = new_context();
+        let mut state = new_state(b"foo + bar", &mut ctx);
         state.next_token().unwrap();
         let first = state.token();
         let pos = state.get_pos();
@@ -1307,12 +1268,14 @@ mod tests {
 
     #[test]
     fn seek_token_regexp_disambiguates_slash() {
-        let mut state = ParseState::new(b"/a/");
+        let mut ctx = new_context();
+        let mut state = new_state(b"/a/", &mut ctx);
         let pos = ParsePos::new(false, true, 0);
         state.seek_token(pos).unwrap();
         assert_eq!(state.token().val(), TOK_REGEXP);
 
-        let mut state = ParseState::new(b"/a/");
+        let mut ctx = new_context();
+        let mut state = new_state(b"/a/", &mut ctx);
         let pos = ParsePos::new(false, false, 0);
         state.seek_token(pos).unwrap();
         assert_eq!(state.token().val(), b'/' as i32);

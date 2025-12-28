@@ -410,7 +410,7 @@ pub fn add_ext_var(
 
 /* return the local variable index */
 pub fn add_var(
-    state: &mut JSParseState,
+    state: &JSParseState,
     alloc: &mut VarAllocator,
     name: JSValue,
 ) -> Result<LocalVarIndex, VarError> {
@@ -435,7 +435,7 @@ pub fn add_var(
 }
 
 pub fn define_var(
-    state: &mut JSParseState,
+    state: &JSParseState,
     alloc: &mut VarAllocator,
     name: JSValue,
 ) -> Result<(JSVarRefKind, i32), VarError> {
@@ -541,7 +541,7 @@ fn convert_ext_vars_to_local_vars_bytecode(
     }
 }
 
-pub fn convert_ext_vars_to_local_vars(state: &mut JSParseState) -> Result<(), VarError> {
+pub fn convert_ext_vars_to_local_vars(state: &JSParseState) -> Result<(), VarError> {
     let mut func_ptr = func_from_value(state.cur_func())?;
     let (ext_len, byte_code_val, ext_vars_val, arg_count) = {
         // SAFETY: state.cur_func points to a live FunctionBytecode.
@@ -726,7 +726,7 @@ mod tests {
             let func = OwnedFunc::new(header, fields);
             let func_val = func.value();
             let ctx = NonNull::dangling();
-            let mut state = JSParseState::new(ctx, false);
+            let state = JSParseState::new(ctx, false);
             state.set_cur_func(func_val);
             Self {
                 alloc: VarAllocator::new(),
