@@ -506,6 +506,15 @@ impl JSContext {
         &mut self.class_roots[start..end]
     }
 
+    pub fn next_random_u64(&mut self) -> u64 {
+        let mut x = self.random_state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.random_state = x;
+        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
     pub fn c_function_table(&self) -> &[CFunctionDef] {
         &self.c_function_table
     }

@@ -1,3 +1,4 @@
+use crate::builtins;
 use crate::context::{ContextError, JSContext};
 use crate::enums::JSObjectClass;
 use crate::js_libm;
@@ -67,7 +68,36 @@ pub fn build_c_function_table(
 
 fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunction {
     match proto {
+        BuiltinProto::Generic => match func_name {
+            "js_number_toString" => BuiltinCFunction::Generic(builtins::js_number_toString),
+            "js_number_toFixed" => BuiltinCFunction::Generic(builtins::js_number_toFixed),
+            "js_number_toExponential" => {
+                BuiltinCFunction::Generic(builtins::js_number_toExponential)
+            }
+            "js_number_toPrecision" => BuiltinCFunction::Generic(builtins::js_number_toPrecision),
+            "js_number_parseInt" => BuiltinCFunction::Generic(builtins::js_number_parseInt),
+            "js_number_parseFloat" => BuiltinCFunction::Generic(builtins::js_number_parseFloat),
+            "js_math_imul" => BuiltinCFunction::Generic(builtins::js_math_imul),
+            "js_math_clz32" => BuiltinCFunction::Generic(builtins::js_math_clz32),
+            "js_math_atan2" => BuiltinCFunction::Generic(builtins::js_math_atan2),
+            "js_math_pow" => BuiltinCFunction::Generic(builtins::js_math_pow),
+            "js_math_random" => BuiltinCFunction::Generic(builtins::js_math_random),
+            "js_date_now" => BuiltinCFunction::Generic(builtins::js_date_now),
+            "js_global_isNaN" => BuiltinCFunction::Generic(builtins::js_global_isNaN),
+            "js_global_isFinite" => BuiltinCFunction::Generic(builtins::js_global_isFinite),
+            _ => BuiltinCFunction::Missing(proto),
+        },
+        BuiltinProto::GenericMagic => match func_name {
+            "js_math_min_max" => BuiltinCFunction::GenericMagic(builtins::js_math_min_max),
+            _ => BuiltinCFunction::Missing(proto),
+        },
+        BuiltinProto::Constructor => match func_name {
+            "js_number_constructor" => BuiltinCFunction::Constructor(builtins::js_number_constructor),
+            _ => BuiltinCFunction::Missing(proto),
+        },
         BuiltinProto::FF => match func_name {
+            "js_math_sign" => BuiltinCFunction::FF(builtins::js_math_sign),
+            "js_math_fround" => BuiltinCFunction::FF(builtins::js_math_fround),
             "js_fabs" => BuiltinCFunction::FF(js_libm::js_fabs),
             "js_floor" => BuiltinCFunction::FF(js_libm::js_floor),
             "js_ceil" => BuiltinCFunction::FF(js_libm::js_ceil),

@@ -12,8 +12,8 @@
 use bitflags::bitflags;
 use core::num::{NonZeroU8, NonZeroUsize};
 
+use lexical_core::write_float_options::RoundMode;
 use lexical_core::{NumberFormatBuilder, ParseFloatOptions, WriteFloatOptions};
-use libm::{floor, log10};
 
 pub const JS_DTOA_MAX_DIGITS: usize = 101;
 
@@ -304,12 +304,24 @@ fn format_free(d: f64, radix: u32, exp: DtoaExp, minus_zero: bool) -> Result<Str
             }
             return Ok(out);
         }
-        if exp == DtoaExp::Enabled {
-            return Err(DtoaError::UnsupportedFlags);
-        }
         let mut buffer = ryu_js::Buffer::new();
         let mut out = buffer.format(value).to_string();
+        let mut negative = false;
+        if let Some(rest) = out.strip_prefix('-') {
+            negative = true;
+            out = rest.to_string();
+        }
         if needs_minus_zero {
+            negative = true;
+        }
+        if exp == DtoaExp::Enabled {
+            if out.contains('e') || out.contains('E') {
+                ensure_exponent_sign(&mut out, b'e');
+            } else {
+                out = to_exponential_from_decimal(&out);
+            }
+        }
+        if negative {
             out.insert(0, '-');
         }
         return Ok(out);
@@ -320,6 +332,54 @@ fn format_free(d: f64, radix: u32, exp: DtoaExp, minus_zero: bool) -> Result<Str
         out.insert(0, '-');
     }
     Ok(out)
+}
+
+fn to_exponential_from_decimal(input: &str) -> String {
+    let mut digits = Vec::with_capacity(input.len());
+    let mut decimal_pos = input.len();
+    let mut saw_dot = false;
+    for &b in input.as_bytes() {
+        if b == b'.' {
+            decimal_pos = digits.len();
+            saw_dot = true;
+            continue;
+        }
+        digits.push(b);
+    }
+    if !saw_dot {
+        decimal_pos = digits.len();
+    }
+    let mut first_non_zero = None;
+    for (i, &b) in digits.iter().enumerate() {
+        if b != b'0' {
+            first_non_zero = Some(i);
+            break;
+        }
+    }
+    let Some(start) = first_non_zero else {
+        return "0e+0".to_string();
+    };
+    let mut end = digits.len();
+    while end > start && digits[end - 1] == b'0' {
+        end -= 1;
+    }
+    let exponent = decimal_pos as i32 - start as i32 - 1;
+    let mut out = String::with_capacity(end - start + 8);
+    out.push(digits[start] as char);
+    if end - start > 1 {
+        out.push('.');
+        for &b in &digits[start + 1..end] {
+            out.push(b as char);
+        }
+    }
+    out.push('e');
+    if exponent >= 0 {
+        out.push('+');
+    } else {
+        out.push('-');
+    }
+    out.push_str(&exponent.abs().to_string());
+    out
 }
 
 fn format_fixed(
@@ -351,25 +411,46 @@ fn format_fixed(
     let needs_minus_zero = is_neg_zero && minus_zero;
     let value = if is_neg_zero { 0.0 } else { d };
 
-    let digits = NonZeroUsize::new(n_digits).ok_or(DtoaError::InvalidDigits)?;
-    let options = WriteFloatOptions::builder()
-        .min_significant_digits(Some(digits))
-        .max_significant_digits(Some(digits))
-        .build_strict();
-
-    let mut out = match exp {
-        DtoaExp::Enabled => write_decimal::<DECIMAL_FORCE_EXP_FORMAT>(value, &options),
-        DtoaExp::Disabled => write_decimal::<DECIMAL_NO_EXP_FORMAT>(value, &options),
-        DtoaExp::Auto => {
-            if should_use_exponent(value, n_digits) {
-                write_decimal::<DECIMAL_FORCE_EXP_FORMAT>(value, &options)
-            } else {
-                write_decimal::<DECIMAL_NO_EXP_FORMAT>(value, &options)
-            }
-        }
+    let negative = d.is_sign_negative() && !is_neg_zero;
+    let mut exp10 = 0i32;
+    let mut digits = if value == 0.0 {
+        vec![b'0'; n_digits]
+    } else {
+        let digits_plus = NonZeroUsize::new(n_digits + 1).ok_or(DtoaError::InvalidDigits)?;
+        let options = WriteFloatOptions::builder()
+            .min_significant_digits(Some(digits_plus))
+            .max_significant_digits(Some(digits_plus))
+            .round_mode(RoundMode::Truncate)
+            .build_strict();
+        let raw = write_decimal::<DECIMAL_FORCE_EXP_FORMAT>(value, &options);
+        let (parsed_digits, parsed_exp) = parse_decimal_digits(&raw)?;
+        exp10 = parsed_exp;
+        parsed_digits
     };
 
-    if needs_minus_zero {
+    if digits.len() < n_digits + 1 {
+        digits.extend(core::iter::repeat_n(b'0', n_digits + 1 - digits.len()));
+    }
+
+    let round_digit = digits[n_digits];
+    digits.truncate(n_digits);
+    if round_digit >= b'5' && round_up_digits(&mut digits) {
+        exp10 += 1;
+    }
+
+    let use_exponent = match exp {
+        DtoaExp::Enabled => true,
+        DtoaExp::Disabled => false,
+        DtoaExp::Auto => should_use_exponent_for_precision(exp10, n_digits),
+    };
+
+    let mut out = if use_exponent {
+        format_exponent(&digits, exp10)
+    } else {
+        format_decimal(&digits, exp10)
+    };
+
+    if negative || needs_minus_zero {
         out.insert(0, '-');
     }
     Ok(out)
@@ -415,12 +496,142 @@ fn is_negative_zero(d: f64) -> bool {
     d == 0.0 && d.is_sign_negative()
 }
 
-fn should_use_exponent(value: f64, n_digits: usize) -> bool {
-    if value == 0.0 {
-        return false;
+fn should_use_exponent_for_precision(exp10: i32, n_digits: usize) -> bool {
+    exp10 < -6 || exp10 >= n_digits as i32
+}
+
+fn parse_decimal_digits(input: &str) -> Result<(Vec<u8>, i32), DtoaError> {
+    let mut slice = input;
+    if let Some(rest) = slice.strip_prefix('-') {
+        slice = rest;
     }
-    let exp10 = floor(log10(value.abs())) as i32;
-    exp10 >= n_digits as i32 || exp10 <= -7
+
+    let mut mantissa = slice;
+    let mut exp_part = "";
+    if let Some(idx) = slice.find(|c| ['e', 'E'].contains(&c)) {
+        mantissa = &slice[..idx];
+        exp_part = &slice[idx + 1..];
+    }
+
+    let mut digits = Vec::with_capacity(mantissa.len());
+    let mut digits_before_dot = 0usize;
+    let mut saw_dot = false;
+    for &b in mantissa.as_bytes() {
+        if b == b'.' {
+            saw_dot = true;
+            continue;
+        }
+        if !saw_dot {
+            digits_before_dot += 1;
+        }
+        digits.push(b);
+    }
+
+    let exp_from_e = if exp_part.is_empty() {
+        0
+    } else {
+        let mut sign = 1i32;
+        let mut chars = exp_part.chars();
+        if let Some(first) = chars.next() {
+            let mut rest = exp_part;
+            if first == '-' {
+                sign = -1;
+                rest = &exp_part[1..];
+            } else if first == '+' {
+                rest = &exp_part[1..];
+            }
+            let mut value = 0i32;
+            for b in rest.bytes() {
+                if !b.is_ascii_digit() {
+                    return Err(DtoaError::UnsupportedFormat);
+                }
+                value = value
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add((b - b'0') as i32))
+                    .ok_or(DtoaError::InvalidDigits)?;
+            }
+            sign * value
+        } else {
+            return Err(DtoaError::UnsupportedFormat);
+        }
+    };
+
+    let mut leading_zeros = 0usize;
+    while leading_zeros < digits.len() && digits[leading_zeros] == b'0' {
+        leading_zeros += 1;
+    }
+    if leading_zeros == digits.len() {
+        return Ok((vec![b'0'], 0));
+    }
+
+    let exp10 = exp_from_e + digits_before_dot as i32 - 1 - leading_zeros as i32;
+    let digits = digits[leading_zeros..].to_vec();
+    Ok((digits, exp10))
+}
+
+fn round_up_digits(digits: &mut [u8]) -> bool {
+    for idx in (0..digits.len()).rev() {
+        if digits[idx] < b'9' {
+            digits[idx] += 1;
+            return false;
+        }
+        digits[idx] = b'0';
+    }
+    true
+}
+
+fn format_exponent(digits: &[u8], exp10: i32) -> String {
+    let mut out = String::with_capacity(digits.len() + 8);
+    out.push(digits[0] as char);
+    if digits.len() > 1 {
+        out.push('.');
+        for &b in &digits[1..] {
+            out.push(b as char);
+        }
+    }
+    out.push('e');
+    if exp10 >= 0 {
+        out.push('+');
+    } else {
+        out.push('-');
+    }
+    out.push_str(&exp10.abs().to_string());
+    out
+}
+
+fn format_decimal(digits: &[u8], exp10: i32) -> String {
+    if exp10 >= 0 {
+        let int_len = exp10 as usize + 1;
+        let mut out = String::with_capacity(digits.len() + int_len);
+        if int_len >= digits.len() {
+            for &b in digits {
+                out.push(b as char);
+            }
+            for _ in 0..(int_len - digits.len()) {
+                out.push('0');
+            }
+            return out;
+        }
+        for &b in &digits[..int_len] {
+            out.push(b as char);
+        }
+        out.push('.');
+        for &b in &digits[int_len..] {
+            out.push(b as char);
+        }
+        out
+    } else {
+        let mut out = String::with_capacity(digits.len() + (-exp10 as usize) + 3);
+        out.push('0');
+        out.push('.');
+        for _ in 0..(-exp10 - 1) {
+            out.push('0');
+        }
+        for &b in digits {
+            out.push(b as char);
+        }
+        out
+    }
 }
 
 fn write_decimal<const FORMAT: u128>(value: f64, options: &WriteFloatOptions) -> String {
@@ -843,6 +1054,14 @@ mod tests {
         assert_eq!(s, "1e+21");
         let s = js_dtoa(1e-7, 10, 0, JS_DTOA_FORMAT_FREE | JS_DTOA_EXP_AUTO).unwrap();
         assert_eq!(s, "1e-7");
+    }
+
+    #[test]
+    fn format_free_exp_enabled() {
+        let s = js_dtoa(25.0, 10, 0, JS_DTOA_FORMAT_FREE | JS_DTOA_EXP_ENABLED).unwrap();
+        assert_eq!(s, "2.5e+1");
+        let s = js_dtoa(0.00123, 10, 0, JS_DTOA_FORMAT_FREE | JS_DTOA_EXP_ENABLED).unwrap();
+        assert_eq!(s, "1.23e-3");
     }
 
     #[test]
