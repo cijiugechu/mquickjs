@@ -1,5 +1,6 @@
 use crate::atom::AtomTables;
 use crate::capi_defs::{JSInterruptHandler, JSWriteFunc};
+use crate::cfunction_data::{CFunctionData, CFUNC_PARAMS_OFFSET};
 use crate::containers::{
     byte_array_alloc_size, string_alloc_size, value_array_alloc_size, ByteArrayHeader, StringHeader,
     ValueArrayHeader, JS_BYTE_ARRAY_SIZE_MAX, JS_STRING_LEN_MAX,
@@ -11,11 +12,12 @@ use crate::heap::{HeapLayout, JS_MIN_FREE_SIZE};
 use crate::jsvalue::{
     from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_get_special_tag,
     value_get_special_value, value_make_special, value_to_ptr, JSValue, JSWord, JSW, JS_NULL,
-    JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_STRING_CHAR, JS_UNDEFINED,
+    JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_PTR, JS_TAG_STRING_CHAR, JS_UNDEFINED,
 };
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
+use crate::property::{define_property_varref, PropertyError};
 use crate::closure_data::ClosureData;
 use crate::stdlib::stdlib_image::{StdlibImage, StdlibWord};
 use crate::string::js_string::is_ascii_bytes;
@@ -78,6 +80,10 @@ pub enum ContextError {
     RomOffsetOutOfBounds { offset: usize, len: usize },
     InvalidValueArrayHeader { offset: usize, tag: MTag },
     InvalidRomString { offset: usize, tag: MTag },
+    InvalidRomClassValue,
+    InvalidRomClass { tag: MTag },
+    StdlibCFunctionIndexOutOfBounds { index: usize },
+    UnknownClassId { name: &'static str },
     MissingEmptyAtom,
     StringTooLong { len: usize, max: JSWord },
     ByteArrayTooLong { len: usize, max: JSWord },
@@ -86,15 +92,18 @@ pub enum ContextError {
 
 // Relocated ROM table built from StdlibImage words.
 struct RomTable {
-    words: Box<[JSWord]>,
+    words: NonNull<JSWord>,
+    len: usize,
     word_bytes: usize,
+    base_ptr: NonNull<u8>,
 }
 
 impl RomTable {
     fn from_image(image: &StdlibImage) -> Result<Self, ContextError> {
         let word_bytes = image.word_bytes as usize;
         let mut words = vec![0 as JSWord; image.words.len()].into_boxed_slice();
-        let base = words.as_mut_ptr() as *mut u8;
+        let base_addr = words.as_mut_ptr() as usize;
+        let tag_mask = (JSW as usize) - 1;
         for (idx, word) in image.words.iter().enumerate() {
             let value = match *word {
                 StdlibWord::Raw(raw) => {
@@ -108,39 +117,61 @@ impl RomTable {
                     raw as JSWord
                 }
                 StdlibWord::RomOffset(offset) => {
-                    let ptr = unsafe {
-                        // SAFETY: base is valid for the table size and offset is word-based.
-                        base.add(offset as usize * word_bytes)
-                    };
-                    let ptr = NonNull::new(ptr).expect("ROM offset must be non-null");
-                    raw_bits(value_from_ptr(ptr))
+                    let addr = base_addr + offset as usize * word_bytes;
+                    debug_assert!((addr & tag_mask) == 0);
+                    (addr | JS_TAG_PTR as usize) as JSWord
                 }
             };
             words[idx] = value;
         }
-        Ok(Self { words, word_bytes })
+        let len = words.len();
+        let words_ptr = Box::into_raw(words);
+        let data_ptr = words_ptr as *mut JSWord;
+        let words = NonNull::new(data_ptr).expect("ROM base must be non-null");
+        let base_ptr = NonNull::new(data_ptr.cast::<u8>()).expect("ROM base must be non-null");
+        Ok(Self {
+            words,
+            len,
+            word_bytes,
+            base_ptr,
+        })
     }
 
     fn len(&self) -> usize {
-        self.words.len()
+        self.len
     }
 
     fn base_ptr(&self) -> *mut u8 {
-        self.words.as_ptr() as *mut u8
+        self.base_ptr.as_ptr()
     }
 
     fn bytes_len(&self) -> usize {
         self.len() * self.word_bytes
     }
 
+    fn offset_from_addr(&self, addr: usize) -> Option<usize> {
+        let base = self.base_ptr() as usize;
+        if addr < base {
+            return None;
+        }
+        let offset = addr - base;
+        if offset >= self.bytes_len() {
+            return None;
+        }
+        Some(offset)
+    }
+
     fn word(&self, offset: usize) -> Result<JSWord, ContextError> {
-        self.words
-            .get(offset)
-            .copied()
-            .ok_or(ContextError::RomOffsetOutOfBounds {
+        if offset >= self.len {
+            return Err(ContextError::RomOffsetOutOfBounds {
                 offset,
-                len: self.words.len(),
-            })
+                len: self.len,
+            });
+        }
+        Ok(unsafe {
+            // SAFETY: offset is bounds-checked against the ROM table length.
+            ptr::read_unaligned(self.words.as_ptr().add(offset))
+        })
     }
 
     fn value_array(&self, offset: usize) -> Result<Vec<JSValue>, ContextError> {
@@ -162,10 +193,134 @@ impl RomTable {
             });
         }
         let mut values = Vec::with_capacity(size);
-        for word in &self.words[start..end] {
-            values.push(from_bits(*word));
+        for idx in start..end {
+            values.push(self.value_from_word(self.word(idx)?));
         }
         Ok(values)
+    }
+
+    fn value_from_word(&self, word: JSWord) -> JSValue {
+        let tag_mask = (JSW as usize) - 1;
+        let tag = (word as usize) & tag_mask;
+        if tag == JS_TAG_PTR as usize {
+            let addr = (word as usize) & !tag_mask;
+            if let Some(offset) = self.offset_from_addr(addr) {
+                let ptr = unsafe {
+                    // SAFETY: offset is within the ROM table bounds.
+                    self.base_ptr().add(offset)
+                };
+                if let Some(ptr) = NonNull::new(ptr) {
+                    return value_from_ptr(ptr);
+                }
+            }
+        }
+        from_bits(word)
+    }
+}
+
+impl Drop for RomTable {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: words/len come from Box::into_raw in RomTable::from_image.
+            let slice = slice::from_raw_parts_mut(self.words.as_ptr(), self.len);
+            drop(Box::from_raw(slice));
+        }
+    }
+}
+
+// C: `JSROMClass` in mquickjs.c (ROM-only layout view).
+//
+// Invariants:
+// - Backed by ROM table memory (never GC moved).
+// - Header tag is `MTag::Object`.
+// - `ctor_idx` is a signed 32-bit value (>=0 for constructors, -1 for plain objects).
+struct RomClassView {
+    base: NonNull<u8>,
+    rom_start: usize,
+    rom_end: usize,
+}
+
+impl RomClassView {
+    const PROPS_OFFSET: usize = size_of::<JSWord>();
+    const CTOR_OFFSET: usize = size_of::<JSWord>() * 2;
+    const PROTO_PROPS_OFFSET: usize = size_of::<JSWord>() * 3;
+    const PARENT_CLASS_OFFSET: usize = size_of::<JSWord>() * 4;
+
+    fn from_value(rom_table: &RomTable, val: JSValue) -> Result<Self, ContextError> {
+        if !is_ptr(val) {
+            return Err(ContextError::InvalidRomClassValue);
+        }
+        let tagged = raw_bits(val) as usize;
+        let addr = tagged & !((JSW as usize) - 1);
+        let rom_start = rom_table.base_ptr() as usize;
+        let rom_end = rom_start + rom_table.bytes_len();
+        let offset = rom_table
+            .offset_from_addr(addr)
+            .ok_or(ContextError::InvalidRomClassValue)?;
+        let needed = size_of::<JSWord>() * 5;
+        if offset + needed > rom_table.bytes_len() {
+            return Err(ContextError::InvalidRomClassValue);
+        }
+        let base = unsafe {
+            // SAFETY: offset is within the ROM table bounds.
+            rom_table.base_ptr().add(offset)
+        };
+        let base = NonNull::new(base).ok_or(ContextError::InvalidRomClassValue)?;
+        let header_word = unsafe {
+            // SAFETY: base points to readable ROM table memory.
+            ptr::read_unaligned(base.as_ptr().cast::<JSWord>())
+        };
+        let header = MbHeader::from_word(header_word);
+        if header.tag() != MTag::Object {
+            return Err(ContextError::InvalidRomClass { tag: header.tag() });
+        }
+        Ok(Self {
+            base,
+            rom_start,
+            rom_end,
+        })
+    }
+
+    fn props(&self) -> JSValue {
+        self.read_value(Self::PROPS_OFFSET)
+    }
+
+    fn ctor_idx(&self) -> i32 {
+        self.read_word(Self::CTOR_OFFSET) as i32
+    }
+
+    fn proto_props(&self) -> JSValue {
+        self.read_value(Self::PROTO_PROPS_OFFSET)
+    }
+
+    fn parent_class(&self) -> JSValue {
+        self.read_value(Self::PARENT_CLASS_OFFSET)
+    }
+
+    fn read_word(&self, offset: usize) -> JSWord {
+        unsafe {
+            // SAFETY: offsets are within the fixed ROM class layout.
+            ptr::read_unaligned(self.base.as_ptr().add(offset).cast::<JSWord>())
+        }
+    }
+
+    fn read_value(&self, offset: usize) -> JSValue {
+        self.value_from_word(self.read_word(offset))
+    }
+
+    fn value_from_word(&self, word: JSWord) -> JSValue {
+        let tag_mask = (JSW as usize) - 1;
+        let tag = (word as usize) & tag_mask;
+        if tag == JS_TAG_PTR as usize {
+            let addr = (word as usize) & !tag_mask;
+            if addr >= self.rom_start && addr < self.rom_end {
+                let ptr = self.base.as_ptr().with_addr(addr);
+                if let Some(ptr) = NonNull::new(ptr) {
+                    return value_from_ptr(ptr);
+                }
+            }
+        }
+        from_bits(word)
     }
 }
 
@@ -189,6 +344,7 @@ pub struct JSContext {
     atom_tables: AtomTables,
     rom_table: Option<RomTable>,
     n_rom_atom_tables: u8,
+    sorted_atoms_offset: usize,
     string_pos_cache: [StringPosCacheEntry; JS_STRING_POS_CACHE_SIZE],
     string_pos_cache_counter: u8,
     gc_refs: GcRefState,
@@ -254,6 +410,7 @@ impl JSContext {
             atom_tables: AtomTables::new(),
             rom_table: None,
             n_rom_atom_tables: 0,
+            sorted_atoms_offset: config.image.sorted_atoms_offset as usize,
             string_pos_cache: [StringPosCacheEntry::new(JS_NULL, 0, 0); JS_STRING_POS_CACHE_SIZE],
             string_pos_cache_counter: 0,
             gc_refs: GcRefState::new(),
@@ -271,6 +428,9 @@ impl JSContext {
 
         ctx.init_atoms(config.image, config.prepare_compilation)?;
         ctx.init_roots()?;
+        if !config.prepare_compilation {
+            ctx.init_stdlib(config.image)?;
+        }
 
         Ok(ctx)
     }
@@ -395,6 +555,14 @@ impl JSContext {
         let base = self.heap.heap_base().as_ptr() as usize;
         let end = self.stack_top().as_ptr() as usize;
         addr < base || addr >= end
+    }
+
+    pub(crate) fn rom_value_from_word(&self, word: JSWord) -> JSValue {
+        if let Some(table) = self.rom_table.as_ref() {
+            table.value_from_word(word)
+        } else {
+            from_bits(word)
+        }
     }
 
     pub fn new_string_len(&mut self, bytes: &[u8]) -> Result<JSValue, ContextError> {
@@ -665,6 +833,198 @@ impl JSContext {
         let minus_zero = self.alloc_float64(-0.0)?;
         self.class_roots[ROOT_MINUS_ZERO] = minus_zero;
 
+        Ok(())
+    }
+
+    fn init_stdlib(&mut self, image: &StdlibImage) -> Result<(), ContextError> {
+        let Some(rom_table) = self.rom_table.as_ref() else {
+            return Ok(());
+        };
+        let (rom_base, rom_base_ptr, rom_len, rom_word_bytes, entries) = {
+            let rom_base_ptr = rom_table.base_ptr();
+            let rom_base = rom_base_ptr as usize;
+            let rom_len = rom_table.bytes_len();
+            let rom_word_bytes = rom_table.word_bytes;
+            let entries = rom_table.value_array(image.global_object_offset as usize)?;
+            (rom_base, rom_base_ptr, rom_len, rom_word_bytes, entries)
+        };
+        debug_assert_eq!(entries.len() % 2, 0);
+        let global_obj = self.global_obj();
+        for pair in entries.chunks_exact(2) {
+            let name = self.resolve_rom_atom_value(pair[0])?;
+            let mut val = pair[1];
+            if is_ptr(val) {
+                let tagged = raw_bits(val) as usize;
+                let addr = tagged & !((JSW as usize) - 1);
+                if addr >= rom_base && addr < rom_base + rom_len {
+                    let offset = addr - rom_base;
+                    if offset.is_multiple_of(rom_word_bytes) {
+                        let header_ptr = unsafe {
+                            // SAFETY: offset is within the ROM table bounds.
+                            rom_base_ptr.add(offset)
+                        };
+                        let header_word = unsafe {
+                            // SAFETY: header_ptr points within the ROM table.
+                            ptr::read_unaligned(header_ptr.cast::<JSWord>())
+                        };
+                        if MbHeader::from_word(header_word).tag() == MTag::Object {
+                            val = self.stdlib_init_class(image, val)?;
+                        }
+                    }
+                }
+            }
+            if val == JS_NULL {
+                val = global_obj;
+            }
+            define_property_varref(self, global_obj, name, val).map_err(map_property_error)?;
+        }
+        Ok(())
+    }
+
+    fn stdlib_init_class(&mut self, image: &StdlibImage, val: JSValue) -> Result<JSValue, ContextError> {
+        let rom_table = self
+            .rom_table
+            .as_ref()
+            .map(|table| table as *const RomTable)
+            .ok_or(ContextError::InvalidRomClassValue)?;
+        let class_def = unsafe {
+            // SAFETY: rom_table points to the context ROM table allocation.
+            RomClassView::from_value(&*rom_table, val)?
+        };
+        let ctor_idx = class_def.ctor_idx();
+        if ctor_idx >= 0 {
+            let ctor_idx = ctor_idx as usize;
+            let class_id = class_id_from_ctor(image, ctor_idx)?;
+            let class_idx = class_id as usize;
+            let existing = self.class_obj()[class_idx];
+            if existing != JS_NULL {
+                return Ok(existing);
+            }
+
+            let parent_val = class_def.parent_class();
+            let (mut parent_class, parent_proto) = if parent_val != JS_NULL {
+                let parent_class_id = unsafe {
+                    // SAFETY: rom_table points to the context ROM table allocation.
+                    let parent_def = RomClassView::from_value(&*rom_table, parent_val)?;
+                    let parent_ctor_idx = parent_def.ctor_idx();
+                    if parent_ctor_idx < 0 {
+                        return Err(ContextError::InvalidRomClassValue);
+                    }
+                    class_id_from_ctor(image, parent_ctor_idx as usize)?
+                };
+                let parent_obj = self.stdlib_init_class(image, parent_val)?;
+                let parent_proto = self.class_proto()[parent_class_id as usize];
+                (parent_obj, parent_proto)
+            } else {
+                (JS_NULL, self.class_proto()[JSObjectClass::Object as usize])
+            };
+
+            let proto = match self.class_proto()[class_idx] {
+                JS_NULL => {
+                    let created = self.alloc_object(JSObjectClass::Object, parent_proto, 0)?;
+                    self.class_proto_mut()[class_idx] = created;
+                    created
+                }
+                existing => existing,
+            };
+            let proto_props = class_def.proto_props();
+            if proto_props != JS_NULL {
+                self.set_object_props(proto, proto_props)?;
+            }
+
+            if parent_class == JS_NULL {
+                parent_class = self.class_proto()[JSObjectClass::Closure as usize];
+            }
+            let ctor = self.new_cfunction_proto(ctor_idx as u32, parent_class, None)?;
+            self.class_obj_mut()[class_idx] = ctor;
+            let class_props = class_def.props();
+            if class_props != JS_NULL {
+                self.set_object_props(ctor, class_props)?;
+            }
+            Ok(ctor)
+        } else {
+            let proto = self.class_proto()[JSObjectClass::Object as usize];
+            let obj = self.alloc_object(JSObjectClass::Object, proto, 0)?;
+            let class_props = class_def.props();
+            if class_props != JS_NULL {
+                self.set_object_props(obj, class_props)?;
+            }
+            Ok(obj)
+        }
+    }
+
+    pub(crate) fn resolve_rom_atom_value(&mut self, val: JSValue) -> Result<JSValue, ContextError> {
+        if !is_ptr(val) {
+            return Ok(val);
+        }
+        let tagged = raw_bits(val) as usize;
+        let addr = tagged & !((JSW as usize) - 1);
+        let heap_base = self.heap.heap_base().as_ptr() as usize;
+        let heap_end = self.stack_top().as_ptr() as usize;
+        if addr >= heap_base && addr < heap_end {
+            return Ok(val);
+        }
+        let Some(rom_table) = self.rom_table.as_ref().map(|table| table as *const RomTable) else {
+            return Ok(val);
+        };
+        let target = raw_bits(val);
+        let raw_atoms = unsafe {
+            // SAFETY: rom_table points to the context ROM table allocation.
+            (&*rom_table).value_array(self.sorted_atoms_offset)?
+        };
+        if let Some(index) = raw_atoms
+            .iter()
+            .position(|entry| raw_bits(*entry) == target)
+            && let Some(mapped) = self.atom_tables().rom_table_entry(index)
+        {
+            return Ok(mapped);
+        }
+        let rom_table = unsafe {
+            // SAFETY: rom_table points to the context ROM table allocation.
+            &*rom_table
+        };
+        self.decode_rom_atom(rom_table, val)
+    }
+
+    fn new_cfunction_proto(
+        &mut self,
+        idx: u32,
+        proto: JSValue,
+        params: Option<JSValue>,
+    ) -> Result<JSValue, ContextError> {
+        let extra_size_bytes = if params.is_some() {
+            size_of::<CFunctionData>()
+        } else {
+            size_of::<u32>()
+        };
+        let func = self.alloc_object(JSObjectClass::CFunction, proto, extra_size_bytes)?;
+        let obj_ptr = value_to_ptr::<Object>(func).expect("cfunction allocation must be a pointer");
+        unsafe {
+            // SAFETY: payload region is writable for the requested size.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr()).cast::<u8>();
+            ptr::write_unaligned(payload.cast::<u32>(), idx);
+            if let Some(params) = params {
+                let params_ptr = payload.add(CFUNC_PARAMS_OFFSET);
+                ptr::write_unaligned(params_ptr.cast::<JSValue>(), params);
+            }
+        }
+        Ok(func)
+    }
+
+    fn set_object_props(&mut self, obj: JSValue, props: JSValue) -> Result<(), ContextError> {
+        let obj_ptr = value_to_ptr::<u8>(obj).ok_or(ContextError::InvalidRomClassValue)?;
+        let header_word = unsafe {
+            // SAFETY: pointer is expected to reference an object header word.
+            ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
+        };
+        let header = ObjectHeader::from_word(header_word);
+        if header.tag() != MTag::Object {
+            return Err(ContextError::InvalidRomClass { tag: header.tag() });
+        }
+        unsafe {
+            // SAFETY: `obj_ptr` references a writable object allocation.
+            ptr::write_unaligned(Object::props_ptr(obj_ptr.as_ptr().cast::<Object>()), props);
+        }
         Ok(())
     }
 
@@ -963,6 +1323,59 @@ fn string_convert_pos(
     }
 }
 
+fn map_property_error(err: PropertyError) -> ContextError {
+    debug_assert!(
+        matches!(err, PropertyError::OutOfMemory),
+        "unexpected property error: {:?}",
+        err
+    );
+    ContextError::OutOfMemory
+}
+
+fn class_id_from_ctor(image: &StdlibImage, ctor_idx: usize) -> Result<JSObjectClass, ContextError> {
+    let meta = image
+        .c_functions
+        .get(ctor_idx)
+        .ok_or(ContextError::StdlibCFunctionIndexOutOfBounds { index: ctor_idx })?;
+    class_id_from_name(meta.magic)
+        .ok_or(ContextError::UnknownClassId { name: meta.magic })
+}
+
+fn class_id_from_name(name: &str) -> Option<JSObjectClass> {
+    match name {
+        "JS_CLASS_OBJECT" => Some(JSObjectClass::Object),
+        "JS_CLASS_ARRAY" => Some(JSObjectClass::Array),
+        "JS_CLASS_C_FUNCTION" => Some(JSObjectClass::CFunction),
+        "JS_CLASS_CLOSURE" => Some(JSObjectClass::Closure),
+        "JS_CLASS_NUMBER" => Some(JSObjectClass::Number),
+        "JS_CLASS_BOOLEAN" => Some(JSObjectClass::Boolean),
+        "JS_CLASS_STRING" => Some(JSObjectClass::String),
+        "JS_CLASS_DATE" => Some(JSObjectClass::Date),
+        "JS_CLASS_REGEXP" => Some(JSObjectClass::RegExp),
+        "JS_CLASS_ERROR" => Some(JSObjectClass::Error),
+        "JS_CLASS_EVAL_ERROR" => Some(JSObjectClass::EvalError),
+        "JS_CLASS_RANGE_ERROR" => Some(JSObjectClass::RangeError),
+        "JS_CLASS_REFERENCE_ERROR" => Some(JSObjectClass::ReferenceError),
+        "JS_CLASS_SYNTAX_ERROR" => Some(JSObjectClass::SyntaxError),
+        "JS_CLASS_TYPE_ERROR" => Some(JSObjectClass::TypeError),
+        "JS_CLASS_URI_ERROR" => Some(JSObjectClass::UriError),
+        "JS_CLASS_INTERNAL_ERROR" => Some(JSObjectClass::InternalError),
+        "JS_CLASS_ARRAY_BUFFER" => Some(JSObjectClass::ArrayBuffer),
+        "JS_CLASS_TYPED_ARRAY" => Some(JSObjectClass::TypedArray),
+        "JS_CLASS_UINT8C_ARRAY" => Some(JSObjectClass::Uint8CArray),
+        "JS_CLASS_INT8_ARRAY" => Some(JSObjectClass::Int8Array),
+        "JS_CLASS_UINT8_ARRAY" => Some(JSObjectClass::Uint8Array),
+        "JS_CLASS_INT16_ARRAY" => Some(JSObjectClass::Int16Array),
+        "JS_CLASS_UINT16_ARRAY" => Some(JSObjectClass::Uint16Array),
+        "JS_CLASS_INT32_ARRAY" => Some(JSObjectClass::Int32Array),
+        "JS_CLASS_UINT32_ARRAY" => Some(JSObjectClass::Uint32Array),
+        "JS_CLASS_FLOAT32_ARRAY" => Some(JSObjectClass::Float32Array),
+        "JS_CLASS_FLOAT64_ARRAY" => Some(JSObjectClass::Float64Array),
+        "JS_CLASS_USER" => Some(JSObjectClass::User),
+        _ => None,
+    }
+}
+
 fn single_codepoint(bytes: &[u8]) -> Option<u32> {
     let mut clen = 0usize;
     let c = utf8_get(bytes, &mut clen);
@@ -978,15 +1391,16 @@ fn single_codepoint(bytes: &[u8]) -> Option<u32> {
 
 unsafe extern "C" fn dummy_write_func(_opaque: *mut c_void, _buf: *const c_void, _buf_len: usize) {}
 
-#[cfg(all(test, not(miri)))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::cutils::unicode_to_utf8;
     use crate::jsvalue::{
         is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value,
-        value_to_ptr, JS_TAG_STRING_CHAR,
+        value_to_ptr, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR,
     };
     use crate::memblock::Float64Header;
+    use crate::property::get_property;
     use crate::string::runtime::string_view;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
     use core::slice;
@@ -1019,6 +1433,60 @@ mod tests {
 
         assert!(is_ptr(ctx.global_obj()));
         assert!(is_ptr(ctx.minus_zero()));
+    }
+
+    #[test]
+    fn stdlib_object_function_prototype_chain() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init");
+
+        let object_key = ctx.intern_string(b"Object").expect("atom");
+        let function_key = ctx.intern_string(b"Function").expect("atom");
+        let proto_key = ctx.intern_string(b"prototype").expect("atom");
+        let ctor_key = ctx.intern_string(b"constructor").expect("atom");
+        let has_own_key = ctx.intern_string(b"hasOwnProperty").expect("atom");
+        let to_string_key = ctx.intern_string(b"toString").expect("atom");
+        let call_key = ctx.intern_string(b"call").expect("atom");
+        let global_this_key = ctx.intern_string(b"globalThis").expect("atom");
+
+        let global = ctx.global_obj();
+        let object_ctor = get_property(&ctx, global, object_key).expect("Object ctor");
+        let function_ctor = get_property(&ctx, global, function_key).expect("Function ctor");
+        assert_eq!(object_ctor, ctx.class_obj()[JSObjectClass::Object as usize]);
+        assert_eq!(function_ctor, ctx.class_obj()[JSObjectClass::Closure as usize]);
+
+        let object_proto = ctx.class_proto()[JSObjectClass::Object as usize];
+        let function_proto = ctx.class_proto()[JSObjectClass::Closure as usize];
+        assert_eq!(
+            get_property(&ctx, object_ctor, proto_key).expect("Object.prototype"),
+            object_proto
+        );
+        assert_eq!(
+            get_property(&ctx, function_ctor, proto_key).expect("Function.prototype"),
+            function_proto
+        );
+        assert_eq!(
+            get_property(&ctx, object_proto, ctor_key).expect("Object.prototype.constructor"),
+            object_ctor
+        );
+        assert_eq!(
+            get_property(&ctx, function_proto, ctor_key).expect("Function.prototype.constructor"),
+            function_ctor
+        );
+
+        let has_own = get_property(&ctx, object_proto, has_own_key).expect("hasOwnProperty");
+        assert_eq!(value_get_special_tag(has_own), JS_TAG_SHORT_FUNC);
+        let to_string = get_property(&ctx, object_proto, to_string_key).expect("toString");
+        assert_eq!(value_get_special_tag(to_string), JS_TAG_SHORT_FUNC);
+        let call = get_property(&ctx, function_proto, call_key).expect("call");
+        assert_eq!(value_get_special_tag(call), JS_TAG_SHORT_FUNC);
+
+        let global_this = get_property(&ctx, global, global_this_key).expect("globalThis");
+        assert_eq!(global_this, global);
     }
 
     #[test]

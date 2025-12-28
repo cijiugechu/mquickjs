@@ -43,6 +43,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added full `JSProperty` layout and `JSClosureData` into `src/property.rs` and `src/closure_data.rs` with roundtrip tests.
 - Implemented runtime object property tables in `src/property.rs` (hash lookup, create/define/update/delete, ROM promotion, array index fast path) with unit tests.
 - Made ROM atom decoding Miri-safe and stabilized heap storage provenance in `src/context.rs` (`HeapStorage` + raw-bit ROM offsets) to avoid stacked-borrows UB.
+- Reworked ROM table ownership + ROM property lookup to preserve pointer provenance under Miri and tightened stdlib Object/Function prototype-chain init (`src/context.rs`, `src/property.rs`).
 - Added a read-only `JSContext` shell (`ContextShell`) capturing memory map fields and invariants in `src/context_shell.rs` with validation tests.
 - Added read-only views for `JSFloat64`, `JSByteArray`, and `JSValueArray` in `src/memblock_views.rs` with roundtrip tests.
 - Ported `JSObject` layout plus `JSRegExp`/`JSObjectUserData` into `src/object.rs` with header/payload tests.

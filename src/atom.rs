@@ -3,6 +3,7 @@ use crate::cutils::{unicode_to_utf8, utf8_get};
 use crate::dtoa::{js_atod, js_dtoa, AtodFlags, JS_DTOA_FORMAT_FREE};
 use crate::jsvalue::{
     is_ptr,
+    raw_bits,
     value_get_special_tag,
     value_get_special_value,
     value_to_ptr,
@@ -83,6 +84,35 @@ impl AtomTables {
                 val
             }
         }
+    }
+
+    pub fn resolve_atom(&self, val: JSValue) -> Option<JSValue> {
+        if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
+            return Some(val);
+        }
+        if !is_ptr(val) {
+            return None;
+        }
+        let raw = raw_bits(val);
+        for table in &self.rom_tables {
+            if let Some(entry) = table.iter().find(|entry| raw_bits(**entry) == raw) {
+                return Some(*entry);
+            }
+        }
+        if let Some(entry) = self
+            .unique_strings
+            .iter()
+            .find(|entry| raw_bits(**entry) == raw)
+        {
+            return Some(*entry);
+        }
+        None
+    }
+
+    pub fn rom_table_entry(&self, index: usize) -> Option<JSValue> {
+        self.rom_tables
+            .first()
+            .and_then(|table| table.get(index).copied())
     }
 
     pub fn empty_string_atom(&self) -> Option<JSValue> {

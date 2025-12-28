@@ -7,6 +7,8 @@ pub struct CFunctionData {
     params: JSValue,
 }
 
+pub(crate) const CFUNC_PARAMS_OFFSET: usize = core::mem::offset_of!(CFunctionData, params);
+
 impl CFunctionData {
     pub const fn new(idx: u32, params: JSValue) -> Self {
         Self { idx, params }

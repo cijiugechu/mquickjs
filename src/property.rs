@@ -8,6 +8,7 @@ use crate::jsvalue::{
 };
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
+use crate::string::runtime::string_view;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 
@@ -600,6 +601,7 @@ fn update_props(ctx: &mut JSContext, obj: JSValue) -> Result<(), PropertyError> 
     debug_assert_eq!(new_list.array.size(), 2 + (hash_mask + 1) + 3 * prop_count);
     let mut i = 0usize;
     let mut j = 0usize;
+    let mut rehash_needed = false;
     while j < prop_count {
         let index = 2 + (hash_mask + 1) + 3 * i;
         let prop = new_list.property_ref(index);
@@ -609,11 +611,21 @@ fn update_props(ctx: &mut JSContext, obj: JSValue) -> Result<(), PropertyError> 
                 prop.set_value(resolved);
                 prop.set_meta(prop.meta().with_prop_type(JSPropType::Normal));
             }
+            let mapped = ctx
+                .resolve_rom_atom_value(prop.key())
+                .map_err(|_| PropertyError::InvalidValueArray)?;
+            if mapped != prop.key() {
+                prop.set_key(mapped);
+                rehash_needed = true;
+            }
             j += 1;
         }
         i += 1;
     }
     set_object_props(obj_ptr, value_from_ptr(new_ptr));
+    if rehash_needed {
+        rehash_props(ctx, obj_ptr, false)?;
+    }
     Ok(())
 }
 
@@ -771,6 +783,49 @@ fn find_own_property(list: &PropertyList, prop: JSValue) -> Option<PropertyRef> 
     None
 }
 
+fn find_own_property_linear_rom(
+    ctx: &JSContext,
+    list: &PropertyList,
+    prop: JSValue,
+) -> Option<(JSValue, PropertyMeta)> {
+    let prop_count = list.prop_count();
+    let prop_base = list.prop_base();
+    let mut seen = 0usize;
+    let mut idx = 0usize;
+    while seen < prop_count {
+        let base = prop_base + 3 * idx;
+        let key_word = raw_bits(list.array.read(base));
+        let key = ctx.rom_value_from_word(key_word);
+        if key != JS_UNINITIALIZED {
+            if prop_key_matches(prop, key) {
+                let value_word = raw_bits(list.array.read(base + 1));
+                let meta_word = raw_bits(list.array.read(base + 2));
+                let value = ctx.rom_value_from_word(value_word);
+                let meta = PropertyMeta::from_raw(meta_word as u32);
+                return Some((value, meta));
+            }
+            seen += 1;
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn prop_key_matches(prop: JSValue, key: JSValue) -> bool {
+    if prop == key {
+        return true;
+    }
+    let mut scratch_prop = [0u8; 5];
+    let mut scratch_key = [0u8; 5];
+    let Some(prop_view) = string_view(prop, &mut scratch_prop) else {
+        return false;
+    };
+    let Some(key_view) = string_view(key, &mut scratch_key) else {
+        return false;
+    };
+    prop_view.bytes() == key_view.bytes()
+}
+
 fn define_property_internal(
     ctx: &mut JSContext,
     obj: JSValue,
@@ -898,7 +953,16 @@ pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSVa
             }
         }
         let list = PropertyList::from_value(object_props(obj_ptr))?;
-        if let Some(entry) = find_own_property(&list, prop) {
+        if ctx.is_rom_ptr(list.array.base) {
+            if let Some((value, meta)) = find_own_property_linear_rom(ctx, &list, prop) {
+                return match meta.prop_type() {
+                    JSPropType::Normal => Ok(value),
+                    JSPropType::VarRef => read_var_ref_value(value),
+                    JSPropType::Special => get_special_prop(ctx, value),
+                    JSPropType::GetSet => Err(PropertyError::Unsupported("getter/setter")),
+                };
+            }
+        } else if let Some(entry) = find_own_property(&list, prop) {
             return match entry.meta().prop_type() {
                 JSPropType::Normal => Ok(entry.value()),
                 JSPropType::VarRef => read_var_ref_value(entry.value()),
@@ -915,12 +979,17 @@ pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSVa
     Ok(JS_UNDEFINED)
 }
 
-pub fn has_property(_ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<bool, PropertyError> {
+pub fn has_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<bool, PropertyError> {
     let mut current = obj;
     loop {
         let obj_ptr = object_ptr(current)?;
         let list = PropertyList::from_value(object_props(obj_ptr))?;
-        if find_own_property(&list, prop).is_some() {
+        let found = if ctx.is_rom_ptr(list.array.base) {
+            find_own_property_linear_rom(ctx, &list, prop).is_some()
+        } else {
+            find_own_property(&list, prop).is_some()
+        };
+        if found {
             return Ok(true);
         }
         let proto = object_proto(obj_ptr);
