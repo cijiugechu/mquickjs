@@ -84,6 +84,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported bytecode relocation helpers (`JS_IsBytecode`, `JS_RelocateBytecode2`, `JS_RelocateBytecode`) into `src/bytecode.rs` with strict-provenance-safe pointer rebasing, pointer-relocation tests, and a unique-string resolver hook.
 - Ported 64-bit to 32-bit bytecode heap export (`gc_compact_heap_64to32`, short-float expansion, and prepare helpers) into `src/bytecode.rs` with conversion/overflow tests; added GC root builder helper in `src/gc_runtime.rs` and JSValue raw-bit accessors in `src/jsvalue.rs`.
 - Wired stdlib metadata to builtin prototypes in `src/stdlib.rs` with helpers for typed iteration and a test ensuring all cproto names map to known variants.
+- Expanded `build.rs` stdlib metadata to cover `mquickjs-c/mqjs_stdlib.c` (builtins/classes/typed arrays/error hierarchies/global props), keeping magic identifiers and duplicate entries aligned with C.
 - Ported C API layout definitions from `mquickjs.h` into `src/capi_defs.rs` (JSCStringBuf, JSCFunctionDefKind/JSCFunctionType/JSCFunctionDef, JSSTDLibraryDef) with size/align/offset tests and an opaque `JSContext` handle type.
 - Ported `JSWriteFunc` and `JSInterruptHandler` typedefs into `src/capi_defs.rs`.
 - Ported `JS_EVAL_*` flags into `src/capi_defs.rs` with constant-value tests.
