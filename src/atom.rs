@@ -20,7 +20,7 @@ use core::slice;
 const STRING_CHAR_BUF_LEN: usize = 5;
 
 // Invariants:
-// - Atom tables are sorted with `js_string_compare` (UTF-16 ordering semantics).
+// - Atom tables are sorted with `string_compare` (UTF-16 ordering semantics).
 // - Atom tables store heap-backed JSString memblocks (MTag::String).
 // - Unique strings are JSString values with the `is_unique` flag set.
 // - Unique string entries are weak references and may be pruned after GC.
@@ -163,7 +163,7 @@ fn find_atom(arr: &[JSValue], val: JSValue) -> Result<usize, usize> {
 }
 
 fn cmp_js_values(a: JSValue, b: JSValue) -> Ordering {
-    match js_string_compare(a, b) {
+    match string_compare(a, b) {
         0 => Ordering::Equal,
         x if x < 0 => Ordering::Less,
         _ => Ordering::Greater,
@@ -233,7 +233,7 @@ fn string_get_cp(bytes: &[u8], index: usize) -> i32 {
     utf8_get(&bytes[start..], &mut len)
 }
 
-fn js_string_compare(val1: JSValue, val2: JSValue) -> i32 {
+pub(crate) fn string_compare(val1: JSValue, val2: JSValue) -> i32 {
     let mut buf1 = [0u8; STRING_CHAR_BUF_LEN];
     let mut buf2 = [0u8; STRING_CHAR_BUF_LEN];
     let bytes1 = string_bytes(val1, &mut buf1).expect("expected string value");
@@ -266,6 +266,14 @@ fn js_string_compare(val1: JSValue, val2: JSValue) -> i32 {
     } else {
         1
     }
+}
+
+pub(crate) fn string_eq(val1: JSValue, val2: JSValue) -> bool {
+    let mut buf1 = [0u8; STRING_CHAR_BUF_LEN];
+    let mut buf2 = [0u8; STRING_CHAR_BUF_LEN];
+    let bytes1 = string_bytes(val1, &mut buf1).expect("expected string value");
+    let bytes2 = string_bytes(val2, &mut buf2).expect("expected string value");
+    bytes1 == bytes2
 }
 
 fn string_header(ptr: NonNull<u8>) -> Option<StringHeader> {
@@ -437,7 +445,7 @@ mod tests {
         let mut arena = HeapArena::new(128);
         let bmp = arena.alloc_string(&[0xee, 0x80, 0x80], false);
         let non_bmp = arena.alloc_string(&[0xf0, 0x90, 0x80, 0x80], false);
-        assert_eq!(js_string_compare(bmp, non_bmp), 1);
-        assert_eq!(js_string_compare(non_bmp, bmp), -1);
+        assert_eq!(string_compare(bmp, non_bmp), 1);
+        assert_eq!(string_compare(non_bmp, bmp), -1);
     }
 }

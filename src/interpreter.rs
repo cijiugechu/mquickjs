@@ -1,15 +1,17 @@
+use crate::atom::{string_compare, string_eq};
 use crate::context::{ContextError, JSContext};
+use crate::conversion::{self, ConversionError, ToPrimitiveHint};
 use crate::cfunction_data::{CFunctionData, CFUNC_PARAMS_OFFSET};
 use crate::containers::{ByteArrayHeader, ValueArrayHeader};
 use crate::enums::JSObjectClass;
 use crate::function_bytecode::FunctionBytecode;
 use crate::heap::JS_STACK_SLACK;
-use crate::js_libm::js_fmod;
+use crate::js_libm::{js_fmod, js_pow};
 use crate::jsvalue::{
     from_bits, is_bool, is_int, is_null, is_ptr, is_short_float, is_undefined, new_bool,
     new_short_int, short_float_to_f64, value_get_int, value_get_special_tag,
     value_get_special_value, value_make_special, value_to_ptr, JSValue, JSWord, JSW, JS_NULL,
-    JS_TAG_CATCH_OFFSET, JS_TAG_SHORT_FUNC, JS_UNDEFINED,
+    JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_CATCH_OFFSET, JS_TAG_SHORT_FUNC, JS_UNDEFINED,
 };
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
@@ -41,6 +43,17 @@ pub enum InterpreterError {
 impl From<ContextError> for InterpreterError {
     fn from(err: ContextError) -> Self {
         InterpreterError::Context(err)
+    }
+}
+
+impl From<ConversionError> for InterpreterError {
+    fn from(err: ConversionError) -> Self {
+        match err {
+            ConversionError::Context(err) => InterpreterError::Context(err),
+            ConversionError::Property(_) => InterpreterError::TypeError("property"),
+            ConversionError::Interpreter(err) => err,
+            ConversionError::TypeError(msg) => InterpreterError::TypeError(msg),
+        }
     }
 }
 
@@ -319,18 +332,298 @@ unsafe fn pop(ctx: &mut JSContext, sp: &mut *mut JSValue) -> JSValue {
     val
 }
 
-fn binary_float_op<F>(
+fn add_slow(ctx: &mut JSContext, left: JSValue, right: JSValue) -> Result<JSValue, InterpreterError> {
+    let left = conversion::to_primitive(ctx, left, ToPrimitiveHint::None)?;
+    let right = conversion::to_primitive(ctx, right, ToPrimitiveHint::None)?;
+    if conversion::is_string(left) || conversion::is_string(right) {
+        let left = conversion::to_string(ctx, left)?;
+        let right = conversion::to_string(ctx, right)?;
+        return Ok(conversion::concat_strings(ctx, left, right)?);
+    }
+    let d1 = conversion::to_number(ctx, left)?;
+    let d2 = conversion::to_number(ctx, right)?;
+    Ok(ctx.new_float64(d1 + d2)?)
+}
+
+fn binary_arith_slow(
     ctx: &mut JSContext,
+    opcode: u8,
     left: JSValue,
     right: JSValue,
-    op: F,
-) -> Result<JSValue, InterpreterError>
-where
-    F: FnOnce(f64, f64) -> f64,
-{
-    let lhs = value_to_f64(left)?;
-    let rhs = value_to_f64(right)?;
-    Ok(ctx.new_float64(op(lhs, rhs))?)
+) -> Result<JSValue, InterpreterError> {
+    let d1 = conversion::to_number(ctx, left)?;
+    let d2 = conversion::to_number(ctx, right)?;
+    let res = match opcode {
+        op if op == crate::opcode::OP_SUB.0 as u8 => d1 - d2,
+        op if op == crate::opcode::OP_MUL.0 as u8 => d1 * d2,
+        op if op == crate::opcode::OP_DIV.0 as u8 => d1 / d2,
+        op if op == crate::opcode::OP_MOD.0 as u8 => js_fmod(d1, d2),
+        op if op == crate::opcode::OP_POW.0 as u8 => js_pow(d1, d2),
+        _ => return Err(InterpreterError::InvalidBytecode("binary arith slow")),
+    };
+    Ok(ctx.new_float64(res)?)
+}
+
+fn unary_arith_slow(
+    ctx: &mut JSContext,
+    opcode: u8,
+    val: JSValue,
+) -> Result<JSValue, InterpreterError> {
+    let mut d = conversion::to_number(ctx, val)?;
+    match opcode {
+        op if op == crate::opcode::OP_INC.0 as u8 => d += 1.0,
+        op if op == crate::opcode::OP_DEC.0 as u8 => d -= 1.0,
+        op if op == crate::opcode::OP_PLUS.0 as u8 => {}
+        op if op == crate::opcode::OP_NEG.0 as u8 => d = -d,
+        _ => return Err(InterpreterError::InvalidBytecode("unary arith slow")),
+    }
+    Ok(ctx.new_float64(d)?)
+}
+
+fn post_inc_slow(
+    ctx: &mut JSContext,
+    opcode: u8,
+    val: JSValue,
+) -> Result<(JSValue, JSValue), InterpreterError> {
+    let d = conversion::to_number(ctx, val)?;
+    let old_val = ctx.new_float64(d)?;
+    let delta = if opcode == crate::opcode::OP_POST_INC.0 as u8 {
+        1.0
+    } else {
+        -1.0
+    };
+    let new_val = ctx.new_float64(d + delta)?;
+    Ok((old_val, new_val))
+}
+
+fn binary_logic_slow(
+    ctx: &mut JSContext,
+    opcode: u8,
+    left: JSValue,
+    right: JSValue,
+) -> Result<JSValue, InterpreterError> {
+    let v1 = conversion::to_uint32(ctx, left)?;
+    let v2 = conversion::to_uint32(ctx, right)?;
+    let res = match opcode {
+        op if op == crate::opcode::OP_SHL.0 as u8 => {
+            let r = (v1 as i32) << (v2 & 0x1f);
+            return Ok(ctx.new_float64(r as f64)?);
+        }
+        op if op == crate::opcode::OP_SAR.0 as u8 => {
+            let r = (v1 as i32) >> (v2 & 0x1f);
+            return Ok(ctx.new_float64(r as f64)?);
+        }
+        op if op == crate::opcode::OP_SHR.0 as u8 => {
+            let r = v1 >> (v2 & 0x1f);
+            return Ok(ctx.new_float64(r as f64)?);
+        }
+        op if op == crate::opcode::OP_AND.0 as u8 => v1 & v2,
+        op if op == crate::opcode::OP_OR.0 as u8 => v1 | v2,
+        op if op == crate::opcode::OP_XOR.0 as u8 => v1 ^ v2,
+        _ => return Err(InterpreterError::InvalidBytecode("binary logic slow")),
+    };
+    Ok(ctx.new_float64((res as i32) as f64)?)
+}
+
+fn not_slow(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, InterpreterError> {
+    let r = conversion::to_uint32(ctx, val)?;
+    Ok(ctx.new_float64((!r as i32) as f64)?)
+}
+
+fn relational_slow(
+    ctx: &mut JSContext,
+    opcode: u8,
+    left: JSValue,
+    right: JSValue,
+) -> Result<JSValue, InterpreterError> {
+    let left = conversion::to_primitive(ctx, left, ToPrimitiveHint::Number)?;
+    let right = conversion::to_primitive(ctx, right, ToPrimitiveHint::Number)?;
+    let res = if conversion::is_string(left) && conversion::is_string(right) {
+        let cmp = string_compare(left, right);
+        match opcode {
+            op if op == crate::opcode::OP_LT.0 as u8 => cmp < 0,
+            op if op == crate::opcode::OP_LTE.0 as u8 => cmp <= 0,
+            op if op == crate::opcode::OP_GT.0 as u8 => cmp > 0,
+            op if op == crate::opcode::OP_GTE.0 as u8 => cmp >= 0,
+            _ => return Err(InterpreterError::InvalidBytecode("relational slow")),
+        }
+    } else {
+        let d1 = conversion::to_number(ctx, left)?;
+        let d2 = conversion::to_number(ctx, right)?;
+        match opcode {
+            op if op == crate::opcode::OP_LT.0 as u8 => d1 < d2,
+            op if op == crate::opcode::OP_LTE.0 as u8 => d1 <= d2,
+            op if op == crate::opcode::OP_GT.0 as u8 => d1 > d2,
+            op if op == crate::opcode::OP_GTE.0 as u8 => d1 >= d2,
+            _ => return Err(InterpreterError::InvalidBytecode("relational slow")),
+        }
+    };
+    Ok(new_bool(res as i32))
+}
+
+fn strict_eq(ctx: &mut JSContext, left: JSValue, right: JSValue) -> Result<bool, InterpreterError> {
+    if conversion::is_number(left) {
+        if !conversion::is_number(right) {
+            return Ok(false);
+        }
+        let d1 = conversion::to_number(ctx, left)?;
+        let d2 = conversion::to_number(ctx, right)?;
+        return Ok(d1 == d2);
+    }
+    if conversion::is_string(left) {
+        if !conversion::is_string(right) {
+            return Ok(false);
+        }
+        return Ok(string_eq(left, right));
+    }
+    Ok(left == right)
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum EqTag {
+    Number,
+    String,
+    Object,
+    Bool,
+    Null,
+    Undefined,
+    Other,
+}
+
+fn eq_tag(val: JSValue) -> EqTag {
+    if is_int(val) {
+        return EqTag::Number;
+    }
+    #[cfg(target_pointer_width = "64")]
+    if is_short_float(val) {
+        return EqTag::Number;
+    }
+    if is_ptr(val) {
+        return match mtag_from_value(val) {
+            Some(MTag::Float64) => EqTag::Number,
+            Some(MTag::String) => EqTag::String,
+            _ => EqTag::Object,
+        };
+    }
+    match value_get_special_tag(val) {
+        tag if tag == crate::jsvalue::JS_TAG_STRING_CHAR => EqTag::String,
+        tag if tag == JS_TAG_SHORT_FUNC => EqTag::Object,
+        tag if tag == crate::jsvalue::JS_TAG_BOOL => EqTag::Bool,
+        tag if tag == crate::jsvalue::JS_TAG_NULL => EqTag::Null,
+        tag if tag == crate::jsvalue::JS_TAG_UNDEFINED => EqTag::Undefined,
+        _ => EqTag::Other,
+    }
+}
+
+fn eq_slow(
+    ctx: &mut JSContext,
+    mut left: JSValue,
+    mut right: JSValue,
+    is_neq: bool,
+) -> Result<JSValue, InterpreterError> {
+    loop {
+        let tag1 = eq_tag(left);
+        let tag2 = eq_tag(right);
+        let res = if tag1 == tag2 {
+            strict_eq(ctx, left, right)?
+        } else if (tag1 == EqTag::Null && tag2 == EqTag::Undefined)
+            || (tag2 == EqTag::Null && tag1 == EqTag::Undefined)
+        {
+            true
+        } else if (tag1 == EqTag::String && tag2 == EqTag::Number)
+            || (tag2 == EqTag::String && tag1 == EqTag::Number)
+        {
+            let d1 = conversion::to_number(ctx, left)?;
+            let d2 = conversion::to_number(ctx, right)?;
+            d1 == d2
+        } else if tag1 == EqTag::Bool {
+            left = new_short_int(value_get_special_value(left));
+            continue;
+        } else if tag2 == EqTag::Bool {
+            right = new_short_int(value_get_special_value(right));
+            continue;
+        } else if tag1 == EqTag::Object
+            && (tag2 == EqTag::Number || tag2 == EqTag::String)
+        {
+            left = conversion::to_primitive(ctx, left, ToPrimitiveHint::None)?;
+            continue;
+        } else if tag2 == EqTag::Object
+            && (tag1 == EqTag::Number || tag1 == EqTag::String)
+        {
+            right = conversion::to_primitive(ctx, right, ToPrimitiveHint::None)?;
+            continue;
+        } else {
+            false
+        };
+        return Ok(new_bool((res ^ is_neq) as i32));
+    }
+}
+
+fn typeof_value(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, InterpreterError> {
+    let name = if conversion::is_number(val) {
+        "number"
+    } else if conversion::is_string(val) {
+        "string"
+    } else if is_bool(val) {
+        "boolean"
+    } else if conversion::is_function(val) {
+        "function"
+    } else if conversion::is_object(val) || is_null(val) {
+        "object"
+    } else {
+        "undefined"
+    };
+    Ok(ctx.intern_string(name.as_bytes())?)
+}
+
+fn is_function_object(val: JSValue) -> bool {
+    let ptr = match object_ptr(val) {
+        Ok(ptr) => ptr,
+        Err(_) => return false,
+    };
+    let header_word = unsafe {
+        // SAFETY: ptr points at a readable object header.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = ObjectHeader::from_word(header_word);
+    matches!(
+        header.class_id(),
+        class if class == JSObjectClass::Closure as u8 || class == JSObjectClass::CFunction as u8
+    )
+}
+
+fn object_proto_value(ptr: NonNull<Object>) -> JSValue {
+    unsafe {
+        // SAFETY: ptr points at a readable object proto.
+        ptr::read_unaligned(Object::proto_ptr(ptr.as_ptr()))
+    }
+}
+
+fn instanceof_check(obj: JSValue, proto: JSValue) -> Result<bool, InterpreterError> {
+    if !conversion::is_object(obj) {
+        return Ok(false);
+    }
+    let mut current = obj;
+    loop {
+        let obj_ptr = object_ptr(current)?;
+        let next_proto = object_proto_value(obj_ptr);
+        if next_proto == JS_NULL {
+            return Ok(false);
+        }
+        if next_proto == proto {
+            return Ok(true);
+        }
+        current = next_proto;
+    }
+}
+
+fn mtag_from_value(val: JSValue) -> Option<MTag> {
+    let ptr = value_to_ptr::<u8>(val)?;
+    let header_word = unsafe {
+        // SAFETY: ptr points at a readable memblock header.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    Some(MbHeader::from_word(header_word).tag())
 }
 
 fn call_cfunction_def(
@@ -348,7 +641,7 @@ fn call_cfunction_def(
         BuiltinCFunction::GenericParams(func) => Ok(func(ctx, this_val, args, params)),
         BuiltinCFunction::FF(func) => {
             let arg = args.first().copied().unwrap_or(JS_UNDEFINED);
-            let num = value_to_f64(arg)?;
+            let num = conversion::to_number(ctx, arg)?;
             let out = func(num);
             Ok(ctx.new_float64(out)?)
         }
@@ -728,49 +1021,426 @@ pub fn call_with_this(
             op if op == crate::opcode::OP_ADD.0 as u8 => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = try_or_break!(binary_float_op(ctx, lhs, rhs, |a, b| a + b));
+                let res = if is_int(lhs) && is_int(rhs) {
+                    let sum = value_get_int(lhs) + value_get_int(rhs);
+                    if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&sum) {
+                        Ok(new_short_int(sum))
+                    } else {
+                        add_slow(ctx, lhs, rhs)
+                    }
+                } else {
+                    #[cfg(target_pointer_width = "64")]
+                    {
+                        if is_short_float(lhs) && is_short_float(rhs) {
+                            let sum = short_float_to_f64(lhs) + short_float_to_f64(rhs);
+                            Ok(ctx.new_float64(sum)?)
+                        } else {
+                            add_slow(ctx, lhs, rhs)
+                        }
+                    }
+                    #[cfg(not(target_pointer_width = "64"))]
+                    {
+                        add_slow(ctx, lhs, rhs)
+                    }
+                };
+                let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
             op if op == crate::opcode::OP_SUB.0 as u8 => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = try_or_break!(binary_float_op(ctx, lhs, rhs, |a, b| a - b));
+                let res = if is_int(lhs) && is_int(rhs) {
+                    let diff = value_get_int(lhs) - value_get_int(rhs);
+                    if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&diff) {
+                        Ok(new_short_int(diff))
+                    } else {
+                        binary_arith_slow(ctx, opcode, lhs, rhs)
+                    }
+                } else {
+                    #[cfg(target_pointer_width = "64")]
+                    {
+                        if is_short_float(lhs) && is_short_float(rhs) {
+                            let diff = short_float_to_f64(lhs) - short_float_to_f64(rhs);
+                            Ok(ctx.new_float64(diff)?)
+                        } else {
+                            binary_arith_slow(ctx, opcode, lhs, rhs)
+                        }
+                    }
+                    #[cfg(not(target_pointer_width = "64"))]
+                    {
+                        binary_arith_slow(ctx, opcode, lhs, rhs)
+                    }
+                };
+                let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
             op if op == crate::opcode::OP_MUL.0 as u8 => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = try_or_break!(binary_float_op(ctx, lhs, rhs, |a, b| a * b));
+                let res = if is_int(lhs) && is_int(rhs) {
+                    let prod = value_get_int(lhs)
+                        .checked_mul(value_get_int(rhs))
+                        .unwrap_or(JS_SHORTINT_MIN - 1);
+                    if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&prod) {
+                        Ok(new_short_int(prod))
+                    } else {
+                        binary_arith_slow(ctx, opcode, lhs, rhs)
+                    }
+                } else {
+                    #[cfg(target_pointer_width = "64")]
+                    {
+                        if is_short_float(lhs) && is_short_float(rhs) {
+                            let prod = short_float_to_f64(lhs) * short_float_to_f64(rhs);
+                            Ok(ctx.new_float64(prod)?)
+                        } else {
+                            binary_arith_slow(ctx, opcode, lhs, rhs)
+                        }
+                    }
+                    #[cfg(not(target_pointer_width = "64"))]
+                    {
+                        binary_arith_slow(ctx, opcode, lhs, rhs)
+                    }
+                };
+                let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
             op if op == crate::opcode::OP_DIV.0 as u8 => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = try_or_break!(binary_float_op(ctx, lhs, rhs, |a, b| a / b));
+                let res = if is_int(lhs) && is_int(rhs) {
+                    let v1 = value_get_int(lhs);
+                    let v2 = value_get_int(rhs);
+                    Ok(ctx.new_float64((v1 as f64) / (v2 as f64))?)
+                } else {
+                    binary_arith_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
             op if op == crate::opcode::OP_MOD.0 as u8 => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = try_or_break!(binary_float_op(ctx, lhs, rhs, js_fmod));
+                let res = if is_int(lhs) && is_int(rhs) {
+                    let v1 = value_get_int(lhs);
+                    let v2 = value_get_int(rhs);
+                    if v1 >= 0 && v2 > 0 {
+                        Ok(new_short_int(v1 % v2))
+                    } else {
+                        binary_arith_slow(ctx, opcode, lhs, rhs)
+                    }
+                } else {
+                    binary_arith_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_POW.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = try_or_break!(binary_arith_slow(ctx, opcode, lhs, rhs));
                 push(ctx, &mut sp, res);
             },
             op if op == crate::opcode::OP_NEG.0 as u8 => unsafe {
                 let val = pop(ctx, &mut sp);
-                let num = try_or_break!(value_to_f64(val));
-                let res = try_or_break!(ctx.new_float64(-num));
+                let res = if is_int(val) {
+                    let v1 = value_get_int(val);
+                    if v1 == 0 {
+                        Ok(ctx.minus_zero())
+                    } else if v1 == JS_SHORTINT_MIN {
+                        unary_arith_slow(ctx, opcode, val)
+                    } else {
+                        Ok(new_short_int(-v1))
+                    }
+                } else {
+                    unary_arith_slow(ctx, opcode, val)
+                };
+                let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
             op if op == crate::opcode::OP_PLUS.0 as u8 => unsafe {
                 let val = pop(ctx, &mut sp);
-                let num = try_or_break!(value_to_f64(val));
-                let res = try_or_break!(ctx.new_float64(num));
+                let res = if conversion::is_number(val) {
+                    Ok(val)
+                } else {
+                    unary_arith_slow(ctx, opcode, val)
+                };
+                let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_INC.0 as u8 => unsafe {
+                let val = pop(ctx, &mut sp);
+                let res = if is_int(val) {
+                    let v1 = value_get_int(val);
+                    if v1 == JS_SHORTINT_MAX {
+                        unary_arith_slow(ctx, opcode, val)
+                    } else {
+                        Ok(new_short_int(v1 + 1))
+                    }
+                } else {
+                    unary_arith_slow(ctx, opcode, val)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_DEC.0 as u8 => unsafe {
+                let val = pop(ctx, &mut sp);
+                let res = if is_int(val) {
+                    let v1 = value_get_int(val);
+                    if v1 == JS_SHORTINT_MIN {
+                        unary_arith_slow(ctx, opcode, val)
+                    } else {
+                        Ok(new_short_int(v1 - 1))
+                    }
+                } else {
+                    unary_arith_slow(ctx, opcode, val)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_POST_INC.0 as u8 => unsafe {
+                let val = ptr::read_unaligned(sp);
+                let (old_val, new_val) = if is_int(val) {
+                    let v1 = value_get_int(val);
+                    if v1 == JS_SHORTINT_MAX {
+                        try_or_break!(post_inc_slow(ctx, opcode, val))
+                    } else {
+                        (val, new_short_int(v1 + 1))
+                    }
+                } else {
+                    try_or_break!(post_inc_slow(ctx, opcode, val))
+                };
+                ptr::write_unaligned(sp, old_val);
+                push(ctx, &mut sp, new_val);
+            },
+            op if op == crate::opcode::OP_POST_DEC.0 as u8 => unsafe {
+                let val = ptr::read_unaligned(sp);
+                let (old_val, new_val) = if is_int(val) {
+                    let v1 = value_get_int(val);
+                    if v1 == JS_SHORTINT_MIN {
+                        try_or_break!(post_inc_slow(ctx, opcode, val))
+                    } else {
+                        (val, new_short_int(v1 - 1))
+                    }
+                } else {
+                    try_or_break!(post_inc_slow(ctx, opcode, val))
+                };
+                ptr::write_unaligned(sp, old_val);
+                push(ctx, &mut sp, new_val);
             },
             op if op == crate::opcode::OP_LNOT.0 as u8 => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = new_bool(!try_or_break!(to_bool(val)) as i32);
                 push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_NOT.0 as u8 => unsafe {
+                let val = pop(ctx, &mut sp);
+                let res = if is_int(val) {
+                    Ok(new_short_int(!value_get_int(val)))
+                } else {
+                    not_slow(ctx, val)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_SHL.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    let shift = (value_get_int(rhs) & 0x1f) as u32;
+                    let r = value_get_int(lhs).wrapping_shl(shift);
+                    if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&r) {
+                        Ok(new_short_int(r))
+                    } else {
+                        binary_logic_slow(ctx, opcode, lhs, rhs)
+                    }
+                } else {
+                    binary_logic_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_SAR.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    let shift = (value_get_int(rhs) & 0x1f) as u32;
+                    let r = value_get_int(lhs) >> shift;
+                    Ok(new_short_int(r))
+                } else {
+                    binary_logic_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_SHR.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    let shift = (value_get_int(rhs) & 0x1f) as u32;
+                    let r = (value_get_int(lhs) as u32) >> shift;
+                    if r <= JS_SHORTINT_MAX as u32 {
+                        Ok(new_short_int(r as i32))
+                    } else {
+                        binary_logic_slow(ctx, opcode, lhs, rhs)
+                    }
+                } else {
+                    binary_logic_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_AND.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_short_int(value_get_int(lhs) & value_get_int(rhs)))
+                } else {
+                    binary_logic_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_XOR.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_short_int(value_get_int(lhs) ^ value_get_int(rhs)))
+                } else {
+                    binary_logic_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_OR.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_short_int(value_get_int(lhs) | value_get_int(rhs)))
+                } else {
+                    binary_logic_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_LT.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_bool((value_get_int(lhs) < value_get_int(rhs)) as i32))
+                } else {
+                    relational_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_LTE.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_bool((value_get_int(lhs) <= value_get_int(rhs)) as i32))
+                } else {
+                    relational_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_GT.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_bool((value_get_int(lhs) > value_get_int(rhs)) as i32))
+                } else {
+                    relational_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_GTE.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_bool((value_get_int(lhs) >= value_get_int(rhs)) as i32))
+                } else {
+                    relational_slow(ctx, opcode, lhs, rhs)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_EQ.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_bool((value_get_int(lhs) == value_get_int(rhs)) as i32))
+                } else {
+                    eq_slow(ctx, lhs, rhs, false)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_NEQ.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_bool((value_get_int(lhs) != value_get_int(rhs)) as i32))
+                } else {
+                    eq_slow(ctx, lhs, rhs, true)
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_STRICT_EQ.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res: Result<JSValue, InterpreterError> = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_bool((value_get_int(lhs) == value_get_int(rhs)) as i32))
+                } else {
+                    Ok(new_bool(strict_eq(ctx, lhs, rhs)? as i32))
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_STRICT_NEQ.0 as u8 => unsafe {
+                let rhs = pop(ctx, &mut sp);
+                let lhs = pop(ctx, &mut sp);
+                let res: Result<JSValue, InterpreterError> = if is_int(lhs) && is_int(rhs) {
+                    Ok(new_bool((value_get_int(lhs) != value_get_int(rhs)) as i32))
+                } else {
+                    Ok(new_bool((!strict_eq(ctx, lhs, rhs)?) as i32))
+                };
+                let res = try_or_break!(res);
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_TYPEOF.0 as u8 => unsafe {
+                let val = pop(ctx, &mut sp);
+                let res = try_or_break!(typeof_value(ctx, val));
+                push(ctx, &mut sp, res);
+            },
+            op if op == crate::opcode::OP_IN.0 as u8 => unsafe {
+                let obj = pop(ctx, &mut sp);
+                let prop = pop(ctx, &mut sp);
+                if !conversion::is_object(obj) {
+                    break Err(InterpreterError::TypeError("invalid 'in' operand"));
+                }
+                let prop = try_or_break!(conversion::to_property_key(ctx, prop));
+                let has = try_or_break!(
+                    crate::property::has_property(ctx, obj, prop).map_err(ConversionError::from)
+                );
+                push(ctx, &mut sp, new_bool(has as i32));
+            },
+            op if op == crate::opcode::OP_INSTANCEOF.0 as u8 => unsafe {
+                let obj = pop(ctx, &mut sp);
+                let ctor = pop(ctx, &mut sp);
+                if !is_function_object(ctor) {
+                    break Err(InterpreterError::TypeError(
+                        "invalid 'instanceof' right operand",
+                    ));
+                }
+                let proto_key = try_or_break!(ctx.intern_string(b"prototype"));
+                let proto = try_or_break!(
+                    crate::property::get_property(ctx, ctor, proto_key).map_err(ConversionError::from)
+                );
+                let found = try_or_break!(instanceof_check(obj, proto));
+                push(ctx, &mut sp, new_bool(found as i32));
             },
             op if op == crate::opcode::OP_GET_LOC0.0 as u8 => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0));
@@ -886,13 +1556,19 @@ mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
-    use crate::jsvalue::{is_int, value_get_int, JS_NULL};
-    use crate::opcode::{
-        OP_ADD, OP_CATCH, OP_DUP2, OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE, OP_INSERT2,
-        OP_INSERT3, OP_NIP, OP_PERM3, OP_PERM4, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4,
-        OP_PUSH_TRUE, OP_RET, OP_RETURN, OP_ROT3L, OP_SUB, OP_THROW,
+    use crate::jsvalue::{
+        is_int, value_from_ptr, value_get_int, value_get_special_value, JSValue, JSWord, JS_NULL,
     };
+    use crate::opcode::{
+        OP_ADD, OP_AND, OP_CATCH, OP_DUP2, OP_EQ, OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE,
+        OP_INSERT2, OP_INSERT3, OP_LT, OP_NIP, OP_PERM3, OP_PERM4, OP_PUSH_1, OP_PUSH_2,
+        OP_PUSH_3, OP_PUSH_4, OP_PUSH_CONST, OP_PUSH_TRUE, OP_RET, OP_RETURN, OP_ROT3L,
+        OP_STRICT_EQ, OP_SUB, OP_THROW,
+    };
+    use crate::string::runtime::string_view;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
+    use core::mem::size_of;
+    use core::ptr;
 
     fn new_context() -> JSContext {
         JSContext::new(ContextConfig {
@@ -908,12 +1584,33 @@ mod tests {
     }
 
     fn call_bytecode(ctx: &mut JSContext, bytecode: Vec<u8>) -> JSValue {
+        call_bytecode_with_cpool(ctx, bytecode, Vec::new())
+    }
+
+    fn call_bytecode_with_cpool(
+        ctx: &mut JSContext,
+        bytecode: Vec<u8>,
+        cpool: Vec<JSValue>,
+    ) -> JSValue {
         let byte_code_val = ctx.alloc_byte_array(&bytecode).expect("bytecode");
+        let cpool_val = if cpool.is_empty() {
+            JS_NULL
+        } else {
+            let ptr = ctx.alloc_value_array(cpool.len()).expect("cpool");
+            unsafe {
+                // SAFETY: ptr points to a freshly allocated value array.
+                let arr = ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
+                for (idx, val) in cpool.iter().enumerate() {
+                    ptr::write_unaligned(arr.add(idx), *val);
+                }
+            }
+            value_from_ptr(ptr)
+        };
         let header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let fields = FunctionBytecodeFields {
             func_name: JS_NULL,
             byte_code: byte_code_val,
-            cpool: JS_NULL,
+            cpool: cpool_val,
             vars: JS_NULL,
             ext_vars: JS_NULL,
             stack_size: 4,
@@ -929,6 +1626,14 @@ mod tests {
         call(ctx, closure, &[]).expect("call")
     }
 
+    fn string_from_value(val: JSValue) -> String {
+        let mut scratch = [0u8; 5];
+        let view = string_view(val, &mut scratch).expect("string view");
+        core::str::from_utf8(view.bytes())
+            .expect("utf8")
+            .to_string()
+    }
+
     #[test]
     fn call_simple_add() {
         let mut ctx = new_context();
@@ -938,6 +1643,81 @@ mod tests {
         );
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 3);
+    }
+
+    #[test]
+    fn call_add_string_concat() {
+        let mut ctx = new_context();
+        let str_val = ctx.new_string("hi").expect("string");
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_1.0 as u8,
+            OP_ADD.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
+        assert_eq!(string_from_value(result), "hi1");
+    }
+
+    #[test]
+    fn call_eq_and_strict_eq() {
+        let mut ctx = new_context();
+        let str_val = ctx.new_string("1").expect("string");
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_1.0 as u8,
+            OP_EQ.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
+        assert_eq!(value_get_special_value(result), 1);
+
+        let mut ctx = new_context();
+        let str_val = ctx.new_string("1").expect("string");
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_1.0 as u8,
+            OP_STRICT_EQ.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
+        assert_eq!(value_get_special_value(result), 0);
+    }
+
+    #[test]
+    fn call_relational_string_compare() {
+        let mut ctx = new_context();
+        let a = ctx.new_string("a").expect("string");
+        let b = ctx.new_string("b").expect("string");
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_CONST.0 as u8,
+            1,
+            0,
+            OP_LT.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![a, b]);
+        assert_eq!(value_get_special_value(result), 1);
+    }
+
+    #[test]
+    fn call_bitwise_and() {
+        let mut ctx = new_context();
+        let result = call_bytecode(
+            &mut ctx,
+            vec![OP_PUSH_3.0 as u8, OP_PUSH_1.0 as u8, OP_AND.0 as u8, OP_RETURN.0 as u8],
+        );
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 1);
     }
 
     #[test]

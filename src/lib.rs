@@ -31,6 +31,7 @@ pub mod heap;
 pub mod atom;
 pub mod gc;
 pub mod gc_runtime;
+pub mod conversion;
 pub mod context;
 pub mod runtime;
 pub mod interpreter;
