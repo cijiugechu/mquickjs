@@ -1,5 +1,6 @@
 pub mod stdlib_def;
 pub mod stdlib_image;
+pub mod cfunc;
 
 include!(concat!(env!("OUT_DIR"), "/stdlib_image.rs"));
 

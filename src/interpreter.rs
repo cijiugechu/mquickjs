@@ -1,4 +1,5 @@
 use crate::context::{ContextError, JSContext};
+use crate::cfunction_data::{CFunctionData, CFUNC_PARAMS_OFFSET};
 use crate::containers::{ByteArrayHeader, ValueArrayHeader};
 use crate::enums::JSObjectClass;
 use crate::function_bytecode::FunctionBytecode;
@@ -6,11 +7,13 @@ use crate::heap::JS_STACK_SLACK;
 use crate::js_libm::js_fmod;
 use crate::jsvalue::{
     from_bits, is_bool, is_int, is_null, is_ptr, is_short_float, is_undefined, new_bool,
-    new_short_int, short_float_to_f64, value_get_int, value_get_special_value, value_to_ptr,
-    JSValue, JSWord, JSW, JS_NULL, JS_UNDEFINED,
+    new_short_int, short_float_to_f64, value_get_int, value_get_special_tag,
+    value_get_special_value, value_to_ptr, JSValue, JSWord, JSW, JS_NULL, JS_TAG_SHORT_FUNC,
+    JS_UNDEFINED,
 };
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
+use crate::stdlib::cfunc::{BuiltinCFunction, CFunctionDef};
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 
@@ -26,6 +29,8 @@ pub enum InterpreterError {
     Context(ContextError),
     InvalidBytecode(&'static str),
     InvalidValue(&'static str),
+    InvalidCFunctionIndex(u32),
+    MissingCFunction(&'static str),
     NotAFunction,
     StackOverflow,
     TypeError(&'static str),
@@ -133,6 +138,39 @@ fn function_bytecode_ptr(val: JSValue) -> Result<NonNull<FunctionBytecode>, Inte
     Ok(ptr)
 }
 
+fn short_func_index(val: JSValue) -> Option<u32> {
+    if value_get_special_tag(val) != JS_TAG_SHORT_FUNC {
+        return None;
+    }
+    let idx = value_get_special_value(val);
+    if idx < 0 {
+        return None;
+    }
+    Some(idx as u32)
+}
+
+fn cfunction_data(
+    obj_ptr: NonNull<Object>,
+    header: ObjectHeader,
+) -> Result<(u32, JSValue), InterpreterError> {
+    let payload = unsafe { Object::payload_ptr(obj_ptr.as_ptr()).cast::<u8>() };
+    let idx = unsafe {
+        // SAFETY: payload begins with the cfunction index.
+        ptr::read_unaligned(payload.cast::<u32>())
+    };
+    let extra_bytes = header.extra_size() as usize * JSW as usize;
+    let params = if extra_bytes >= size_of::<CFunctionData>() {
+        let params_ptr = unsafe {
+            // SAFETY: params are present when extra_bytes covers CFunctionData.
+            payload.add(CFUNC_PARAMS_OFFSET)
+        };
+        unsafe { ptr::read_unaligned(params_ptr.cast::<JSValue>()) }
+    } else {
+        JS_UNDEFINED
+    };
+    Ok((idx, params))
+}
+
 fn value_to_f64(val: JSValue) -> Result<f64, InterpreterError> {
     if is_int(val) {
         return Ok(f64::from(value_get_int(val)));
@@ -219,6 +257,29 @@ where
     Ok(ctx.new_float64(op(lhs, rhs))?)
 }
 
+fn call_cfunction_def(
+    ctx: &mut JSContext,
+    def: &CFunctionDef,
+    this_val: JSValue,
+    args: &[JSValue],
+    params: JSValue,
+) -> Result<JSValue, InterpreterError> {
+    match def.func {
+        BuiltinCFunction::Generic(func) => Ok(func(ctx, this_val, args)),
+        BuiltinCFunction::GenericMagic(func) => Ok(func(ctx, this_val, args, def.magic as i32)),
+        BuiltinCFunction::Constructor(func) => Ok(func(ctx, this_val, args)),
+        BuiltinCFunction::ConstructorMagic(func) => Ok(func(ctx, this_val, args, def.magic as i32)),
+        BuiltinCFunction::GenericParams(func) => Ok(func(ctx, this_val, args, params)),
+        BuiltinCFunction::FF(func) => {
+            let arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+            let num = value_to_f64(arg)?;
+            let out = func(num);
+            Ok(ctx.new_float64(out)?)
+        }
+        BuiltinCFunction::Missing(_) => Err(InterpreterError::MissingCFunction(def.func_name)),
+    }
+}
+
 pub fn call(ctx: &mut JSContext, func: JSValue, args: &[JSValue]) -> Result<JSValue, InterpreterError> {
     let this_obj = ctx.global_obj();
     call_with_this(ctx, func, this_obj, args)
@@ -230,14 +291,36 @@ pub fn call_with_this(
     this_obj: JSValue,
     args: &[JSValue],
 ) -> Result<JSValue, InterpreterError> {
-    let obj_ptr = object_ptr(func)?;
+    if let Some(idx) = short_func_index(func) {
+        let def = *ctx
+            .c_function(idx as usize)
+            .ok_or(InterpreterError::InvalidCFunctionIndex(idx))?;
+        return call_cfunction_def(ctx, &def, this_obj, args, JS_UNDEFINED);
+    }
+    if !is_ptr(func) {
+        return Err(InterpreterError::NotAFunction);
+    }
+    let obj_ptr = match object_ptr(func) {
+        Ok(ptr) => ptr,
+        Err(_) => return Err(InterpreterError::NotAFunction),
+    };
     let header_word = unsafe {
         // SAFETY: obj_ptr points at a readable object header word.
         ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
     };
     let header = ObjectHeader::from_word(header_word);
-    if header.class_id() != JSObjectClass::Closure as u8 {
-        return Err(InterpreterError::NotAFunction);
+    match header.class_id() {
+        class_id if class_id == JSObjectClass::CFunction as u8 => {
+            let (idx, params) = cfunction_data(obj_ptr, header)?;
+            let def = *ctx
+                .c_function(idx as usize)
+                .ok_or(InterpreterError::InvalidCFunctionIndex(idx))?;
+            return call_cfunction_def(ctx, &def, this_obj, args, params);
+        }
+        class_id if class_id != JSObjectClass::Closure as u8 => {
+            return Err(InterpreterError::NotAFunction);
+        }
+        _ => {}
     }
     let func_bytecode = unsafe {
         // SAFETY: obj_ptr points at a valid closure payload.

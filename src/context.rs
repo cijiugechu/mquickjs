@@ -19,6 +19,7 @@ use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
 use crate::property::{define_property_varref, PropertyError};
 use crate::closure_data::ClosureData;
+use crate::stdlib::cfunc::{build_c_function_table, CFunctionDef};
 use crate::stdlib::stdlib_image::{StdlibImage, StdlibWord};
 use crate::string::js_string::is_ascii_bytes;
 use crate::string::runtime::{is_valid_len4_utf8, string_view, utf8_char_len};
@@ -84,6 +85,8 @@ pub enum ContextError {
     InvalidRomClass { tag: MTag },
     StdlibCFunctionIndexOutOfBounds { index: usize },
     UnknownClassId { name: &'static str },
+    InvalidCFunctionProto { name: &'static str, proto: &'static str },
+    InvalidCFunctionMagic { name: &'static str, magic: &'static str },
     MissingEmptyAtom,
     StringTooLong { len: usize, max: JSWord },
     ByteArrayTooLong { len: usize, max: JSWord },
@@ -343,6 +346,7 @@ pub struct JSContext {
     class_obj_offset: usize,
     atom_tables: AtomTables,
     rom_table: Option<RomTable>,
+    c_function_table: Vec<CFunctionDef>,
     n_rom_atom_tables: u8,
     sorted_atoms_offset: usize,
     string_pos_cache: [StringPosCacheEntry; JS_STRING_POS_CACHE_SIZE],
@@ -409,6 +413,7 @@ impl JSContext {
             class_obj_offset: ROOT_PREFIX_LEN + class_count as usize,
             atom_tables: AtomTables::new(),
             rom_table: None,
+            c_function_table: Vec::new(),
             n_rom_atom_tables: 0,
             sorted_atoms_offset: config.image.sorted_atoms_offset as usize,
             string_pos_cache: [StringPosCacheEntry::new(JS_NULL, 0, 0); JS_STRING_POS_CACHE_SIZE],
@@ -427,6 +432,7 @@ impl JSContext {
         ctx.heap = heap;
 
         ctx.init_atoms(config.image, config.prepare_compilation)?;
+        ctx.init_c_functions(config.image)?;
         ctx.init_roots()?;
         if !config.prepare_compilation {
             ctx.init_stdlib(config.image)?;
@@ -498,6 +504,14 @@ impl JSContext {
         let start = self.class_obj_offset;
         let end = start + self.class_count as usize;
         &mut self.class_roots[start..end]
+    }
+
+    pub fn c_function_table(&self) -> &[CFunctionDef] {
+        &self.c_function_table
+    }
+
+    pub fn c_function(&self, index: usize) -> Option<&CFunctionDef> {
+        self.c_function_table.get(index)
     }
 
     pub fn n_rom_atom_tables(&self) -> u8 {
@@ -761,6 +775,11 @@ impl JSContext {
             self.n_rom_atom_tables = 1;
         }
         self.rom_table = Some(rom_table);
+        Ok(())
+    }
+
+    fn init_c_functions(&mut self, image: &StdlibImage) -> Result<(), ContextError> {
+        self.c_function_table = build_c_function_table(self, image)?;
         Ok(())
     }
 
