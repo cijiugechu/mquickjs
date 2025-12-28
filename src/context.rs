@@ -7,7 +7,9 @@ use crate::containers::{
 };
 use crate::cutils::{float64_as_uint64, unicode_to_utf8, utf8_get};
 use crate::enums::JSObjectClass;
+use crate::gc::{GcMarkConfig};
 use crate::gc_ref::GcRefState;
+use crate::gc_runtime::{gc_collect, GcRuntimeRoots};
 use crate::heap::{HeapLayout, JS_MIN_FREE_SIZE};
 use crate::jsvalue::{
     from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_get_special_tag,
@@ -17,6 +19,7 @@ use crate::jsvalue::{
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
+use crate::parser::parse_state::JSParseState;
 use crate::property::{define_property_varref, PropertyError};
 use crate::closure_data::ClosureData;
 use crate::stdlib::cfunc::{build_c_function_table, CFunctionDef};
@@ -352,6 +355,7 @@ pub struct JSContext {
     string_pos_cache: [StringPosCacheEntry; JS_STRING_POS_CACHE_SIZE],
     string_pos_cache_counter: u8,
     gc_refs: GcRefState,
+    parse_state: Option<NonNull<JSParseState>>,
     random_state: u64,
     interrupt_counter: i16,
     interrupt_handler: Option<JSInterruptHandler>,
@@ -419,6 +423,7 @@ impl JSContext {
             string_pos_cache: [StringPosCacheEntry::new(JS_NULL, 0, 0); JS_STRING_POS_CACHE_SIZE],
             string_pos_cache_counter: 0,
             gc_refs: GcRefState::new(),
+            parse_state: None,
             random_state: 1,
             interrupt_counter: 0,
             interrupt_handler: None,
@@ -476,6 +481,13 @@ impl JSContext {
 
     pub(crate) fn heap_free_ptr(&self) -> NonNull<u8> {
         self.heap.heap_free()
+    }
+
+    pub(crate) fn swap_parse_state(
+        &mut self,
+        state: Option<NonNull<JSParseState>>,
+    ) -> Option<NonNull<JSParseState>> {
+        core::mem::replace(&mut self.parse_state, state)
     }
 
     pub fn class_count(&self) -> u16 {
@@ -1056,6 +1068,57 @@ impl JSContext {
         Ok(())
     }
 
+    fn run_gc(&mut self, heap: &mut HeapLayout) {
+        let parse_state = self.parse_state;
+        let gc_refs = &self.gc_refs as *const GcRefState;
+        let sp = self.sp.as_ptr();
+        let stack_top = heap.stack_top().as_ptr() as *mut JSValue;
+        debug_assert!(sp <= stack_top);
+        let len = (stack_top as usize)
+            .saturating_sub(sp as usize)
+            / size_of::<JSValue>();
+        let stack_roots = unsafe {
+            // SAFETY: sp..stack_top is the active JS stack range.
+            slice::from_raw_parts_mut(sp, len)
+        };
+        let (class_roots, atom_tables, string_pos_cache) = (
+            &mut self.class_roots,
+            &mut self.atom_tables,
+            &mut self.string_pos_cache,
+        );
+        let mut roots = GcRuntimeRoots::new(class_roots, stack_roots)
+            .with_gc_refs(unsafe {
+                // SAFETY: gc_refs is a stable reference for the duration of this call.
+                &*gc_refs
+            })
+            .with_atom_tables(atom_tables)
+            .with_string_pos_cache(string_pos_cache);
+        if let Some(mut state) = parse_state {
+            roots = roots.with_parse_state(unsafe {
+                // SAFETY: parse_state is registered by the parser and valid while set.
+                state.as_mut()
+            });
+        }
+        unsafe {
+            // SAFETY: heap layout and roots are valid for the duration of collection.
+            gc_collect(heap, &mut roots, GcMarkConfig::default(), None);
+        }
+    }
+
+    fn alloc_mblock(&mut self, size: usize, tag: MTag) -> Result<NonNull<u8>, ContextError> {
+        let ctx_ptr = self as *mut JSContext;
+        let ptr = self.heap.malloc(size, tag, |heap| unsafe {
+            let ctx = &mut *ctx_ptr;
+            if ctx.in_out_of_memory {
+                return;
+            }
+            ctx.in_out_of_memory = true;
+            ctx.run_gc(heap);
+            ctx.in_out_of_memory = false;
+        });
+        ptr.ok_or(ContextError::OutOfMemory)
+    }
+
     fn alloc_empty_props(&mut self) -> Result<JSValue, ContextError> {
         let ptr = self.alloc_value_array(3)?;
         unsafe {
@@ -1070,10 +1133,7 @@ impl JSContext {
 
     pub(crate) fn alloc_value_array(&mut self, size: usize) -> Result<NonNull<u8>, ContextError> {
         let alloc_size = value_array_alloc_size(size as JSWord);
-        let ptr = self
-            .heap
-            .malloc(alloc_size, MTag::ValueArray, |_| {})
-            .ok_or(ContextError::OutOfMemory)?;
+        let ptr = self.alloc_mblock(alloc_size, MTag::ValueArray)?;
         let header = ValueArrayHeader::new(size as JSWord, false);
         unsafe {
             // SAFETY: ptr points to a writable ValueArray header word.
@@ -1098,10 +1158,7 @@ impl JSContext {
             });
         }
         let size = byte_array_alloc_size(len);
-        let ptr = self
-            .heap
-            .malloc(size, MTag::ByteArray, |_| {})
-            .ok_or(ContextError::OutOfMemory)?;
+        let ptr = self.alloc_mblock(size, MTag::ByteArray)?;
         let header = ByteArrayHeader::new(len, false);
         unsafe {
             // SAFETY: `ptr` points to writable byte array storage.
@@ -1121,10 +1178,7 @@ impl JSContext {
     ) -> Result<JSValue, ContextError> {
         let extra_words = extra_size_bytes.div_ceil(JSW as usize);
         let size = Object::PAYLOAD_OFFSET + extra_words * JSW as usize;
-        let ptr = self
-            .heap
-            .malloc(size, MTag::Object, |_| {})
-            .ok_or(ContextError::OutOfMemory)?;
+        let ptr = self.alloc_mblock(size, MTag::Object)?;
         let header = ObjectHeader::new(class_id as u8, extra_words as JSWord, false);
         unsafe {
             // SAFETY: ptr is a writable object allocation.
@@ -1146,10 +1200,7 @@ impl JSContext {
         fields: FunctionBytecodeFields,
     ) -> Result<JSValue, ContextError> {
         let size = size_of::<FunctionBytecode>();
-        let ptr = self
-            .heap
-            .malloc(size, MTag::FunctionBytecode, |_| {})
-            .ok_or(ContextError::OutOfMemory)?;
+        let ptr = self.alloc_mblock(size, MTag::FunctionBytecode)?;
         let func = FunctionBytecode::from_fields(header, fields);
         unsafe {
             // SAFETY: `ptr` points to writable function bytecode storage.
@@ -1178,10 +1229,7 @@ impl JSContext {
 
     fn alloc_float64(&mut self, value: f64) -> Result<JSValue, ContextError> {
         let size = size_of::<JSWord>() + size_of::<f64>();
-        let ptr = self
-            .heap
-            .malloc(size, MTag::Float64, |_| {})
-            .ok_or(ContextError::OutOfMemory)?;
+        let ptr = self.alloc_mblock(size, MTag::Float64)?;
         let header = Float64Header::new(false);
         unsafe {
             // SAFETY: ptr is a writable float64 allocation.
@@ -1210,10 +1258,7 @@ impl JSContext {
             });
         }
         let size = string_alloc_size(len);
-        let ptr = self
-            .heap
-            .malloc(size, MTag::String, |_| {})
-            .ok_or(ContextError::OutOfMemory)?;
+        let ptr = self.alloc_mblock(size, MTag::String)?;
         let header = StringHeader::new(len, is_unique, is_ascii, is_numeric, false);
         unsafe {
             // SAFETY: `ptr` is a valid string allocation in the heap.

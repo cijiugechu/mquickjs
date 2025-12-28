@@ -94,6 +94,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Integrated runtime atoms/strings: ROM atom decode now allocates heap-backed strings, added `JSContext` string creation/interning helpers, and atom tables operate on heap string headers with new tests for empty/char strings and ROM atom placement.
 - Ported `JS_NewFloat64` behavior into `JSContext::new_float64` (short-int fast path, minus-zero cache, short-float range) and wired parser numeric constant allocation through the runtime; removed the temporary `src/parser/runtime.rs` allocator.
 - Added runtime helpers for byte arrays/function bytecode/closure objects in `src/context.rs`, updated `JSClosureData` to a flexible-array layout in `src/closure_data.rs`, and introduced a minimal interpreter loop in `src/interpreter.rs` (stack/frame setup, basic opcodes, Miri-safe stack restore) with tests.
+- Integrated GC collection into runtime allocations: `JSContext` now triggers mark/sweep/compact during heap pressure with stack/class roots, atom tables, string pos cache, GC refs, and registered parser state; parser registers/restores its `JSParseState` for GC safety.
 
 ## Parser port scope (C -> Rust)
 

@@ -213,6 +213,7 @@ pub struct ExprParser<'a, 'ctx> {
     lexer: ParseState<'a>,
     emitter: BytecodeEmitter<'a>,
     parse_state: JSParseState,
+    prev_parse_state: Option<NonNull<JSParseState>>,
     alloc: VarAllocator,
     func: OwnedFunctionBytecode,
     nested_funcs: Vec<OwnedFunctionBytecode>,
@@ -242,19 +243,23 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         parse_state.set_cur_func(func.value());
         parse_state.set_eval_ret_idx(-1);
         parse_state.set_source(source.as_ptr(), lexer.buf_len() as u32);
-        Self {
+        let mut parser = Self {
             ctx,
             source,
             lexer,
             emitter: BytecodeEmitter::new(source, 0, false),
             parse_state,
+            prev_parse_state: None,
             alloc: VarAllocator::new(),
             func,
             nested_funcs: Vec::new(),
             break_stack: BreakStack::new(),
             dropped_result: false,
             atoms: AtomCache::default(),
-        }
+        };
+        let parse_state_ptr = NonNull::from(&mut parser.parse_state);
+        parser.prev_parse_state = parser.ctx.swap_parse_state(Some(parse_state_ptr));
+        parser
     }
 
     pub fn has_column(&self) -> bool {
@@ -2952,6 +2957,12 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             self.emitter.emit_op(OP_DROP);
         }
         Ok(PARSE_STATE_RET as i32)
+    }
+}
+
+impl Drop for ExprParser<'_, '_> {
+    fn drop(&mut self) {
+        let _ = self.ctx.swap_parse_state(self.prev_parse_state);
     }
 }
 
