@@ -1629,7 +1629,7 @@ pub fn call_with_this(
                 match flow {
                     ReturnFlow::Done(val) => break Ok(val),
                     ReturnFlow::Continue { exception: false } => {
-                        b = unsafe { func_ptr.as_ref() };
+                        b = func_ptr.as_ref();
                     }
                     ReturnFlow::Continue { exception: true } => {
                         let thrown = ctx.take_current_exception();
@@ -1649,7 +1649,7 @@ pub fn call_with_this(
                         if let ReturnFlow::Done(val) = flow {
                             break Ok(val);
                         }
-                        b = unsafe { func_ptr.as_ref() };
+                        b = func_ptr.as_ref();
                     }
                 }
             },
@@ -1718,7 +1718,7 @@ pub fn call_with_this(
                 if let ReturnFlow::Done(val) = flow {
                     break Ok(val);
                 }
-                b = unsafe { func_ptr.as_ref() };
+                b = func_ptr.as_ref();
             },
             op if op == crate::opcode::OP_CATCH.0 as u8 => unsafe {
                 let diff = try_or_break!(read_i32(byte_slice, pc, "catch"));
@@ -2012,34 +2012,40 @@ pub fn call_with_this(
                 let closure = try_or_break!(create_closure(ctx, bfunc, Some(fp)));
                 push(ctx, &mut sp, closure);
             },
-            op if op == crate::opcode::OP_CALL_CONSTRUCTOR.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_CALL_CONSTRUCTOR.0 as u8 => {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("call_constructor"));
                 }
                 let call_flags =
                     u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as i32 | FRAME_CF_CTOR;
                 let argc = call_argc(call_flags);
-                reverse_vals(sp, argc + 1);
-                push(ctx, &mut sp, JS_UNDEFINED);
+                unsafe {
+                    reverse_vals(sp, argc + 1);
+                    push(ctx, &mut sp, JS_UNDEFINED);
+                }
                 handle_call!(call_flags);
             },
-            op if op == crate::opcode::OP_CALL.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_CALL.0 as u8 => {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("call"));
                 }
                 let call_flags = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as i32;
                 let argc = call_argc(call_flags);
-                reverse_vals(sp, argc + 1);
-                push(ctx, &mut sp, JS_UNDEFINED);
+                unsafe {
+                    reverse_vals(sp, argc + 1);
+                    push(ctx, &mut sp, JS_UNDEFINED);
+                }
                 handle_call!(call_flags);
             },
-            op if op == crate::opcode::OP_CALL_METHOD.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_CALL_METHOD.0 as u8 => {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("call_method"));
                 }
                 let call_flags = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as i32;
                 let argc = call_argc(call_flags);
-                reverse_vals(sp, argc + 2);
+                unsafe {
+                    reverse_vals(sp, argc + 2);
+                }
                 handle_call!(call_flags);
             },
             op if op == crate::opcode::OP_GET_LOC.0 as u8 => unsafe {
