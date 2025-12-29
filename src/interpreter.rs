@@ -3,19 +3,22 @@ use crate::atom::{string_compare, string_eq};
 use crate::context::{ContextError, JSContext};
 use crate::conversion::{self, ConversionError, ToPrimitiveHint};
 use crate::cfunction_data::{CFunctionData, CFUNC_PARAMS_OFFSET};
-use crate::containers::{ByteArrayHeader, ValueArrayHeader};
-use crate::enums::JSObjectClass;
+use crate::containers::{ByteArrayHeader, ValueArrayHeader, VarRefHeader};
+use crate::enums::{JSObjectClass, JSPropType, JSVarRefKind};
 use crate::function_bytecode::FunctionBytecode;
 use crate::heap::JS_STACK_SLACK;
 use crate::js_libm::{js_fmod, js_pow};
 use crate::jsvalue::{
-    from_bits, is_bool, is_int, is_null, is_ptr, is_short_float, is_undefined, new_bool,
-    new_short_int, short_float_to_f64, value_get_int, value_get_special_tag,
-    value_get_special_value, value_make_special, value_to_ptr, JSValue, JSWord, JSW, JS_NULL,
-    JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_CATCH_OFFSET, JS_TAG_SHORT_FUNC, JS_UNDEFINED,
+    from_bits, is_bool, is_exception, is_int, is_null, is_ptr, is_short_float, is_undefined,
+    is_uninitialized, new_bool, new_short_int, short_float_to_f64, value_get_int,
+    value_from_ptr, value_get_special_tag, value_get_special_value, value_make_special,
+    value_to_ptr, JSValue, JSWord, JSW, JS_EXCEPTION, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN,
+    JS_TAG_CATCH_OFFSET, JS_TAG_SHORT_FUNC, JS_UNDEFINED, JS_UNINITIALIZED,
 };
-use crate::memblock::{MbHeader, MTag};
+use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
 use crate::object::{Object, ObjectHeader};
+use crate::property::{define_property_varref, get_own_property_raw, PropertyError};
+use crate::heap::set_free_block;
 use crate::stdlib::cfunc::{BuiltinCFunction, CFunctionDef};
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
@@ -25,7 +28,14 @@ const FRAME_OFFSET_FUNC_OBJ: isize = 3;
 const FRAME_OFFSET_THIS_OBJ: isize = 2;
 const FRAME_OFFSET_CALL_FLAGS: isize = 1;
 const FRAME_OFFSET_SAVED_FP: isize = 0;
+const FRAME_OFFSET_CUR_PC: isize = -1;
+const FRAME_OFFSET_FIRST_VARREF: isize = -2;
 const FRAME_OFFSET_VAR0: isize = -3;
+
+const FRAME_CF_ARGC_MASK: i32 = 0xffff;
+const FRAME_CF_CTOR: i32 = 1 << 16;
+const FRAME_CF_POP_RET: i32 = 1 << 17;
+const FRAME_CF_PC_ADD1: i32 = 1 << 18;
 
 #[derive(Debug)]
 pub enum InterpreterError {
@@ -35,6 +45,7 @@ pub enum InterpreterError {
     InvalidCFunctionIndex(u32),
     MissingCFunction(&'static str),
     NotAFunction,
+    ReferenceError(&'static str),
     StackOverflow,
     Thrown(JSValue),
     TypeError(&'static str),
@@ -123,6 +134,17 @@ impl ValueArrayRaw {
             // SAFETY: index is within the value array bounds.
             Ok(ptr::read_unaligned(self.arr.as_ptr().add(index)))
         }
+    }
+
+    unsafe fn write(&self, index: usize, val: JSValue) -> Result<(), InterpreterError> {
+        if index >= self.len {
+            return Err(InterpreterError::InvalidBytecode("value array index out of bounds"));
+        }
+        unsafe {
+            // SAFETY: index is within the value array bounds.
+            ptr::write_unaligned(self.arr.as_ptr().add(index), val);
+        }
+        Ok(())
     }
 }
 
@@ -371,6 +393,41 @@ fn encode_stack_ptr(stack_top: *mut JSValue, sp: *mut JSValue) -> Result<JSValue
     let offset = (stack_top as isize - sp as isize) / (JSW as isize);
     let offset = i32::try_from(offset).map_err(|_| InterpreterError::StackOverflow)?;
     Ok(new_short_int(offset))
+}
+
+fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Result<*mut JSValue, InterpreterError> {
+    if !is_int(val) {
+        return Err(InterpreterError::InvalidValue("saved fp"));
+    }
+    let offset = value_get_int(val) as isize;
+    if offset < 0 {
+        return Err(InterpreterError::InvalidValue("saved fp"));
+    }
+    Ok(unsafe { stack_top.offset(-(offset as isize)) })
+}
+
+fn call_argc(call_flags: i32) -> usize {
+    (call_flags & FRAME_CF_ARGC_MASK) as usize
+}
+
+fn stack_check(ctx: &JSContext, sp: *mut JSValue, slots: usize) -> Result<(), InterpreterError> {
+    let new_sp = unsafe { sp.sub(slots) };
+    let heap_limit = ctx.heap_free_ptr().as_ptr() as usize + (JS_STACK_SLACK as usize * JSW as usize);
+    if (new_sp as usize) < heap_limit {
+        return Err(InterpreterError::StackOverflow);
+    }
+    Ok(())
+}
+
+unsafe fn reverse_vals(sp: *mut JSValue, n: usize) {
+    for i in 0..n / 2 {
+        let left = unsafe { ptr::read_unaligned(sp.add(i)) };
+        let right = unsafe { ptr::read_unaligned(sp.add(n - 1 - i)) };
+        unsafe {
+            ptr::write_unaligned(sp.add(i), right);
+            ptr::write_unaligned(sp.add(n - 1 - i), left);
+        }
+    }
 }
 
 unsafe fn push(ctx: &mut JSContext, sp: &mut *mut JSValue, val: JSValue) {
@@ -735,6 +792,457 @@ fn call_cfunction_def(
     }
 }
 
+fn map_property_error(err: PropertyError) -> InterpreterError {
+    match err {
+        PropertyError::OutOfMemory => InterpreterError::Context(ContextError::OutOfMemory),
+        _ => InterpreterError::TypeError("property"),
+    }
+}
+
+fn var_ref_ptr(val: JSValue) -> Result<NonNull<u8>, InterpreterError> {
+    let ptr = value_to_ptr::<u8>(val).ok_or(InterpreterError::InvalidValue("varref ptr"))?;
+    let header_word = unsafe {
+        // SAFETY: ptr points at a readable memblock header.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    if MbHeader::from_word(header_word).tag() != MTag::VarRef {
+        return Err(InterpreterError::InvalidValue("varref tag"));
+    }
+    Ok(ptr)
+}
+
+unsafe fn var_ref_value_ptr(ptr: NonNull<u8>) -> *mut JSValue {
+    unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue }
+}
+
+unsafe fn var_ref_next(ptr: NonNull<u8>) -> JSValue {
+    unsafe { ptr::read_unaligned(var_ref_value_ptr(ptr)) }
+}
+
+unsafe fn var_ref_pvalue_ptr(ptr: NonNull<u8>) -> *mut *mut JSValue {
+    unsafe { ptr.as_ptr().add(size_of::<JSWord>() + size_of::<JSValue>()) as *mut *mut JSValue }
+}
+
+unsafe fn var_ref_pvalue(ptr: NonNull<u8>) -> *mut JSValue {
+    unsafe { ptr::read_unaligned(var_ref_pvalue_ptr(ptr)) }
+}
+
+fn var_ref_is_detached(ptr: NonNull<u8>) -> bool {
+    let header_word = unsafe {
+        // SAFETY: ptr points at a readable memblock header.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = VarRefHeader::from(MbHeader::from_word(header_word));
+    header.is_detached()
+}
+
+fn var_ref_get(val: JSValue) -> Result<JSValue, InterpreterError> {
+    let ptr = var_ref_ptr(val)?;
+    if var_ref_is_detached(ptr) {
+        let value = unsafe {
+            // SAFETY: detached varref stores the value at the payload slot.
+            ptr::read_unaligned(var_ref_value_ptr(ptr))
+        };
+        return Ok(value);
+    }
+    let pvalue = unsafe { var_ref_pvalue(ptr) };
+    if pvalue.is_null() {
+        return Err(InterpreterError::InvalidValue("varref pvalue"));
+    }
+    let value = unsafe {
+        // SAFETY: pvalue points at a live stack slot.
+        ptr::read_unaligned(pvalue)
+    };
+    Ok(value)
+}
+
+fn var_ref_set(val: JSValue, new_value: JSValue) -> Result<(), InterpreterError> {
+    let ptr = var_ref_ptr(val)?;
+    if var_ref_is_detached(ptr) {
+        unsafe {
+            // SAFETY: detached varref stores the value at the payload slot.
+            ptr::write_unaligned(var_ref_value_ptr(ptr), new_value);
+        }
+        return Ok(());
+    }
+    let pvalue = unsafe { var_ref_pvalue(ptr) };
+    if pvalue.is_null() {
+        return Err(InterpreterError::InvalidValue("varref pvalue"));
+    }
+    unsafe {
+        // SAFETY: pvalue points at a writable stack slot.
+        ptr::write_unaligned(pvalue, new_value);
+    }
+    Ok(())
+}
+
+fn alloc_var_ref_attached(
+    ctx: &mut JSContext,
+    next: JSValue,
+    pvalue: *mut JSValue,
+) -> Result<JSValue, InterpreterError> {
+    let size = size_of::<JSWord>() + size_of::<JSValue>() + size_of::<*mut JSValue>();
+    let ptr = ctx.alloc_mblock(size, MTag::VarRef)?;
+    let header = VarRefHeader::new(false, false);
+    unsafe {
+        // SAFETY: ptr points at a writable var ref allocation.
+        ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), MbHeader::from(header).word());
+        ptr::write_unaligned(var_ref_value_ptr(ptr), next);
+        ptr::write_unaligned(var_ref_pvalue_ptr(ptr), pvalue);
+    }
+    Ok(value_from_ptr(ptr))
+}
+
+fn get_var_ref(
+    ctx: &mut JSContext,
+    first_var_ref: *mut JSValue,
+    pvalue: *mut JSValue,
+) -> Result<JSValue, InterpreterError> {
+    let mut val = unsafe {
+        // SAFETY: caller ensures first_var_ref is a readable slot.
+        ptr::read_unaligned(first_var_ref)
+    };
+    while val != JS_NULL {
+        let ptr = var_ref_ptr(val)?;
+        if var_ref_is_detached(ptr) {
+            return Err(InterpreterError::InvalidValue("detached varref in list"));
+        }
+        let cur_pvalue = unsafe { var_ref_pvalue(ptr) };
+        if cur_pvalue == pvalue {
+            return Ok(val);
+        }
+        val = unsafe { var_ref_next(ptr) };
+    }
+    let new_ref = alloc_var_ref_attached(ctx, val, pvalue)?;
+    unsafe {
+        // SAFETY: caller ensures first_var_ref is writable.
+        ptr::write_unaligned(first_var_ref, new_ref);
+    }
+    Ok(new_ref)
+}
+
+fn detach_var_refs(first_var_ref: JSValue) -> Result<(), InterpreterError> {
+    let mut current = first_var_ref;
+    while current != JS_NULL {
+        let ptr = var_ref_ptr(current)?;
+        if var_ref_is_detached(ptr) {
+            return Err(InterpreterError::InvalidValue("varref already detached"));
+        }
+        let next = unsafe { var_ref_next(ptr) };
+        let pvalue = unsafe { var_ref_pvalue(ptr) };
+        if pvalue.is_null() {
+            return Err(InterpreterError::InvalidValue("varref pvalue"));
+        }
+        let value = unsafe {
+            // SAFETY: pvalue points at a readable stack slot.
+            ptr::read_unaligned(pvalue)
+        };
+        unsafe {
+            // SAFETY: payload slot is writable.
+            ptr::write_unaligned(var_ref_value_ptr(ptr), value);
+            let header_word = ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>());
+            let detached_word = header_word | ((1 as JSWord) << JS_MTAG_BITS);
+            ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), detached_word);
+            let shrink_ptr = NonNull::new_unchecked(
+                ptr.as_ptr()
+                    .add(size_of::<JSWord>() + size_of::<JSValue>()),
+            );
+            set_free_block(shrink_ptr, size_of::<JSValue>());
+        }
+        current = next;
+    }
+    Ok(())
+}
+
+fn add_global_var(
+    ctx: &mut JSContext,
+    name: JSValue,
+    define_flag: bool,
+) -> Result<JSValue, InterpreterError> {
+    let global_obj = ctx.global_obj();
+    if let Some((value, prop_type)) =
+        get_own_property_raw(ctx, global_obj, name).map_err(map_property_error)?
+    {
+        if prop_type != JSPropType::VarRef {
+            return Err(InterpreterError::ReferenceError("global var must be a reference"));
+        }
+        if define_flag {
+            let current = var_ref_get(value)?;
+            if is_uninitialized(current) {
+                var_ref_set(value, JS_UNDEFINED)?;
+            }
+        }
+        return Ok(value);
+    }
+    let init = if define_flag { JS_UNDEFINED } else { JS_UNINITIALIZED };
+    define_property_varref(ctx, global_obj, name, init).map_err(map_property_error)
+}
+
+fn create_closure(
+    ctx: &mut JSContext,
+    bfunc: JSValue,
+    fp: Option<*mut JSValue>,
+) -> Result<JSValue, InterpreterError> {
+    let func_ptr = function_bytecode_ptr(bfunc)?;
+    let b = unsafe {
+        // SAFETY: func_ptr points at a readable FunctionBytecode.
+        func_ptr.as_ref()
+    };
+    let ext_len = b.ext_vars_len() as usize;
+    let closure = ctx.alloc_closure(bfunc, ext_len)?;
+    if ext_len == 0 {
+        return Ok(closure);
+    }
+    let obj_ptr = object_ptr(closure)?;
+    unsafe {
+        // SAFETY: closure points at a valid closure payload.
+        let payload = Object::payload_ptr(obj_ptr.as_ptr());
+        let closure_data = core::ptr::addr_of_mut!((*payload).closure);
+        let var_refs = crate::closure_data::ClosureData::var_refs_ptr(closure_data);
+        for idx in 0..ext_len {
+            ptr::write_unaligned(var_refs.add(idx), JS_NULL);
+        }
+    }
+    let ext_vars_val = b.ext_vars();
+    if ext_vars_val == JS_NULL {
+        return Err(InterpreterError::InvalidValue("ext vars"));
+    }
+    let ext_vars = unsafe { ValueArrayRaw::from_value(ext_vars_val)? };
+    let first_var_ref_ptr = fp.map(|fp| unsafe { fp.offset(FRAME_OFFSET_FIRST_VARREF) });
+    for idx in 0..ext_len {
+        let name = unsafe { ext_vars.read(2 * idx)? };
+        let decl_val = unsafe { ext_vars.read(2 * idx + 1)? };
+        if !is_int(decl_val) {
+            return Err(InterpreterError::InvalidValue("ext var decl"));
+        }
+        let decl = value_get_int(decl_val);
+        let kind = decl >> 16;
+        let var_idx = (decl & 0xffff) as usize;
+        let var_ref = match kind {
+            x if x == JSVarRefKind::Arg as i32 => {
+                let fp = fp.ok_or(InterpreterError::InvalidValue("missing frame"))?;
+                let pvalue = unsafe { fp.add(FRAME_OFFSET_ARG0 as usize + var_idx) };
+                let first_ptr = first_var_ref_ptr.ok_or(InterpreterError::InvalidValue("varref list"))?;
+                get_var_ref(ctx, first_ptr, pvalue)?
+            }
+            x if x == JSVarRefKind::Var as i32 => {
+                let fp = fp.ok_or(InterpreterError::InvalidValue("missing frame"))?;
+                let pvalue = unsafe { fp.offset(FRAME_OFFSET_VAR0 - var_idx as isize) };
+                let first_ptr = first_var_ref_ptr.ok_or(InterpreterError::InvalidValue("varref list"))?;
+                get_var_ref(ctx, first_ptr, pvalue)?
+            }
+            x if x == JSVarRefKind::VarRef as i32 => {
+                let fp = fp.ok_or(InterpreterError::InvalidValue("missing frame"))?;
+                let func_obj = unsafe {
+                    // SAFETY: fp points at a readable frame slot.
+                    ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ))
+                };
+                let obj_ptr = object_ptr(func_obj)?;
+                let header = object_header(obj_ptr);
+                if header.class_id() != JSObjectClass::Closure as u8 {
+                    return Err(InterpreterError::InvalidValue("varref closure"));
+                }
+                let extra = header.extra_size() as usize;
+                if var_idx >= extra.saturating_sub(1) {
+                    return Err(InterpreterError::InvalidBytecode("varref index"));
+                }
+                unsafe {
+                    // SAFETY: closure var_refs contains extra_size - 1 entries.
+                    let payload = Object::payload_ptr(obj_ptr.as_ptr());
+                    let closure_data = core::ptr::addr_of_mut!((*payload).closure);
+                    let var_refs = crate::closure_data::ClosureData::var_refs_ptr(closure_data);
+                    ptr::read_unaligned(var_refs.add(var_idx))
+                }
+            }
+            x if x == JSVarRefKind::Global as i32 => add_global_var(ctx, name, var_idx != 0)?,
+            _ => return Err(InterpreterError::InvalidValue("ext var kind")),
+        };
+        unsafe {
+            // SAFETY: closure var_refs contains ext_len entries.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let closure_data = core::ptr::addr_of_mut!((*payload).closure);
+            let var_refs = crate::closure_data::ClosureData::var_refs_ptr(closure_data);
+            ptr::write_unaligned(var_refs.add(idx), var_ref);
+        }
+    }
+    Ok(closure)
+}
+
+fn call_constructor_start(
+    ctx: &mut JSContext,
+    func_slot: *mut JSValue,
+) -> Result<JSValue, InterpreterError> {
+    let proto_key = ctx.intern_string(b"prototype")?;
+    let func = unsafe {
+        // SAFETY: func_slot points at a live stack slot for the current frame.
+        ptr::read_unaligned(func_slot)
+    };
+    let proto = match crate::property::get_property(ctx, func, proto_key) {
+        Ok(val) => val,
+        Err(PropertyError::Unsupported(_)) => JS_UNDEFINED,
+        Err(err) => return Err(map_property_error(err)),
+    };
+    let proto = if conversion::is_object(proto) {
+        proto
+    } else {
+        ctx.class_proto()[JSObjectClass::Object as usize]
+    };
+    Ok(ctx.alloc_object(JSObjectClass::Object, proto, 0)?)
+}
+
+enum ReturnFlow {
+    Done(JSValue),
+    Continue { exception: bool },
+}
+
+fn compute_n_vars(b: &FunctionBytecode) -> Result<usize, InterpreterError> {
+    if b.vars() != JS_NULL {
+        let vars = unsafe { ValueArrayRaw::from_value(b.vars())? };
+        Ok(vars.len.saturating_sub(b.arg_count() as usize))
+    } else {
+        Ok(0)
+    }
+}
+
+fn return_from_frame(
+    ctx: &mut JSContext,
+    stack_top: *mut JSValue,
+    initial_fp: *mut JSValue,
+    sp: &mut *mut JSValue,
+    fp: &mut *mut JSValue,
+    pc: &mut usize,
+    func_ptr: &mut NonNull<FunctionBytecode>,
+    byte_slice: &mut &[u8],
+    n_vars: &mut usize,
+    mut val: JSValue,
+    frame_argc: usize,
+    has_varrefs: bool,
+) -> Result<ReturnFlow, InterpreterError> {
+    if has_varrefs {
+        let first_var_ref = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_FIRST_VARREF)) };
+        detach_var_refs(first_var_ref)?;
+    }
+    let call_flags_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_CALL_FLAGS)) };
+    if !is_int(call_flags_val) {
+        return Err(InterpreterError::InvalidValue("call flags"));
+    }
+    let call_flags = value_get_int(call_flags_val);
+    if (call_flags & FRAME_CF_CTOR) != 0 && !is_exception(val) {
+        if !conversion::is_object(val) {
+            val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_THIS_OBJ)) };
+        }
+    }
+    *sp = unsafe { (*fp).add(FRAME_OFFSET_ARG0 as usize + frame_argc) };
+    let saved_fp_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_SAVED_FP)) };
+    let caller_fp = decode_stack_ptr(stack_top, saved_fp_val)?;
+    if caller_fp == initial_fp {
+        if is_exception(val) {
+            let thrown = ctx.take_current_exception();
+            let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
+            return Err(InterpreterError::Thrown(thrown));
+        }
+        return Ok(ReturnFlow::Done(val));
+    }
+    *fp = caller_fp;
+    ctx.set_fp(NonNull::new(*fp).expect("frame pointer"));
+    ctx.set_sp(NonNull::new(*sp).expect("stack pointer"));
+    let pc_offset_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_CUR_PC)) };
+    if !is_int(pc_offset_val) {
+        return Err(InterpreterError::InvalidValue("cur pc"));
+    }
+    let pc_offset = value_get_int(pc_offset_val);
+    if pc_offset < 0 {
+        return Err(InterpreterError::InvalidValue("cur pc"));
+    }
+    let func_obj = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_FUNC_OBJ)) };
+    let func_obj_ptr = object_ptr(func_obj)?;
+    let payload = unsafe { Object::payload_ptr(func_obj_ptr.as_ptr()) };
+    let closure = unsafe { core::ptr::addr_of_mut!((*payload).closure) };
+    let func_val = unsafe { ptr::read_unaligned(crate::closure_data::ClosureData::func_bytecode_ptr(closure)) };
+    *func_ptr = function_bytecode_ptr(func_val)?;
+    let b = unsafe { func_ptr.as_ref() };
+    let byte_code_val = b.byte_code();
+    if byte_code_val == JS_NULL {
+        return Err(InterpreterError::InvalidBytecode("missing bytecode"));
+    }
+    let byte_code = unsafe { ByteArrayRaw::from_value(byte_code_val)? };
+    if pc_offset as usize >= byte_code.len() {
+        return Err(InterpreterError::InvalidBytecode("cur pc"));
+    }
+    *byte_slice = unsafe { core::slice::from_raw_parts(byte_code.buf().as_ptr(), byte_code.len()) };
+    *n_vars = compute_n_vars(b)?;
+    *pc = pc_offset as usize;
+    if is_exception(val) {
+        return Ok(ReturnFlow::Continue { exception: true });
+    }
+    if (call_flags & FRAME_CF_POP_RET) == 0 {
+        unsafe {
+            push(ctx, sp, val);
+        }
+    }
+    if (call_flags & FRAME_CF_PC_ADD1) == 0 {
+        *pc += 2;
+    } else {
+        *pc += 1;
+    }
+    Ok(ReturnFlow::Continue { exception: false })
+}
+
+fn unwind_exception(
+    ctx: &mut JSContext,
+    stack_top: *mut JSValue,
+    initial_fp: *mut JSValue,
+    sp: &mut *mut JSValue,
+    fp: &mut *mut JSValue,
+    pc: &mut usize,
+    func_ptr: &mut NonNull<FunctionBytecode>,
+    byte_slice: &mut &[u8],
+    n_vars: &mut usize,
+    exception_val: JSValue,
+) -> Result<ReturnFlow, InterpreterError> {
+    let mut exception_val = exception_val;
+    loop {
+        let handled = handle_exception(ctx, byte_slice.len(), *fp, *n_vars, sp, exception_val)?;
+        if let Some(target) = handled {
+            *pc = target;
+            return Ok(ReturnFlow::Continue { exception: false });
+        }
+        let b = unsafe { func_ptr.as_ref() };
+        let call_flags_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_CALL_FLAGS)) };
+        if !is_int(call_flags_val) {
+            return Err(InterpreterError::InvalidValue("call flags"));
+        }
+        let argc = call_argc(value_get_int(call_flags_val));
+        let frame_argc = argc.max(b.arg_count() as usize);
+        match return_from_frame(
+            ctx,
+            stack_top,
+            initial_fp,
+            sp,
+            fp,
+            pc,
+            func_ptr,
+            byte_slice,
+            n_vars,
+            JS_EXCEPTION,
+            frame_argc,
+            true,
+        )? {
+            ReturnFlow::Done(_) => {
+                let thrown = ctx.take_current_exception();
+                return Err(InterpreterError::Thrown(thrown));
+            }
+            ReturnFlow::Continue { exception } => {
+                if !exception {
+                    return Ok(ReturnFlow::Continue { exception: false });
+                }
+            }
+        }
+        exception_val = ctx.take_current_exception();
+        ctx.set_current_exception(exception_val);
+    }
+}
+
 pub fn call(ctx: &mut JSContext, func: JSValue, args: &[JSValue]) -> Result<JSValue, InterpreterError> {
     let this_obj = ctx.global_obj();
     call_with_this(ctx, func, this_obj, args)
@@ -750,7 +1258,22 @@ pub fn call_with_this(
         let def = *ctx
             .c_function(idx as usize)
             .ok_or(InterpreterError::InvalidCFunctionIndex(idx))?;
-        return call_cfunction_def(ctx, &def, this_obj, args, JS_UNDEFINED);
+        let mut sp = ctx.sp().as_ptr();
+        let prev_sp = ctx.sp();
+        unsafe {
+            for arg in args.iter().rev() {
+                push(ctx, &mut sp, *arg);
+            }
+            push(ctx, &mut sp, func);
+            push(ctx, &mut sp, this_obj);
+        }
+        let mut temp_args = args.to_vec();
+        if def.arg_count as usize > temp_args.len() {
+            temp_args.resize(def.arg_count as usize, JS_UNDEFINED);
+        }
+        let result = call_cfunction_def(ctx, &def, this_obj, &temp_args, JS_UNDEFINED);
+        ctx.set_sp(prev_sp);
+        return result;
     }
     if !is_ptr(func) {
         return Err(InterpreterError::NotAFunction);
@@ -770,7 +1293,22 @@ pub fn call_with_this(
             let def = *ctx
                 .c_function(idx as usize)
                 .ok_or(InterpreterError::InvalidCFunctionIndex(idx))?;
-            return call_cfunction_def(ctx, &def, this_obj, args, params);
+            let mut sp = ctx.sp().as_ptr();
+            let prev_sp = ctx.sp();
+            unsafe {
+                for arg in args.iter().rev() {
+                    push(ctx, &mut sp, *arg);
+                }
+                push(ctx, &mut sp, func);
+                push(ctx, &mut sp, this_obj);
+            }
+            let mut temp_args = args.to_vec();
+            if def.arg_count as usize > temp_args.len() {
+                temp_args.resize(def.arg_count as usize, JS_UNDEFINED);
+            }
+            let result = call_cfunction_def(ctx, &def, this_obj, &temp_args, params);
+            ctx.set_sp(prev_sp);
+            return result;
         }
         class_id if class_id != JSObjectClass::Closure as u8 => {
             return Err(InterpreterError::NotAFunction);
@@ -783,8 +1321,8 @@ pub fn call_with_this(
         let closure = core::ptr::addr_of_mut!((*payload).closure);
         ptr::read_unaligned(crate::closure_data::ClosureData::func_bytecode_ptr(closure))
     };
-    let func_ptr = function_bytecode_ptr(func_bytecode)?;
-    let b = unsafe {
+    let mut func_ptr = function_bytecode_ptr(func_bytecode)?;
+    let mut b = unsafe {
         // SAFETY: func_ptr points at a readable function bytecode.
         func_ptr.as_ref()
     };
@@ -794,33 +1332,26 @@ pub fn call_with_this(
     }
     let byte_code = unsafe { ByteArrayRaw::from_value(byte_code_val)? };
     let mut pc = 0usize;
-    let byte_slice = unsafe {
+    let mut byte_slice = unsafe {
         // SAFETY: byte_code.buf is valid for byte_code.len bytes.
         core::slice::from_raw_parts(byte_code.buf().as_ptr(), byte_code.len())
     };
     let prev_sp = ctx.sp();
     let prev_fp = ctx.fp();
+    let initial_fp = prev_fp.as_ptr();
 
     let arg_count = b.arg_count() as usize;
     let max_args = args.len().max(arg_count);
-    let n_vars = if b.vars() != JS_NULL {
-        let vars = unsafe { ValueArrayRaw::from_value(b.vars())? };
-        vars.len.saturating_sub(arg_count)
-    } else {
-        0
-    };
+    let mut n_vars = compute_n_vars(b)?;
     let slots_below = n_vars + 2;
     let slots_above = FRAME_OFFSET_ARG0 as usize + max_args;
     let total_slots = slots_below + slots_above;
     let stack_top = ctx.stack_top().as_ptr() as *mut JSValue;
-    let new_sp = unsafe { stack_top.sub(total_slots) };
-    let heap_limit = ctx.heap_free_ptr().as_ptr() as usize
-        + (JS_STACK_SLACK as usize * JSW as usize);
-    if (new_sp as usize) < heap_limit {
-        return Err(InterpreterError::StackOverflow);
-    }
+    let base_sp = prev_sp.as_ptr();
+    let new_sp = unsafe { base_sp.sub(total_slots) };
+    stack_check(ctx, base_sp, total_slots)?;
     let mut sp = new_sp;
-    let fp = unsafe { sp.add(slots_below) };
+    let mut fp = unsafe { sp.add(slots_below) };
     let saved_fp = encode_stack_ptr(stack_top, prev_fp.as_ptr())?;
 
     unsafe {
@@ -852,6 +1383,220 @@ pub fn call_with_this(
         };
     }
 
+    macro_rules! handle_call {
+        ($call_flags:expr) => {{
+            let call_flags = $call_flags;
+            let pc_offset =
+                i32::try_from(pc).map_err(|_| InterpreterError::InvalidBytecode("call"))?;
+            unsafe {
+                ptr::write_unaligned(fp.offset(FRAME_OFFSET_CUR_PC), new_short_int(pc_offset));
+            }
+            let saved_fp = try_or_break!(encode_stack_ptr(stack_top, fp));
+            unsafe {
+                sp = sp.sub(1);
+                ptr::write_unaligned(sp, new_short_int(call_flags));
+                sp = sp.sub(1);
+                ptr::write_unaligned(sp, saved_fp);
+            }
+            ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+            fp = sp;
+            ctx.set_fp(NonNull::new(fp).expect("frame pointer"));
+
+            let func_obj = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ)) };
+            let mut cfunc_def: Option<CFunctionDef> = None;
+            let mut cfunc_params = JS_UNDEFINED;
+            let mut closure_ptr: Option<NonNull<Object>> = None;
+
+            if !is_ptr(func_obj) {
+                if value_get_special_tag(func_obj) != JS_TAG_SHORT_FUNC {
+                    break Err(InterpreterError::NotAFunction);
+                }
+                let idx = value_get_special_value(func_obj);
+                if idx < 0 {
+                    break Err(InterpreterError::InvalidCFunctionIndex(idx as u32));
+                }
+                let def = *ctx
+                    .c_function(idx as usize)
+                    .ok_or(InterpreterError::InvalidCFunctionIndex(idx as u32))?;
+                cfunc_def = Some(def);
+            } else {
+                let obj_ptr = match object_ptr(func_obj) {
+                    Ok(ptr) => ptr,
+                    Err(_) => break Err(InterpreterError::NotAFunction),
+                };
+                let header = object_header(obj_ptr);
+                if header.class_id() == JSObjectClass::CFunction as u8 {
+                    let (idx, params) = try_or_break!(cfunction_data(obj_ptr, header));
+                    let def = *ctx
+                        .c_function(idx as usize)
+                        .ok_or(InterpreterError::InvalidCFunctionIndex(idx))?;
+                    cfunc_def = Some(def);
+                    cfunc_params = params;
+                } else if header.class_id() == JSObjectClass::Closure as u8 {
+                    closure_ptr = Some(obj_ptr);
+                } else {
+                    break Err(InterpreterError::NotAFunction);
+                }
+            }
+
+            if let Some(def) = cfunc_def {
+                let is_ctor = matches!(
+                    def.func,
+                    BuiltinCFunction::Constructor(_) | BuiltinCFunction::ConstructorMagic(_)
+                );
+                if (call_flags & FRAME_CF_CTOR) != 0 && !is_ctor {
+                    break Err(InterpreterError::TypeError("not a constructor"));
+                }
+                let argc = call_argc(call_flags);
+                let mut pushed_argc = argc;
+                if def.arg_count as usize > argc {
+                    let extra = def.arg_count as usize - argc;
+                    try_or_break!(stack_check(ctx, sp, extra));
+                    unsafe {
+                        sp = sp.sub(extra);
+                        for i in 0..(FRAME_OFFSET_ARG0 as usize + argc) {
+                            let val = ptr::read_unaligned(sp.add(i + extra));
+                            ptr::write_unaligned(sp.add(i), val);
+                        }
+                        for i in 0..extra {
+                            ptr::write_unaligned(
+                                sp.add(FRAME_OFFSET_ARG0 as usize + argc + i),
+                                JS_UNDEFINED,
+                            );
+                        }
+                    }
+                    pushed_argc = def.arg_count as usize;
+                    ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+                    fp = sp;
+                    ctx.set_fp(NonNull::new(fp).expect("frame pointer"));
+                }
+                let this_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_THIS_OBJ)) };
+                let argv_ptr = unsafe { fp.add(FRAME_OFFSET_ARG0 as usize) };
+                let argv = unsafe { core::slice::from_raw_parts(argv_ptr, pushed_argc) };
+                let val = try_or_break!(call_cfunction_def(ctx, &def, this_val, argv, cfunc_params));
+                let flow = if is_exception(val) {
+                    try_or_break!(return_from_frame(
+                        ctx,
+                        stack_top,
+                        initial_fp,
+                        &mut sp,
+                        &mut fp,
+                        &mut pc,
+                        &mut func_ptr,
+                        &mut byte_slice,
+                        &mut n_vars,
+                        JS_EXCEPTION,
+                        pushed_argc,
+                        false
+                    ))
+                } else {
+                    try_or_break!(return_from_frame(
+                        ctx,
+                        stack_top,
+                        initial_fp,
+                        &mut sp,
+                        &mut fp,
+                        &mut pc,
+                        &mut func_ptr,
+                        &mut byte_slice,
+                        &mut n_vars,
+                        val,
+                        pushed_argc,
+                        false
+                    ))
+                };
+                match flow {
+                    ReturnFlow::Done(val) => break Ok(val),
+                    ReturnFlow::Continue { exception: false } => {
+                        b = unsafe { func_ptr.as_ref() };
+                    }
+                    ReturnFlow::Continue { exception: true } => {
+                        let thrown = ctx.take_current_exception();
+                        let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
+                        let flow = try_or_break!(unwind_exception(
+                            ctx,
+                            stack_top,
+                            initial_fp,
+                            &mut sp,
+                            &mut fp,
+                            &mut pc,
+                            &mut func_ptr,
+                            &mut byte_slice,
+                            &mut n_vars,
+                            thrown
+                        ));
+                        if let ReturnFlow::Done(val) = flow {
+                            break Ok(val);
+                        }
+                        b = unsafe { func_ptr.as_ref() };
+                    }
+                }
+            } else {
+                let obj_ptr = closure_ptr.expect("closure");
+                if (call_flags & FRAME_CF_CTOR) != 0 {
+                    let func_slot = unsafe { fp.offset(FRAME_OFFSET_FUNC_OBJ) };
+                    let this_val = try_or_break!(call_constructor_start(ctx, func_slot));
+                    unsafe {
+                        ptr::write_unaligned(fp.offset(FRAME_OFFSET_THIS_OBJ), this_val);
+                    }
+                }
+                let payload = unsafe { Object::payload_ptr(obj_ptr.as_ptr()) };
+                let closure = unsafe { core::ptr::addr_of_mut!((*payload).closure) };
+                let func_val = unsafe {
+                    ptr::read_unaligned(crate::closure_data::ClosureData::func_bytecode_ptr(closure))
+                };
+                func_ptr = try_or_break!(function_bytecode_ptr(func_val));
+                b = unsafe { func_ptr.as_ref() };
+                let argc = call_argc(call_flags);
+                let arg_count = b.arg_count() as usize;
+                let new_n_vars = try_or_break!(compute_n_vars(b));
+                let extra = arg_count.saturating_sub(argc);
+                let stack_needed = extra + 2 + new_n_vars + b.stack_size() as usize;
+                try_or_break!(stack_check(ctx, sp, stack_needed));
+                if extra > 0 {
+                    unsafe {
+                        sp = sp.sub(extra);
+                        for i in 0..(FRAME_OFFSET_ARG0 as usize + argc) {
+                            let val = ptr::read_unaligned(sp.add(i + extra));
+                            ptr::write_unaligned(sp.add(i), val);
+                        }
+                        for i in 0..extra {
+                            ptr::write_unaligned(
+                                sp.add(FRAME_OFFSET_ARG0 as usize + argc + i),
+                                JS_UNDEFINED,
+                            );
+                        }
+                    }
+                    ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+                    fp = sp;
+                    ctx.set_fp(NonNull::new(fp).expect("frame pointer"));
+                }
+                unsafe {
+                    sp = sp.sub(1);
+                    ptr::write_unaligned(sp, new_short_int(0));
+                    sp = sp.sub(1);
+                    ptr::write_unaligned(sp, JS_NULL);
+                    sp = sp.sub(new_n_vars);
+                    for i in 0..new_n_vars {
+                        ptr::write_unaligned(sp.add(i), JS_UNDEFINED);
+                    }
+                }
+                ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+                let byte_code_val = b.byte_code();
+                if byte_code_val == JS_NULL {
+                    break Err(InterpreterError::InvalidBytecode("missing bytecode"));
+                }
+                let byte_code = unsafe { ByteArrayRaw::from_value(byte_code_val) };
+                let byte_code = try_or_break!(byte_code);
+                byte_slice = unsafe {
+                    core::slice::from_raw_parts(byte_code.buf().as_ptr(), byte_code.len())
+                };
+                n_vars = new_n_vars;
+                pc = 0;
+            }
+        }};
+    }
+
     let result = loop {
         if pc >= byte_slice.len() {
             break Err(InterpreterError::InvalidBytecode("pc out of bounds"));
@@ -861,24 +1606,119 @@ pub fn call_with_this(
         match opcode {
             op if op == crate::opcode::OP_RETURN.0 as u8 => unsafe {
                 let val = ptr::read_unaligned(sp);
-                break Ok(val);
+                let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
+                if !is_int(call_flags_val) {
+                    break Err(InterpreterError::InvalidValue("call flags"));
+                }
+                let argc = call_argc(value_get_int(call_flags_val));
+                let frame_argc = argc.max(b.arg_count() as usize);
+                let flow = try_or_break!(return_from_frame(
+                    ctx,
+                    stack_top,
+                    initial_fp,
+                    &mut sp,
+                    &mut fp,
+                    &mut pc,
+                    &mut func_ptr,
+                    &mut byte_slice,
+                    &mut n_vars,
+                    val,
+                    frame_argc,
+                    true
+                ));
+                match flow {
+                    ReturnFlow::Done(val) => break Ok(val),
+                    ReturnFlow::Continue { exception: false } => {
+                        b = unsafe { func_ptr.as_ref() };
+                    }
+                    ReturnFlow::Continue { exception: true } => {
+                        let thrown = ctx.take_current_exception();
+                        let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
+                        let flow = try_or_break!(unwind_exception(
+                            ctx,
+                            stack_top,
+                            initial_fp,
+                            &mut sp,
+                            &mut fp,
+                            &mut pc,
+                            &mut func_ptr,
+                            &mut byte_slice,
+                            &mut n_vars,
+                            thrown
+                        ));
+                        if let ReturnFlow::Done(val) = flow {
+                            break Ok(val);
+                        }
+                        b = unsafe { func_ptr.as_ref() };
+                    }
+                }
             },
-            op if op == crate::opcode::OP_RETURN_UNDEF.0 as u8 => break Ok(JS_UNDEFINED),
+            op if op == crate::opcode::OP_RETURN_UNDEF.0 as u8 => {
+                let call_flags_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS)) };
+                if !is_int(call_flags_val) {
+                    break Err(InterpreterError::InvalidValue("call flags"));
+                }
+                let argc = call_argc(value_get_int(call_flags_val));
+                let frame_argc = argc.max(b.arg_count() as usize);
+                let flow = try_or_break!(return_from_frame(
+                    ctx,
+                    stack_top,
+                    initial_fp,
+                    &mut sp,
+                    &mut fp,
+                    &mut pc,
+                    &mut func_ptr,
+                    &mut byte_slice,
+                    &mut n_vars,
+                    JS_UNDEFINED,
+                    frame_argc,
+                    true
+                ));
+                match flow {
+                    ReturnFlow::Done(val) => break Ok(val),
+                    ReturnFlow::Continue { exception: false } => {
+                        b = unsafe { func_ptr.as_ref() };
+                    }
+                    ReturnFlow::Continue { exception: true } => {
+                        let thrown = ctx.take_current_exception();
+                        let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
+                        let flow = try_or_break!(unwind_exception(
+                            ctx,
+                            stack_top,
+                            initial_fp,
+                            &mut sp,
+                            &mut fp,
+                            &mut pc,
+                            &mut func_ptr,
+                            &mut byte_slice,
+                            &mut n_vars,
+                            thrown
+                        ));
+                        if let ReturnFlow::Done(val) = flow {
+                            break Ok(val);
+                        }
+                        b = unsafe { func_ptr.as_ref() };
+                    }
+                }
+            },
             op if op == crate::opcode::OP_THROW.0 as u8 => unsafe {
                 let val = pop(ctx, &mut sp);
-                let handled = try_or_break!(handle_exception(
+                let flow = try_or_break!(unwind_exception(
                     ctx,
-                    byte_slice.len(),
-                    fp,
-                    n_vars,
+                    stack_top,
+                    initial_fp,
                     &mut sp,
+                    &mut fp,
+                    &mut pc,
+                    &mut func_ptr,
+                    &mut byte_slice,
+                    &mut n_vars,
                     val
                 ));
-                if let Some(target) = handled {
-                    pc = target;
-                } else {
-                    break Err(InterpreterError::Thrown(val));
+                if let ReturnFlow::Done(val) = flow {
+                    break Ok(val);
                 }
+                b = unsafe { func_ptr.as_ref() };
             },
             op if op == crate::opcode::OP_CATCH.0 as u8 => unsafe {
                 let diff = try_or_break!(read_i32(byte_slice, pc, "catch"));
@@ -1085,6 +1925,122 @@ pub fn call_with_this(
             },
             op if op == crate::opcode::OP_PUSH_TRUE.0 as u8 => unsafe {
                 push(ctx, &mut sp, new_bool(1));
+            },
+            op if op == crate::opcode::OP_THIS_FUNC.0 as u8 => unsafe {
+                let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ));
+                push(ctx, &mut sp, val);
+            },
+            op if op == crate::opcode::OP_ARGUMENTS.0 as u8 => unsafe {
+                let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
+                if !is_int(call_flags_val) {
+                    break Err(InterpreterError::InvalidValue("call flags"));
+                }
+                let argc = call_argc(value_get_int(call_flags_val));
+                let array = try_or_break!(ctx.alloc_array(argc));
+                if argc > 0 {
+                    let obj_ptr = try_or_break!(object_ptr(array));
+                    let data = array_data(obj_ptr);
+                    let tab = data.tab();
+                    if tab != JS_NULL {
+                        let arr = try_or_break!(ValueArrayRaw::from_value(tab));
+                        let mut write_error = None;
+                        for i in 0..argc {
+                            let arg = ptr::read_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + i));
+                            if let Err(err) = arr.write(i, arg) {
+                                write_error = Some(err);
+                                break;
+                            }
+                        }
+                        if let Some(err) = write_error {
+                            break Err(err);
+                        }
+                    }
+                }
+                push(ctx, &mut sp, array);
+            },
+            op if op == crate::opcode::OP_NEW_TARGET.0 as u8 => unsafe {
+                let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
+                if !is_int(call_flags_val) {
+                    break Err(InterpreterError::InvalidValue("call flags"));
+                }
+                let call_flags = value_get_int(call_flags_val);
+                let val = if (call_flags & FRAME_CF_CTOR) != 0 {
+                    ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ))
+                } else {
+                    JS_UNDEFINED
+                };
+                push(ctx, &mut sp, val);
+            },
+            op if op == crate::opcode::OP_ARRAY_FROM.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("array_from"));
+                }
+                let argc = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let array = try_or_break!(ctx.alloc_array(argc));
+                if argc > 0 {
+                    let obj_ptr = try_or_break!(object_ptr(array));
+                    let data = array_data(obj_ptr);
+                    let tab = data.tab();
+                    if tab != JS_NULL {
+                        let arr = try_or_break!(ValueArrayRaw::from_value(tab));
+                        let mut write_error = None;
+                        for i in 0..argc {
+                            let val = ptr::read_unaligned(sp.add(argc - 1 - i));
+                            if let Err(err) = arr.write(i, val) {
+                                write_error = Some(err);
+                                break;
+                            }
+                        }
+                        if let Some(err) = write_error {
+                            break Err(err);
+                        }
+                    }
+                }
+                sp = sp.add(argc);
+                ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+                push(ctx, &mut sp, array);
+            },
+            op if op == crate::opcode::OP_FCLOSURE.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("fclosure"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let cpool = try_or_break!(ValueArrayRaw::from_value(b.cpool()));
+                let bfunc = try_or_break!(cpool.read(idx));
+                let closure = try_or_break!(create_closure(ctx, bfunc, Some(fp)));
+                push(ctx, &mut sp, closure);
+            },
+            op if op == crate::opcode::OP_CALL_CONSTRUCTOR.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("call_constructor"));
+                }
+                let call_flags =
+                    u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as i32 | FRAME_CF_CTOR;
+                let argc = call_argc(call_flags);
+                reverse_vals(sp, argc + 1);
+                push(ctx, &mut sp, JS_UNDEFINED);
+                handle_call!(call_flags);
+            },
+            op if op == crate::opcode::OP_CALL.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("call"));
+                }
+                let call_flags = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as i32;
+                let argc = call_argc(call_flags);
+                reverse_vals(sp, argc + 1);
+                push(ctx, &mut sp, JS_UNDEFINED);
+                handle_call!(call_flags);
+            },
+            op if op == crate::opcode::OP_CALL_METHOD.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("call_method"));
+                }
+                let call_flags = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as i32;
+                let argc = call_argc(call_flags);
+                reverse_vals(sp, argc + 2);
+                handle_call!(call_flags);
             },
             op if op == crate::opcode::OP_GET_LOC.0 as u8 => unsafe {
                 if pc + 1 >= byte_slice.len() {
@@ -1772,6 +2728,69 @@ pub fn call_with_this(
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + 3), val);
             },
+            op if op == crate::opcode::OP_GET_VAR_REF.0 as u8
+                || op == crate::opcode::OP_GET_VAR_REF_NOCHECK.0 as u8 =>
+            unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("get_var_ref"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let func_obj = ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ));
+                let obj_ptr = try_or_break!(object_ptr(func_obj));
+                let header = object_header(obj_ptr);
+                if header.class_id() != JSObjectClass::Closure as u8 {
+                    break Err(InterpreterError::InvalidValue("varref closure"));
+                }
+                let extra = header.extra_size() as usize;
+                if idx >= extra.saturating_sub(1) {
+                    break Err(InterpreterError::InvalidBytecode("varref index"));
+                }
+                let var_ref = {
+                    // SAFETY: closure var_refs contains extra_size - 1 entries.
+                    let payload = Object::payload_ptr(obj_ptr.as_ptr());
+                    let closure_data = core::ptr::addr_of_mut!((*payload).closure);
+                    let var_refs = crate::closure_data::ClosureData::var_refs_ptr(closure_data);
+                    ptr::read_unaligned(var_refs.add(idx))
+                };
+                let val = try_or_break!(var_ref_get(var_ref));
+                if is_uninitialized(val) && op == crate::opcode::OP_GET_VAR_REF.0 as u8 {
+                    break Err(InterpreterError::ReferenceError("varref uninitialized"));
+                }
+                push(ctx, &mut sp, val);
+            },
+            op if op == crate::opcode::OP_PUT_VAR_REF.0 as u8
+                || op == crate::opcode::OP_PUT_VAR_REF_NOCHECK.0 as u8 =>
+            unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("put_var_ref"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let func_obj = ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ));
+                let obj_ptr = try_or_break!(object_ptr(func_obj));
+                let header = object_header(obj_ptr);
+                if header.class_id() != JSObjectClass::Closure as u8 {
+                    break Err(InterpreterError::InvalidValue("varref closure"));
+                }
+                let extra = header.extra_size() as usize;
+                if idx >= extra.saturating_sub(1) {
+                    break Err(InterpreterError::InvalidBytecode("varref index"));
+                }
+                let var_ref = {
+                    // SAFETY: closure var_refs contains extra_size - 1 entries.
+                    let payload = Object::payload_ptr(obj_ptr.as_ptr());
+                    let closure_data = core::ptr::addr_of_mut!((*payload).closure);
+                    let var_refs = crate::closure_data::ClosureData::var_refs_ptr(closure_data);
+                    ptr::read_unaligned(var_refs.add(idx))
+                };
+                let current = try_or_break!(var_ref_get(var_ref));
+                if is_uninitialized(current) && op == crate::opcode::OP_PUT_VAR_REF.0 as u8 {
+                    break Err(InterpreterError::ReferenceError("varref uninitialized"));
+                }
+                let val = pop(ctx, &mut sp);
+                try_or_break!(var_ref_set(var_ref, val));
+            },
             _ => break Err(InterpreterError::UnsupportedOpcode(opcode)),
         }
     };
@@ -1785,8 +2804,9 @@ pub fn call_with_this(
 mod tests {
     use super::*;
     use crate::array_data::ArrayData;
+    use crate::closure_data::ClosureData;
     use crate::context::{ContextConfig, JSContext};
-    use crate::enums::JSObjectClass;
+    use crate::enums::{JSObjectClass, JSVarRefKind};
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
     use crate::jsvalue::{
         is_int, new_short_int, value_from_ptr, value_get_int, value_get_special_value, value_to_ptr,
@@ -1794,13 +2814,15 @@ mod tests {
     };
     use crate::object::Object;
     use crate::opcode::{
-        OP_ADD, OP_AND, OP_CATCH, OP_DEFINE_FIELD, OP_DEFINE_GETTER, OP_DEFINE_SETTER, OP_DELETE,
-        OP_DUP2, OP_EQ, OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD, OP_GET_FIELD2,
-        OP_GET_LENGTH, OP_GET_LENGTH2, OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE, OP_INSERT2,
-        OP_INSERT3, OP_LT, OP_NIP, OP_PERM3, OP_PERM4, OP_PUSH_0, OP_PUSH_1, OP_PUSH_2,
-        OP_PUSH_3, OP_PUSH_4, OP_PUSH_5, OP_PUSH_CONST, OP_PUSH_I8, OP_PUSH_TRUE,
-        OP_PUT_ARRAY_EL, OP_PUT_FIELD, OP_RET, OP_RETURN, OP_ROT3L, OP_SET_PROTO, OP_STRICT_EQ,
-        OP_SUB, OP_SWAP, OP_THROW,
+        OP_ADD, OP_AND, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR, OP_CALL_METHOD,
+        OP_CATCH, OP_DEFINE_FIELD, OP_DEFINE_GETTER, OP_DEFINE_SETTER, OP_DELETE, OP_DUP2, OP_EQ,
+        OP_FCLOSURE, OP_GET_ARG0, OP_GET_ARG1, OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD,
+        OP_GET_FIELD2, OP_GET_LENGTH, OP_GET_LENGTH2, OP_GET_VAR_REF, OP_GET_VAR_REF_NOCHECK,
+        OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE, OP_INSERT2, OP_INSERT3, OP_LT, OP_NEW_TARGET,
+        OP_NIP, OP_PERM3, OP_PERM4, OP_PUSH_0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4,
+        OP_PUSH_5, OP_PUSH_CONST, OP_PUSH_I8, OP_PUSH_TRUE, OP_PUT_ARRAY_EL, OP_PUT_FIELD,
+        OP_PUT_VAR_REF, OP_PUT_VAR_REF_NOCHECK, OP_RET, OP_RETURN, OP_ROT3L, OP_SET_PROTO,
+        OP_STRICT_EQ, OP_SUB, OP_SWAP, OP_THIS_FUNC, OP_THROW,
     };
     use crate::property::{debug_property, define_property_value, has_property, DebugProperty};
     use crate::string::runtime::string_view;
@@ -1866,6 +2888,52 @@ mod tests {
             .expect("func");
         let closure = ctx.alloc_closure(func, 0).expect("closure");
         call(ctx, closure, &[]).expect("call")
+    }
+
+    fn alloc_value_array(ctx: &mut JSContext, values: &[JSValue]) -> JSValue {
+        if values.is_empty() {
+            return JS_NULL;
+        }
+        let ptr = ctx.alloc_value_array(values.len()).expect("value array");
+        unsafe {
+            // SAFETY: ptr points to a freshly allocated value array.
+            let arr = ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
+            for (idx, val) in values.iter().enumerate() {
+                ptr::write_unaligned(arr.add(idx), *val);
+            }
+        }
+        value_from_ptr(ptr)
+    }
+
+    fn make_function_bytecode(
+        ctx: &mut JSContext,
+        bytecode: Vec<u8>,
+        cpool: Vec<JSValue>,
+        vars: Vec<JSValue>,
+        ext_vars: Vec<JSValue>,
+        arg_count: u16,
+        stack_size: u16,
+    ) -> JSValue {
+        assert!(ext_vars.len() % 2 == 0, "ext_vars must be name/decl pairs");
+        let byte_code_val = ctx.alloc_byte_array(&bytecode).expect("bytecode");
+        let cpool_val = alloc_value_array(ctx, &cpool);
+        let vars_val = alloc_value_array(ctx, &vars);
+        let ext_vars_val = alloc_value_array(ctx, &ext_vars);
+        let ext_vars_len = (ext_vars.len() / 2) as u16;
+        let header = FunctionBytecodeHeader::new(false, false, false, arg_count, false);
+        let fields = FunctionBytecodeFields {
+            func_name: JS_NULL,
+            byte_code: byte_code_val,
+            cpool: cpool_val,
+            vars: vars_val,
+            ext_vars: ext_vars_val,
+            stack_size,
+            ext_vars_len,
+            filename: JS_NULL,
+            pc2line: JS_NULL,
+            source_pos: 0,
+        };
+        ctx.alloc_function_bytecode(header, fields).expect("func")
     }
 
     fn string_from_value(val: JSValue) -> String {
@@ -2493,5 +3561,335 @@ mod tests {
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert_eq!(value_get_special_value(result), 1);
         assert!(!has_property(&ctx, obj, key).expect("has"));
+    }
+
+    #[test]
+    fn array_from_preserves_order() {
+        let mut ctx = new_context();
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_1.0 as u8);
+        bytecode.push(OP_PUSH_2.0 as u8);
+        bytecode.push(OP_PUSH_3.0 as u8);
+        bytecode.push(OP_ARRAY_FROM.0 as u8);
+        emit_u16(&mut bytecode, 3);
+        bytecode.push(OP_PUSH_0.0 as u8);
+        bytecode.push(OP_GET_ARRAY_EL.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode(&mut ctx, bytecode);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 1);
+    }
+
+    #[test]
+    fn arguments_len_matches_passed_args() {
+        let mut ctx = new_context();
+        let bytecode = vec![OP_ARGUMENTS.0 as u8, OP_GET_LENGTH.0 as u8, OP_RETURN.0 as u8];
+        let func = make_function_bytecode(
+            &mut ctx,
+            bytecode,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            2,
+            4,
+        );
+        let closure = ctx.alloc_closure(func, 0).expect("closure");
+        let result = call(&mut ctx, closure, &[new_short_int(7)]).expect("call");
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 1);
+    }
+
+    #[test]
+    fn this_func_returns_closure() {
+        let mut ctx = new_context();
+        let bytecode = vec![OP_THIS_FUNC.0 as u8, OP_RETURN.0 as u8];
+        let func = make_function_bytecode(
+            &mut ctx,
+            bytecode,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0,
+            2,
+        );
+        let closure = ctx.alloc_closure(func, 0).expect("closure");
+        let result = call(&mut ctx, closure, &[]).expect("call");
+        assert_eq!(result, closure);
+    }
+
+    #[test]
+    fn new_target_tracks_constructor_calls() {
+        let mut ctx = new_context();
+        let inner_code = vec![OP_NEW_TARGET.0 as u8, OP_RETURN.0 as u8];
+        let inner_func = make_function_bytecode(
+            &mut ctx,
+            inner_code,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0,
+            2,
+        );
+        let inner_closure = ctx.alloc_closure(inner_func, 0).expect("closure");
+        let result = call(&mut ctx, inner_closure, &[]).expect("call");
+        assert_eq!(result, JS_UNDEFINED);
+
+        let mut outer_code = Vec::new();
+        outer_code.push(OP_FCLOSURE.0 as u8);
+        emit_u16(&mut outer_code, 0);
+        outer_code.push(OP_CALL_CONSTRUCTOR.0 as u8);
+        emit_u16(&mut outer_code, 0);
+        outer_code.push(OP_RETURN.0 as u8);
+        let outer_func = make_function_bytecode(
+            &mut ctx,
+            outer_code,
+            vec![inner_func],
+            Vec::new(),
+            Vec::new(),
+            0,
+            2,
+        );
+        let outer_closure = ctx.alloc_closure(outer_func, 0).expect("closure");
+        let result = call(&mut ctx, outer_closure, &[]).expect("call");
+        let obj_ptr = object_ptr(result).expect("closure");
+        let header = object_header(obj_ptr);
+        assert_eq!(header.class_id(), JSObjectClass::Closure as u8);
+        let payload = unsafe { Object::payload_ptr(obj_ptr.as_ptr()) };
+        let closure = unsafe { core::ptr::addr_of_mut!((*payload).closure) };
+        let func_val = unsafe { ptr::read_unaligned(ClosureData::func_bytecode_ptr(closure)) };
+        assert_eq!(func_val, inner_func);
+    }
+
+    #[test]
+    fn call_invokes_closure_with_args() {
+        let mut ctx = new_context();
+        let callee_code = vec![
+            OP_GET_ARG0.0 as u8,
+            OP_GET_ARG1.0 as u8,
+            OP_ADD.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+        let callee_func = make_function_bytecode(
+            &mut ctx,
+            callee_code,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            2,
+            4,
+        );
+        let callee_closure = ctx.alloc_closure(callee_func, 0).expect("closure");
+
+        let mut caller_code = Vec::new();
+        caller_code.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut caller_code, 0);
+        caller_code.push(OP_PUSH_1.0 as u8);
+        caller_code.push(OP_PUSH_2.0 as u8);
+        caller_code.push(OP_CALL.0 as u8);
+        emit_u16(&mut caller_code, 2);
+        caller_code.push(OP_RETURN.0 as u8);
+        let caller_func = make_function_bytecode(
+            &mut ctx,
+            caller_code,
+            vec![callee_closure],
+            Vec::new(),
+            Vec::new(),
+            0,
+            4,
+        );
+        let caller_closure = ctx.alloc_closure(caller_func, 0).expect("closure");
+        let result = call(&mut ctx, caller_closure, &[]).expect("call");
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 3);
+    }
+
+    #[test]
+    fn call_method_preserves_arg_order() {
+        let mut ctx = new_context();
+        let callee_code = vec![OP_GET_ARG0.0 as u8, OP_RETURN.0 as u8];
+        let callee_func = make_function_bytecode(
+            &mut ctx,
+            callee_code,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1,
+            2,
+        );
+        let callee_closure = ctx.alloc_closure(callee_func, 0).expect("closure");
+        let this_obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+
+        let mut caller_code = Vec::new();
+        caller_code.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut caller_code, 0);
+        caller_code.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut caller_code, 1);
+        caller_code.push(OP_PUSH_5.0 as u8);
+        caller_code.push(OP_CALL_METHOD.0 as u8);
+        emit_u16(&mut caller_code, 1);
+        caller_code.push(OP_RETURN.0 as u8);
+        let caller_func = make_function_bytecode(
+            &mut ctx,
+            caller_code,
+            vec![this_obj, callee_closure],
+            Vec::new(),
+            Vec::new(),
+            0,
+            4,
+        );
+        let caller_closure = ctx.alloc_closure(caller_func, 0).expect("closure");
+        let result = call(&mut ctx, caller_closure, &[]).expect("call");
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 5);
+    }
+
+    #[test]
+    fn call_constructor_uses_function_prototype() {
+        let mut ctx = new_context();
+        let callee_code = vec![OP_PUSH_1.0 as u8, OP_RETURN.0 as u8];
+        let callee_func = make_function_bytecode(
+            &mut ctx,
+            callee_code,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0,
+            2,
+        );
+        let callee_closure = ctx.alloc_closure(callee_func, 0).expect("closure");
+        let proto = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("proto");
+        let proto_key = ctx.intern_string(b"prototype").expect("atom");
+        define_property_value(&mut ctx, callee_closure, proto_key, proto).expect("define");
+
+        let mut caller_code = Vec::new();
+        caller_code.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut caller_code, 0);
+        caller_code.push(OP_CALL_CONSTRUCTOR.0 as u8);
+        emit_u16(&mut caller_code, 0);
+        caller_code.push(OP_RETURN.0 as u8);
+        let caller_func = make_function_bytecode(
+            &mut ctx,
+            caller_code,
+            vec![callee_closure],
+            Vec::new(),
+            Vec::new(),
+            0,
+            2,
+        );
+        let caller_closure = ctx.alloc_closure(caller_func, 0).expect("closure");
+        let result = call(&mut ctx, caller_closure, &[]).expect("call");
+        assert_eq!(object_proto(result), proto);
+    }
+
+    #[test]
+    fn fclosure_varref_roundtrip() {
+        let mut ctx = new_context();
+        let name = ctx.intern_string(b"x").expect("atom");
+        let decl = (JSVarRefKind::Arg as i32) << 16;
+        let ext_vars = vec![name, new_short_int(decl)];
+
+        let mut inner_code = Vec::new();
+        inner_code.push(OP_GET_VAR_REF.0 as u8);
+        emit_u16(&mut inner_code, 0);
+        inner_code.push(OP_PUSH_1.0 as u8);
+        inner_code.push(OP_ADD.0 as u8);
+        inner_code.push(OP_PUT_VAR_REF.0 as u8);
+        emit_u16(&mut inner_code, 0);
+        inner_code.push(OP_GET_VAR_REF.0 as u8);
+        emit_u16(&mut inner_code, 0);
+        inner_code.push(OP_RETURN.0 as u8);
+        let inner_func = make_function_bytecode(
+            &mut ctx,
+            inner_code,
+            Vec::new(),
+            Vec::new(),
+            ext_vars,
+            0,
+            4,
+        );
+
+        let mut outer_code = Vec::new();
+        outer_code.push(OP_FCLOSURE.0 as u8);
+        emit_u16(&mut outer_code, 0);
+        outer_code.push(OP_RETURN.0 as u8);
+        let outer_func = make_function_bytecode(
+            &mut ctx,
+            outer_code,
+            vec![inner_func],
+            Vec::new(),
+            Vec::new(),
+            1,
+            2,
+        );
+        let outer_closure = ctx.alloc_closure(outer_func, 0).expect("closure");
+        let inner_closure =
+            call(&mut ctx, outer_closure, &[new_short_int(10)]).expect("call");
+
+        let result = call(&mut ctx, inner_closure, &[]).expect("call");
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 11);
+
+        let result = call(&mut ctx, inner_closure, &[]).expect("call");
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 12);
+    }
+
+    #[test]
+    fn var_ref_nocheck_allows_uninitialized() {
+        let mut ctx = new_context();
+        let name = ctx.intern_string(b"missing").expect("atom");
+        let decl = (JSVarRefKind::Global as i32) << 16;
+        let ext_vars = vec![name, new_short_int(decl)];
+
+        let mut code = Vec::new();
+        code.push(OP_PUSH_1.0 as u8);
+        code.push(OP_PUT_VAR_REF_NOCHECK.0 as u8);
+        emit_u16(&mut code, 0);
+        code.push(OP_GET_VAR_REF_NOCHECK.0 as u8);
+        emit_u16(&mut code, 0);
+        code.push(OP_RETURN.0 as u8);
+        let func = make_function_bytecode(
+            &mut ctx,
+            code,
+            Vec::new(),
+            Vec::new(),
+            ext_vars,
+            0,
+            4,
+        );
+        let closure = create_closure(&mut ctx, func, None).expect("closure");
+        let result = call(&mut ctx, closure, &[]).expect("call");
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 1);
+    }
+
+    #[test]
+    fn var_ref_checked_errors_on_uninitialized() {
+        let mut ctx = new_context();
+        let name = ctx.intern_string(b"missing").expect("atom");
+        let decl = (JSVarRefKind::Global as i32) << 16;
+        let ext_vars = vec![name, new_short_int(decl)];
+
+        let mut code = Vec::new();
+        code.push(OP_GET_VAR_REF.0 as u8);
+        emit_u16(&mut code, 0);
+        code.push(OP_RETURN.0 as u8);
+        let func = make_function_bytecode(
+            &mut ctx,
+            code,
+            Vec::new(),
+            Vec::new(),
+            ext_vars,
+            0,
+            2,
+        );
+        let closure = create_closure(&mut ctx, func, None).expect("closure");
+        let err = call(&mut ctx, closure, &[]).unwrap_err();
+        assert!(matches!(err, InterpreterError::ReferenceError(_)));
     }
 }

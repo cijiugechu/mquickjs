@@ -1,3 +1,4 @@
+use crate::array_data::ArrayData;
 use crate::atom::AtomTables;
 use crate::capi_defs::{JSInterruptHandler, JSWriteFunc};
 use crate::cfunction_data::{CFunctionData, CFUNC_PARAMS_OFFSET};
@@ -91,6 +92,7 @@ pub enum ContextError {
     InvalidCFunctionProto { name: &'static str, proto: &'static str },
     InvalidCFunctionMagic { name: &'static str, magic: &'static str },
     MissingEmptyAtom,
+    ArrayTooLong { len: usize, max: u32 },
     StringTooLong { len: usize, max: JSWord },
     ByteArrayTooLong { len: usize, max: JSWord },
     OutOfMemory,
@@ -1119,7 +1121,7 @@ impl JSContext {
         }
     }
 
-    fn alloc_mblock(&mut self, size: usize, tag: MTag) -> Result<NonNull<u8>, ContextError> {
+    pub(crate) fn alloc_mblock(&mut self, size: usize, tag: MTag) -> Result<NonNull<u8>, ContextError> {
         let ctx_ptr = self as *mut JSContext;
         let ptr = self.heap.malloc(size, tag, |heap| unsafe {
             let ctx = &mut *ctx_ptr;
@@ -1206,6 +1208,35 @@ impl JSContext {
             }
         }
         Ok(value_from_ptr(ptr))
+    }
+
+    pub(crate) fn alloc_array(&mut self, len: usize) -> Result<JSValue, ContextError> {
+        let len_u32 = u32::try_from(len).map_err(|_| ContextError::ArrayTooLong {
+            len,
+            max: ArrayData::LEN_MAX,
+        })?;
+        if len_u32 > ArrayData::LEN_MAX {
+            return Err(ContextError::ArrayTooLong {
+                len,
+                max: ArrayData::LEN_MAX,
+            });
+        }
+        let tab = if len == 0 {
+            JS_NULL
+        } else {
+            let ptr = self.alloc_value_array(len)?;
+            value_from_ptr(ptr)
+        };
+        let proto = self.class_proto()[JSObjectClass::Array as usize];
+        let array = self.alloc_object(JSObjectClass::Array, proto, size_of::<ArrayData>())?;
+        let obj_ptr = value_to_ptr::<Object>(array).expect("array allocation must be a pointer");
+        unsafe {
+            // SAFETY: array points at a writable object payload.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let array_ptr = core::ptr::addr_of_mut!((*payload).array);
+            ptr::write_unaligned(array_ptr, ArrayData::new(tab, len_u32));
+        }
+        Ok(array)
     }
 
     pub(crate) fn alloc_function_bytecode(

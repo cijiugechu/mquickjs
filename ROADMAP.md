@@ -5,7 +5,6 @@
 ### Interpreter coverage
 - C dispatches 116 opcodes; Rust interpreter still missing the groups below.
 - Notable missing groups:
-  - Calls, closures, varrefs: `OP_call`, `OP_call_constructor`, `OP_call_method`, `OP_fclosure`, `OP_arguments`, `OP_this_func`, `OP_new_target`, `OP_get_var_ref`, `OP_put_var_ref`, `OP_get_var_ref_nocheck`, `OP_put_var_ref_nocheck`, `OP_array_from`.
   - Loops and regexp: `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`, `OP_regexp`.
 - Discrepancy: `OP_push_const8` is handled in Rust but does not appear in C dispatch.
 
@@ -29,9 +28,9 @@
 3. **Object, array, and property opcodes** (done)
    - Implemented `OP_get_field/get_field2`, `OP_put_field`, `OP_define_*`, `OP_get/put_array_el`, `OP_get_length/get_length2`, `OP_set_proto`, `OP_delete`.
    - Wired to `src/property.rs` and `src/object.rs` semantics with interpreter tests.
-4. **Functions, closures, and varrefs**
-   - Implement `OP_fclosure`, `OP_call*`, `OP_arguments`, `OP_this_func`, `OP_new_target`, `OP_get/put_var_ref*`.
-   - Ensure GC roots include call frames, arguments, and varrefs.
+4. **Functions, closures, and varrefs** (done)
+   - Implemented `OP_fclosure`, `OP_call*`, `OP_arguments`, `OP_this_func`, `OP_new_target`, `OP_get/put_var_ref*`, `OP_array_from`.
+   - Added interpreter tests for calls, constructor/new_target, arguments, array_from, and varref behavior.
 5. **Iteration and RegExp**
    - Implement `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`.
    - Implement `OP_regexp` and connect to RegExp exec runtime.

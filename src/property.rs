@@ -930,6 +930,23 @@ pub fn define_property_varref(
     )
 }
 
+pub(crate) fn get_own_property_raw(
+    ctx: &JSContext,
+    obj: JSValue,
+    prop: JSValue,
+) -> Result<Option<(JSValue, JSPropType)>, PropertyError> {
+    let obj_ptr = object_ptr(obj)?;
+    let list = PropertyList::from_value(object_props(obj_ptr))?;
+    if ctx.is_rom_ptr(list.array.base) {
+        if let Some((value, meta)) = find_own_property_linear_rom(ctx, &list, prop) {
+            return Ok(Some((value, meta.prop_type())));
+        }
+    } else if let Some(entry) = find_own_property(&list, prop) {
+        return Ok(Some((entry.value(), entry.meta().prop_type())));
+    }
+    Ok(None)
+}
+
 pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSValue, PropertyError> {
     let mut current = obj;
     loop {
