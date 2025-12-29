@@ -1122,6 +1122,55 @@ pub fn delete_property(ctx: &mut JSContext, obj: JSValue, prop: JSValue) -> Resu
 }
 
 #[cfg(test)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DebugProperty {
+    Normal(JSValue),
+    GetSet { getter: JSValue, setter: JSValue },
+    VarRef(JSValue),
+    Special(JSValue),
+}
+
+#[cfg(test)]
+fn debug_property_value(
+    meta: PropertyMeta,
+    value: JSValue,
+) -> Result<DebugProperty, PropertyError> {
+    match meta.prop_type() {
+        JSPropType::Normal => Ok(DebugProperty::Normal(value)),
+        JSPropType::GetSet => {
+            let arr = unsafe {
+                // SAFETY: get/set properties store a JSValueArray with getter/setter slots.
+                ValueArrayRaw::from_value(value)?
+            };
+            Ok(DebugProperty::GetSet {
+                getter: arr.read(0),
+                setter: arr.read(1),
+            })
+        }
+        JSPropType::VarRef => Ok(DebugProperty::VarRef(read_var_ref_value(value)?)),
+        JSPropType::Special => Ok(DebugProperty::Special(value)),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn debug_property(
+    ctx: &JSContext,
+    obj: JSValue,
+    prop: JSValue,
+) -> Result<Option<DebugProperty>, PropertyError> {
+    let obj_ptr = object_ptr(obj)?;
+    let list = PropertyList::from_value(object_props(obj_ptr))?;
+    if ctx.is_rom_ptr(list.array.base) {
+        if let Some((value, meta)) = find_own_property_linear_rom(ctx, &list, prop) {
+            return Ok(Some(debug_property_value(meta, value)?));
+        }
+    } else if let Some(entry) = find_own_property(&list, prop) {
+        return Ok(Some(debug_property_value(entry.meta(), entry.value())?));
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;

@@ -3,10 +3,9 @@
 ## Current gaps
 
 ### Interpreter coverage
-- C dispatches 116 opcodes, Rust interpreter handles 90, leaving 26 missing.
+- C dispatches 116 opcodes; Rust interpreter still missing the groups below.
 - Notable missing groups:
   - Calls, closures, varrefs: `OP_call`, `OP_call_constructor`, `OP_call_method`, `OP_fclosure`, `OP_arguments`, `OP_this_func`, `OP_new_target`, `OP_get_var_ref`, `OP_put_var_ref`, `OP_get_var_ref_nocheck`, `OP_put_var_ref_nocheck`, `OP_array_from`.
-  - Object/array/property: `OP_object`, `OP_get_field`, `OP_get_field2`, `OP_put_field`, `OP_define_field`, `OP_define_getter`, `OP_define_setter`, `OP_get_array_el`, `OP_get_array_el2`, `OP_put_array_el`, `OP_get_length`, `OP_get_length2`, `OP_set_proto`, `OP_delete`.
   - Loops and regexp: `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`, `OP_regexp`.
 - Discrepancy: `OP_push_const8` is handled in Rust but does not appear in C dispatch.
 
@@ -27,9 +26,9 @@
    - Implemented `JS_ToPrimitive`, `JS_ToNumber`, `JS_ToPropertyKey`, plus string compare/eq helpers.
    - Ported `js_add_slow`/arith/logic/relational/equality slow-path behavior and wired the interpreter to use them.
    - `JS_ToObject` currently only validates object inputs; primitive boxing remains.
-3. **Object, array, and property opcodes**
-   - Implement `OP_get_field/get_field2`, `OP_put_field`, `OP_define_*`, `OP_get/put_array_el`, `OP_get_length`, `OP_set_proto`, `OP_delete`.
-   - Wire to `src/property.rs` and `src/object.rs` for prototype and property semantics.
+3. **Object, array, and property opcodes** (done)
+   - Implemented `OP_get_field/get_field2`, `OP_put_field`, `OP_define_*`, `OP_get/put_array_el`, `OP_get_length/get_length2`, `OP_set_proto`, `OP_delete`.
+   - Wired to `src/property.rs` and `src/object.rs` semantics with interpreter tests.
 4. **Functions, closures, and varrefs**
    - Implement `OP_fclosure`, `OP_call*`, `OP_arguments`, `OP_this_func`, `OP_new_target`, `OP_get/put_var_ref*`.
    - Ensure GC roots include call frames, arguments, and varrefs.

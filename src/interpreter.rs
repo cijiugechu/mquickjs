@@ -1,3 +1,4 @@
+use crate::array_data::ArrayData;
 use crate::atom::{string_compare, string_eq};
 use crate::context::{ContextError, JSContext};
 use crate::conversion::{self, ConversionError, ToPrimitiveHint};
@@ -136,6 +137,67 @@ fn object_ptr(val: JSValue) -> Result<NonNull<Object>, InterpreterError> {
         return Err(InterpreterError::InvalidValue("object tag"));
     }
     Ok(ptr)
+}
+
+fn object_header(ptr: NonNull<Object>) -> ObjectHeader {
+    let header_word = unsafe {
+        // SAFETY: ptr points at a readable object header word.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    ObjectHeader::from_word(header_word)
+}
+
+fn object_proto(ptr: NonNull<Object>) -> JSValue {
+    unsafe {
+        // SAFETY: ptr points at a readable object proto slot.
+        ptr::read_unaligned(Object::proto_ptr(ptr.as_ptr()))
+    }
+}
+
+fn object_props(ptr: NonNull<Object>) -> JSValue {
+    unsafe {
+        // SAFETY: ptr points at a readable object props slot.
+        ptr::read_unaligned(Object::props_ptr(ptr.as_ptr()))
+    }
+}
+
+fn set_object_proto(ptr: NonNull<Object>, proto: JSValue) {
+    unsafe {
+        // SAFETY: ptr points at a writable object proto slot.
+        ptr::write_unaligned(Object::proto_ptr(ptr.as_ptr()), proto);
+    }
+}
+
+fn array_data(ptr: NonNull<Object>) -> ArrayData {
+    unsafe {
+        // SAFETY: ptr points at a valid object payload.
+        let payload = Object::payload_ptr(ptr.as_ptr());
+        let array_ptr = ptr::addr_of!((*payload).array);
+        ptr::read_unaligned(array_ptr)
+    }
+}
+
+fn set_prototype_internal(obj: JSValue, proto: JSValue) -> Result<(), InterpreterError> {
+    let obj_ptr = object_ptr(obj)?;
+    if object_proto(obj_ptr) == proto {
+        return Ok(());
+    }
+    if proto != JS_NULL {
+        let mut current = proto;
+        loop {
+            let current_ptr = object_ptr(current)?;
+            if current_ptr == obj_ptr {
+                return Err(InterpreterError::TypeError("circular prototype chain"));
+            }
+            let next = object_proto(current_ptr);
+            if next == JS_NULL {
+                break;
+            }
+            current = next;
+        }
+    }
+    set_object_proto(obj_ptr, proto);
+    Ok(())
 }
 
 fn function_bytecode_ptr(val: JSValue) -> Result<NonNull<FunctionBytecode>, InterpreterError> {
@@ -362,6 +424,30 @@ fn binary_arith_slow(
         _ => return Err(InterpreterError::InvalidBytecode("binary arith slow")),
     };
     Ok(ctx.new_float64(res)?)
+}
+
+fn get_length_value(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, InterpreterError> {
+    if conversion::is_string(obj) {
+        let len = ctx.string_len(obj);
+        return Ok(new_short_int(len as i32));
+    }
+    if conversion::is_object(obj) {
+        let obj_ptr = object_ptr(obj)?;
+        let header = object_header(obj_ptr);
+        if header.class_id() == JSObjectClass::Array as u8 {
+            let proto = object_proto(obj_ptr);
+            let props = object_props(obj_ptr);
+            if proto == ctx.class_proto()[JSObjectClass::Array as usize]
+                && props == ctx.empty_props()
+            {
+                let data = array_data(obj_ptr);
+                return Ok(new_short_int(data.len() as i32));
+            }
+        }
+    }
+    let length_key = ctx.intern_string(b"length")?;
+    let val = crate::property::get_property(ctx, obj, length_key).map_err(ConversionError::from)?;
+    Ok(val)
 }
 
 fn unary_arith_slow(
@@ -1442,6 +1528,150 @@ pub fn call_with_this(
                 let found = try_or_break!(instanceof_check(obj, proto));
                 push(ctx, &mut sp, new_bool(found as i32));
             },
+            op if op == crate::opcode::OP_GET_FIELD.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("get_field"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let cpool = try_or_break!(ValueArrayRaw::from_value(b.cpool()));
+                let prop = try_or_break!(cpool.read(idx));
+                let obj = ptr::read_unaligned(sp);
+                let val = try_or_break!(
+                    crate::property::get_property(ctx, obj, prop).map_err(ConversionError::from)
+                );
+                ptr::write_unaligned(sp, val);
+            },
+            op if op == crate::opcode::OP_GET_FIELD2.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("get_field2"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let cpool = try_or_break!(ValueArrayRaw::from_value(b.cpool()));
+                let prop = try_or_break!(cpool.read(idx));
+                let obj = ptr::read_unaligned(sp);
+                push(ctx, &mut sp, obj);
+                let val = try_or_break!(
+                    crate::property::get_property(ctx, obj, prop).map_err(ConversionError::from)
+                );
+                ptr::write_unaligned(sp, val);
+            },
+            op if op == crate::opcode::OP_PUT_FIELD.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("put_field"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let cpool = try_or_break!(ValueArrayRaw::from_value(b.cpool()));
+                let prop = try_or_break!(cpool.read(idx));
+                let val = pop(ctx, &mut sp);
+                let obj = ptr::read_unaligned(sp);
+                try_or_break!(
+                    crate::property::set_property(ctx, obj, prop, val).map_err(ConversionError::from)
+                );
+                let _ = pop(ctx, &mut sp);
+            },
+            op if op == crate::opcode::OP_GET_ARRAY_EL.0 as u8 => unsafe {
+                let prop = pop(ctx, &mut sp);
+                let obj = ptr::read_unaligned(sp);
+                let prop = try_or_break!(conversion::to_property_key(ctx, prop));
+                let val = try_or_break!(
+                    crate::property::get_property(ctx, obj, prop).map_err(ConversionError::from)
+                );
+                ptr::write_unaligned(sp, val);
+            },
+            op if op == crate::opcode::OP_GET_ARRAY_EL2.0 as u8 => unsafe {
+                let prop = ptr::read_unaligned(sp);
+                let obj = ptr::read_unaligned(sp.add(1));
+                let prop = try_or_break!(conversion::to_property_key(ctx, prop));
+                let val = try_or_break!(
+                    crate::property::get_property(ctx, obj, prop).map_err(ConversionError::from)
+                );
+                ptr::write_unaligned(sp, val);
+            },
+            op if op == crate::opcode::OP_PUT_ARRAY_EL.0 as u8 => unsafe {
+                let val = pop(ctx, &mut sp);
+                let prop = pop(ctx, &mut sp);
+                let obj = ptr::read_unaligned(sp);
+                let prop = try_or_break!(conversion::to_property_key(ctx, prop));
+                try_or_break!(
+                    crate::property::set_property(ctx, obj, prop, val).map_err(ConversionError::from)
+                );
+                let _ = pop(ctx, &mut sp);
+            },
+            op if op == crate::opcode::OP_GET_LENGTH.0 as u8 => unsafe {
+                let obj = ptr::read_unaligned(sp);
+                let val = try_or_break!(get_length_value(ctx, obj));
+                ptr::write_unaligned(sp, val);
+            },
+            op if op == crate::opcode::OP_GET_LENGTH2.0 as u8 => unsafe {
+                let obj = ptr::read_unaligned(sp);
+                push(ctx, &mut sp, obj);
+                let val = try_or_break!(get_length_value(ctx, obj));
+                ptr::write_unaligned(sp, val);
+            },
+            op if op == crate::opcode::OP_DEFINE_FIELD.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("define_field"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let cpool = try_or_break!(ValueArrayRaw::from_value(b.cpool()));
+                let prop = try_or_break!(cpool.read(idx));
+                let val = pop(ctx, &mut sp);
+                let obj = ptr::read_unaligned(sp);
+                try_or_break!(
+                    crate::property::define_property_value(ctx, obj, prop, val)
+                        .map_err(ConversionError::from)
+                );
+            },
+            op if op == crate::opcode::OP_DEFINE_GETTER.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("define_getter"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let cpool = try_or_break!(ValueArrayRaw::from_value(b.cpool()));
+                let prop = try_or_break!(cpool.read(idx));
+                let val = pop(ctx, &mut sp);
+                let obj = ptr::read_unaligned(sp);
+                try_or_break!(
+                    crate::property::define_property_getset(ctx, obj, prop, val, JS_UNDEFINED)
+                        .map_err(ConversionError::from)
+                );
+            },
+            op if op == crate::opcode::OP_DEFINE_SETTER.0 as u8 => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("define_setter"));
+                }
+                let idx = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let cpool = try_or_break!(ValueArrayRaw::from_value(b.cpool()));
+                let prop = try_or_break!(cpool.read(idx));
+                let val = pop(ctx, &mut sp);
+                let obj = ptr::read_unaligned(sp);
+                try_or_break!(
+                    crate::property::define_property_getset(ctx, obj, prop, JS_UNDEFINED, val)
+                        .map_err(ConversionError::from)
+                );
+            },
+            op if op == crate::opcode::OP_SET_PROTO.0 as u8 => unsafe {
+                let proto = pop(ctx, &mut sp);
+                let obj = ptr::read_unaligned(sp);
+                if conversion::is_object(proto) || is_null(proto) {
+                    try_or_break!(set_prototype_internal(obj, proto));
+                }
+            },
+            op if op == crate::opcode::OP_DELETE.0 as u8 => unsafe {
+                let prop = pop(ctx, &mut sp);
+                let obj = ptr::read_unaligned(sp);
+                let prop = try_or_break!(conversion::to_property_key(ctx, prop));
+                let deleted = try_or_break!(
+                    crate::property::delete_property(ctx, obj, prop).map_err(ConversionError::from)
+                );
+                ptr::write_unaligned(sp, new_bool(deleted as i32));
+            },
             op if op == crate::opcode::OP_GET_LOC0.0 as u8 => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0));
                 push(ctx, &mut sp, val);
@@ -1554,17 +1784,25 @@ pub fn call_with_this(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::array_data::ArrayData;
     use crate::context::{ContextConfig, JSContext};
+    use crate::enums::JSObjectClass;
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
     use crate::jsvalue::{
-        is_int, value_from_ptr, value_get_int, value_get_special_value, JSValue, JSWord, JS_NULL,
+        is_int, new_short_int, value_from_ptr, value_get_int, value_get_special_value, value_to_ptr,
+        JSValue, JSWord, JS_NULL, JS_UNDEFINED,
     };
+    use crate::object::Object;
     use crate::opcode::{
-        OP_ADD, OP_AND, OP_CATCH, OP_DUP2, OP_EQ, OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE,
-        OP_INSERT2, OP_INSERT3, OP_LT, OP_NIP, OP_PERM3, OP_PERM4, OP_PUSH_1, OP_PUSH_2,
-        OP_PUSH_3, OP_PUSH_4, OP_PUSH_CONST, OP_PUSH_TRUE, OP_RET, OP_RETURN, OP_ROT3L,
-        OP_STRICT_EQ, OP_SUB, OP_THROW,
+        OP_ADD, OP_AND, OP_CATCH, OP_DEFINE_FIELD, OP_DEFINE_GETTER, OP_DEFINE_SETTER, OP_DELETE,
+        OP_DUP2, OP_EQ, OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD, OP_GET_FIELD2,
+        OP_GET_LENGTH, OP_GET_LENGTH2, OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE, OP_INSERT2,
+        OP_INSERT3, OP_LT, OP_NIP, OP_PERM3, OP_PERM4, OP_PUSH_0, OP_PUSH_1, OP_PUSH_2,
+        OP_PUSH_3, OP_PUSH_4, OP_PUSH_5, OP_PUSH_CONST, OP_PUSH_I8, OP_PUSH_TRUE,
+        OP_PUT_ARRAY_EL, OP_PUT_FIELD, OP_RET, OP_RETURN, OP_ROT3L, OP_SET_PROTO, OP_STRICT_EQ,
+        OP_SUB, OP_SWAP, OP_THROW,
     };
+    use crate::property::{debug_property, define_property_value, has_property, DebugProperty};
     use crate::string::runtime::string_view;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
     use core::mem::size_of;
@@ -1580,6 +1818,10 @@ mod tests {
     }
 
     fn emit_i32(buf: &mut Vec<u8>, value: i32) {
+        buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn emit_u16(buf: &mut Vec<u8>, value: u16) {
         buf.extend_from_slice(&value.to_le_bytes());
     }
 
@@ -1632,6 +1874,42 @@ mod tests {
         core::str::from_utf8(view.bytes())
             .expect("utf8")
             .to_string()
+    }
+
+    fn new_array(ctx: &mut JSContext, elements: &[JSValue]) -> JSValue {
+        let tab = if elements.is_empty() {
+            JS_NULL
+        } else {
+            let ptr = ctx.alloc_value_array(elements.len()).expect("array tab");
+            unsafe {
+                // SAFETY: ptr points to a freshly allocated value array.
+                let arr = ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
+                for (idx, val) in elements.iter().enumerate() {
+                    ptr::write_unaligned(arr.add(idx), *val);
+                }
+            }
+            value_from_ptr(ptr)
+        };
+        let proto = ctx.class_proto()[JSObjectClass::Array as usize];
+        let array = ctx
+            .alloc_object(JSObjectClass::Array, proto, size_of::<ArrayData>())
+            .expect("array");
+        let obj_ptr = value_to_ptr::<Object>(array).expect("array ptr");
+        unsafe {
+            // SAFETY: payload points at a writable array data slot.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let array_ptr = ptr::addr_of_mut!((*payload).array);
+            ptr::write_unaligned(array_ptr, ArrayData::new(tab, elements.len() as u32));
+        }
+        array
+    }
+
+    fn object_proto(obj: JSValue) -> JSValue {
+        let obj_ptr = value_to_ptr::<Object>(obj).expect("object ptr");
+        unsafe {
+            // SAFETY: obj_ptr points at a readable object proto slot.
+            ptr::read_unaligned(Object::proto_ptr(obj_ptr.as_ptr()))
+        }
     }
 
     #[test]
@@ -1888,5 +2166,332 @@ mod tests {
         );
         assert!(is_int(result));
         assert_eq!(value_get_int(result), -2);
+    }
+
+    #[test]
+    fn get_field_reads_property() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"answer").expect("atom");
+        define_property_value(&mut ctx, obj, key, new_short_int(42)).expect("define");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_GET_FIELD.0 as u8);
+        emit_u16(&mut bytecode, 1);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 42);
+    }
+
+    #[test]
+    fn get_field2_keeps_object() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"foo").expect("atom");
+        define_property_value(&mut ctx, obj, key, new_short_int(7)).expect("define");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_GET_FIELD2.0 as u8);
+        emit_u16(&mut bytecode, 1);
+        bytecode.push(OP_SWAP.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
+        assert_eq!(result, obj);
+    }
+
+    #[test]
+    fn put_field_writes_property() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"x").expect("atom");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_PUSH_5.0 as u8);
+        bytecode.push(OP_PUT_FIELD.0 as u8);
+        emit_u16(&mut bytecode, 1);
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_GET_FIELD.0 as u8);
+        emit_u16(&mut bytecode, 1);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 5);
+    }
+
+    #[test]
+    fn define_field_sets_property() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"y").expect("atom");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_PUSH_3.0 as u8);
+        bytecode.push(OP_DEFINE_FIELD.0 as u8);
+        emit_u16(&mut bytecode, 1);
+        bytecode.push(OP_GET_FIELD.0 as u8);
+        emit_u16(&mut bytecode, 1);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 3);
+    }
+
+    #[test]
+    fn define_getter_sets_getset_entry() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"g").expect("atom");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_PUSH_I8.0 as u8);
+        bytecode.push(11);
+        bytecode.push(OP_DEFINE_GETTER.0 as u8);
+        emit_u16(&mut bytecode, 1);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
+        assert_eq!(result, obj);
+
+        let entry = debug_property(&ctx, obj, key)
+            .expect("debug property")
+            .expect("property");
+        match entry {
+            DebugProperty::GetSet { getter, setter } => {
+                assert!(is_int(getter));
+                assert_eq!(value_get_int(getter), 11);
+                assert_eq!(setter, JS_UNDEFINED);
+            }
+            _ => panic!("expected get/set entry"),
+        }
+    }
+
+    #[test]
+    fn define_setter_sets_getset_entry() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"s").expect("atom");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_PUSH_I8.0 as u8);
+        bytecode.push(22);
+        bytecode.push(OP_DEFINE_SETTER.0 as u8);
+        emit_u16(&mut bytecode, 1);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
+        assert_eq!(result, obj);
+
+        let entry = debug_property(&ctx, obj, key)
+            .expect("debug property")
+            .expect("property");
+        match entry {
+            DebugProperty::GetSet { getter, setter } => {
+                assert_eq!(getter, JS_UNDEFINED);
+                assert!(is_int(setter));
+                assert_eq!(value_get_int(setter), 22);
+            }
+            _ => panic!("expected get/set entry"),
+        }
+    }
+
+    #[test]
+    fn get_array_el_reads_element() {
+        let mut ctx = new_context();
+        let array = new_array(
+            &mut ctx,
+            &[new_short_int(10), new_short_int(20)],
+        );
+
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_1.0 as u8,
+            OP_GET_ARRAY_EL.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 20);
+    }
+
+    #[test]
+    fn get_array_el2_keeps_object() {
+        let mut ctx = new_context();
+        let array = new_array(&mut ctx, &[new_short_int(7)]);
+
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_0.0 as u8,
+            OP_GET_ARRAY_EL2.0 as u8,
+            OP_SWAP.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
+        assert_eq!(result, array);
+    }
+
+    #[test]
+    fn put_array_el_writes_element() {
+        let mut ctx = new_context();
+        let array = new_array(&mut ctx, &[new_short_int(0)]);
+
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_0.0 as u8,
+            OP_PUSH_I8.0 as u8,
+            7,
+            OP_PUT_ARRAY_EL.0 as u8,
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_0.0 as u8,
+            OP_GET_ARRAY_EL.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 7);
+    }
+
+    #[test]
+    fn get_length_array() {
+        let mut ctx = new_context();
+        let array = new_array(&mut ctx, &[new_short_int(1), new_short_int(2)]);
+
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_GET_LENGTH.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 2);
+    }
+
+    #[test]
+    fn get_length_string() {
+        let mut ctx = new_context();
+        let val = ctx.new_string("hi").expect("string");
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_GET_LENGTH.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![val]);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 2);
+    }
+
+    #[test]
+    fn get_length2_keeps_object() {
+        let mut ctx = new_context();
+        let array = new_array(&mut ctx, &[new_short_int(3)]);
+
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_GET_LENGTH2.0 as u8,
+            OP_SWAP.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
+        assert_eq!(result, array);
+    }
+
+    #[test]
+    fn set_proto_sets_object_proto() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let proto = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("proto");
+
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_CONST.0 as u8,
+            1,
+            0,
+            OP_SET_PROTO.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, proto]);
+        assert_eq!(result, obj);
+        assert_eq!(object_proto(obj), proto);
+    }
+
+    #[test]
+    fn delete_property_removes_entry() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"del").expect("atom");
+        define_property_value(&mut ctx, obj, key, new_short_int(1)).expect("define");
+
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_CONST.0 as u8,
+            1,
+            0,
+            OP_DELETE.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
+        assert_eq!(value_get_special_value(result), 1);
+        assert!(!has_property(&ctx, obj, key).expect("has"));
     }
 }
