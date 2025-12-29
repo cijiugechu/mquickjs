@@ -1512,6 +1512,272 @@ pub fn js_string_fromCharCode(
     ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
 }
 
+pub fn js_string_split(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let s = match to_string_check_object(ctx, this_val) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    let limit = if args.len() > 1 && !is_undefined(args[1]) {
+        match conversion::to_uint32(ctx, args[1]) {
+            Ok(l) => l,
+            Err(_) => return JS_EXCEPTION,
+        }
+    } else {
+        u32::MAX
+    };
+
+    if limit == 0 {
+        return ctx.alloc_array(0).unwrap_or(JS_EXCEPTION);
+    }
+
+    let sep = args.first().copied().unwrap_or(JS_UNDEFINED);
+
+    // If separator is undefined, return array with original string
+    if is_undefined(sep) {
+        let arr = match ctx.alloc_array(1) {
+            Ok(a) => a,
+            Err(_) => return JS_EXCEPTION,
+        };
+        let _ = crate::property::set_property(ctx, arr, new_short_int(0), s);
+        return arr;
+    }
+
+    // TODO: Handle RegExp separators
+    // For now, only handle string separators
+    let sep_str = match conversion::to_string(ctx, sep) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    let input_len = ctx.string_len(s) as i32;
+    let sep_len = ctx.string_len(sep_str) as i32;
+
+    let arr = match ctx.alloc_array(0) {
+        Ok(a) => a,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    // Empty string with non-empty separator
+    if input_len == 0 {
+        if sep_len != 0 {
+            let _ = crate::property::set_property(ctx, arr, new_short_int(0), s);
+            let _ = ctx.array_set_length(arr, 1);
+        }
+        return arr;
+    }
+
+    let mut count = 0u32;
+    let mut p = 0i32;
+    let mut q = 0i32;
+
+    while q <= input_len - sep_len - if sep_len == 0 { -1 } else { 0 } {
+        if sep_len == 0 {
+            q += 1;
+        }
+
+        // Find next occurrence
+        let e = string_index_of(ctx, s, sep_str, q, input_len, sep_len, false);
+        if e < 0 {
+            break;
+        }
+
+        // Add substring from p to e
+        let sub = match ctx.sub_string(s, p as u32, e as u32) {
+            Ok(sub) => sub,
+            Err(_) => return JS_EXCEPTION,
+        };
+        let _ = crate::property::set_property(ctx, arr, new_short_int(count as i32), sub);
+        count += 1;
+        let _ = ctx.array_set_length(arr, count);
+
+        if count >= limit {
+            return arr;
+        }
+
+        p = e + sep_len;
+        q = p;
+    }
+
+    // Add tail
+    let sub = match ctx.sub_string(s, p as u32, input_len as u32) {
+        Ok(sub) => sub,
+        Err(_) => return JS_EXCEPTION,
+    };
+    let _ = crate::property::set_property(ctx, arr, new_short_int(count as i32), sub);
+    let _ = ctx.array_set_length(arr, count + 1);
+
+    arr
+}
+
+pub fn js_string_replace(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+    magic: i32,
+) -> JSValue {
+    let is_replace_all = magic != 0;
+
+    let s = match to_string_check_object(ctx, this_val) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    let search_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let replace_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+
+    // TODO: Handle RegExp search
+    // For now, only handle string search
+    let search = match conversion::to_string(ctx, search_arg) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    // Functional replace not supported
+    if conversion::is_function(replace_arg) {
+        return JS_EXCEPTION;
+    }
+
+    let replace = match conversion::to_string(ctx, replace_arg) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    let input_len = ctx.string_len(s) as i32;
+    let search_len = ctx.string_len(search) as i32;
+
+    let mut result = Vec::new();
+    let mut end_of_last_match = 0i32;
+    let mut is_first = true;
+
+    loop {
+        let pos = if search_len == 0 {
+            if is_first {
+                0
+            } else if end_of_last_match >= input_len {
+                -1
+            } else {
+                end_of_last_match + 1
+            }
+        } else {
+            string_index_of(ctx, s, search, end_of_last_match, input_len, search_len, false)
+        };
+
+        if pos < 0 {
+            if is_first {
+                // No match found, return original string
+                return s;
+            }
+            break;
+        }
+
+        // Append substring before match
+        for i in end_of_last_match..pos {
+            let c = ctx.string_getc(s, i as u32) as u32;
+            let mut buf = [0u8; 4];
+            let len = crate::cutils::unicode_to_utf8(&mut buf, c);
+            result.extend_from_slice(&buf[..len]);
+        }
+
+        // Process replacement string
+        append_replacement(ctx, &mut result, s, search, replace, pos, pos + search_len);
+
+        end_of_last_match = pos + search_len;
+        is_first = false;
+
+        if !is_replace_all {
+            break;
+        }
+    }
+
+    // Append tail
+    for i in end_of_last_match..input_len {
+        let c = ctx.string_getc(s, i as u32) as u32;
+        let mut buf = [0u8; 4];
+        let len = crate::cutils::unicode_to_utf8(&mut buf, c);
+        result.extend_from_slice(&buf[..len]);
+    }
+
+    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+}
+
+fn append_replacement(
+    ctx: &mut JSContext,
+    result: &mut Vec<u8>,
+    input: JSValue,
+    _search: JSValue,
+    replace: JSValue,
+    match_start: i32,
+    match_end: i32,
+) {
+    let replace_len = ctx.string_len(replace) as i32;
+    let input_len = ctx.string_len(input) as i32;
+    let mut i = 0;
+
+    while i < replace_len {
+        let c = ctx.string_getc(replace, i as u32);
+        i += 1;
+
+        if c != b'$' as i32 {
+            let mut buf = [0u8; 4];
+            let len = crate::cutils::unicode_to_utf8(&mut buf, c as u32);
+            result.extend_from_slice(&buf[..len]);
+            continue;
+        }
+
+        if i >= replace_len {
+            result.push(b'$');
+            continue;
+        }
+
+        let c2 = ctx.string_getc(replace, i as u32);
+        match c2 as u8 {
+            b'$' => {
+                result.push(b'$');
+                i += 1;
+            }
+            b'&' => {
+                // Append the matched substring
+                for j in match_start..match_end {
+                    let ch = ctx.string_getc(input, j as u32) as u32;
+                    let mut buf = [0u8; 4];
+                    let len = crate::cutils::unicode_to_utf8(&mut buf, ch);
+                    result.extend_from_slice(&buf[..len]);
+                }
+                i += 1;
+            }
+            b'`' => {
+                // Append substring before match
+                for j in 0..match_start {
+                    let ch = ctx.string_getc(input, j as u32) as u32;
+                    let mut buf = [0u8; 4];
+                    let len = crate::cutils::unicode_to_utf8(&mut buf, ch);
+                    result.extend_from_slice(&buf[..len]);
+                }
+                i += 1;
+            }
+            b'\'' => {
+                // Append substring after match
+                for j in match_end..input_len {
+                    let ch = ctx.string_getc(input, j as u32) as u32;
+                    let mut buf = [0u8; 4];
+                    let len = crate::cutils::unicode_to_utf8(&mut buf, ch);
+                    result.extend_from_slice(&buf[..len]);
+                }
+                i += 1;
+            }
+            _ => {
+                // Unrecognized, keep the $
+                result.push(b'$');
+            }
+        }
+    }
+}
+
 // Helper to convert this_val to string, handling objects
 fn to_string_check_object(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, ()> {
     if conversion::is_string(val) {
@@ -1993,7 +2259,7 @@ pub fn js_array_slice(
     };
 
     let end = end.min(len);
-    let slice_len = if end > start { end - start } else { 0 };
+    let slice_len = end.saturating_sub(start);
 
     let result = match ctx.alloc_array(slice_len as usize) {
         Ok(a) => a,
@@ -2007,6 +2273,364 @@ pub fn js_array_slice(
     }
 
     result
+}
+
+pub fn js_array_splice(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let (_, len) = match get_array_info(this_val) {
+        Some(info) => info,
+        None => return JS_EXCEPTION,
+    };
+
+    let len_i32 = len as i32;
+    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JS_UNDEFINED), len_i32) {
+        Ok(n) => n as u32,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    let (del_count, item_count) = if args.is_empty() {
+        (0u32, 0usize)
+    } else if args.len() == 1 {
+        ((len - start), 0usize)
+    } else {
+        let del = match to_int32_clamp(ctx, args[1], 0, (len - start) as i32) {
+            Ok(n) => n as u32,
+            Err(_) => return JS_EXCEPTION,
+        };
+        (del, args.len().saturating_sub(2))
+    };
+
+    let new_len = (len as usize + item_count).saturating_sub(del_count as usize);
+
+    // Create result array with deleted elements
+    let result = match ctx.alloc_array(del_count as usize) {
+        Ok(a) => a,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    // Copy deleted elements to result
+    for i in 0..del_count {
+        let val = crate::property::get_property(ctx, this_val, new_short_int((start + i) as i32))
+            .unwrap_or(JS_UNDEFINED);
+        let _ = crate::property::set_property(ctx, result, new_short_int(i as i32), val);
+    }
+
+    // Shift elements if needed
+    if item_count != del_count as usize {
+        if del_count as usize > item_count {
+            // Shift left
+            let shift = del_count as usize - item_count;
+            for i in (start + del_count) as usize..len as usize {
+                let val = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
+                    .unwrap_or(JS_UNDEFINED);
+                let _ = crate::property::set_property(
+                    ctx,
+                    this_val,
+                    new_short_int((i - shift) as i32),
+                    val,
+                );
+            }
+        } else {
+            // Shift right
+            let shift = item_count - del_count as usize;
+            for i in ((start + del_count) as usize..len as usize).rev() {
+                let val = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
+                    .unwrap_or(JS_UNDEFINED);
+                let _ = crate::property::set_property(
+                    ctx,
+                    this_val,
+                    new_short_int((i + shift) as i32),
+                    val,
+                );
+            }
+        }
+    }
+
+    // Insert new elements
+    for (i, arg) in args.iter().skip(2).enumerate() {
+        let _ = crate::property::set_property(
+            ctx,
+            this_val,
+            new_short_int((start as usize + i) as i32),
+            *arg,
+        );
+    }
+
+    // Update array length
+    if ctx.array_set_length(this_val, new_len as u32).is_err() {
+        return JS_EXCEPTION;
+    }
+
+    result
+}
+
+// Magic values for array iterator methods
+const JS_SPECIAL_EVERY: i32 = 0;
+const JS_SPECIAL_SOME: i32 = 1;
+const JS_SPECIAL_FOR_EACH: i32 = 2;
+const JS_SPECIAL_MAP: i32 = 3;
+const JS_SPECIAL_FILTER: i32 = 4;
+
+pub fn js_array_every(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+    magic: i32,
+) -> JSValue {
+    let (_, len) = match get_array_info(this_val) {
+        Some(info) => info,
+        None => return JS_EXCEPTION,
+    };
+
+    let func = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let this_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+
+    if !conversion::is_function(func) {
+        return JS_EXCEPTION; // TypeError: not a function
+    }
+
+    // Initialize return value based on magic
+    let ret = match magic {
+        JS_SPECIAL_EVERY => new_bool(1),
+        JS_SPECIAL_SOME => new_bool(0),
+        JS_SPECIAL_MAP => match ctx.alloc_array(len as usize) {
+            Ok(a) => a,
+            Err(_) => return JS_EXCEPTION,
+        },
+        JS_SPECIAL_FILTER => match ctx.alloc_array(0) {
+            Ok(a) => a,
+            Err(_) => return JS_EXCEPTION,
+        },
+        _ => JS_UNDEFINED, // forEach
+    };
+
+    let mut n = 0u32; // for filter
+
+    for k in 0..len {
+        // Get current element
+        let val = match crate::property::get_property(ctx, this_val, new_short_int(k as i32)) {
+            Ok(v) => v,
+            Err(_) => JS_UNDEFINED,
+        };
+
+        // Call callback: func(val, k, this_val)
+        let call_args = [val, new_short_int(k as i32), this_val];
+        let res = match crate::interpreter::call_with_this(ctx, func, this_arg, &call_args) {
+            Ok(r) => r,
+            Err(_) => return JS_EXCEPTION,
+        };
+
+        // Process result based on magic
+        match magic {
+            JS_SPECIAL_EVERY => {
+                if !to_bool(res) {
+                    return new_bool(0);
+                }
+            }
+            JS_SPECIAL_SOME => {
+                if to_bool(res) {
+                    return new_bool(1);
+                }
+            }
+            JS_SPECIAL_MAP => {
+                let _ = crate::property::set_property(ctx, ret, new_short_int(k as i32), res);
+            }
+            JS_SPECIAL_FILTER => {
+                if to_bool(res) {
+                    let _ = crate::property::set_property(ctx, ret, new_short_int(n as i32), val);
+                    n += 1;
+                    // Update array length for filter
+                    let _ = ctx.array_set_length(ret, n);
+                }
+            }
+            _ => {} // forEach: do nothing with result
+        }
+    }
+
+    ret
+}
+
+// Magic values for reduce methods
+const JS_SPECIAL_REDUCE: i32 = 0;
+const JS_SPECIAL_REDUCE_RIGHT: i32 = 1;
+
+pub fn js_array_reduce(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+    magic: i32,
+) -> JSValue {
+    let (_, len) = match get_array_info(this_val) {
+        Some(info) => info,
+        None => return JS_EXCEPTION,
+    };
+
+    let func = args.first().copied().unwrap_or(JS_UNDEFINED);
+
+    if !conversion::is_function(func) {
+        return JS_EXCEPTION; // TypeError: not a function
+    }
+
+    if len == 0 && args.len() <= 1 {
+        return JS_EXCEPTION; // TypeError: empty array with no initial value
+    }
+
+    let is_right = magic == JS_SPECIAL_REDUCE_RIGHT;
+
+    let (mut acc, start_k) = if args.len() > 1 {
+        (args[1], 0u32)
+    } else {
+        let first_idx = if is_right { len - 1 } else { 0 };
+        let val = crate::property::get_property(ctx, this_val, new_short_int(first_idx as i32))
+            .unwrap_or(JS_UNDEFINED);
+        (val, 1)
+    };
+
+    for k in start_k..len {
+        let idx = if is_right {
+            len - k - 1
+        } else {
+            k
+        };
+
+        let val = match crate::property::get_property(ctx, this_val, new_short_int(idx as i32)) {
+            Ok(v) => v,
+            Err(_) => JS_UNDEFINED,
+        };
+
+        // Call callback: func(acc, val, idx, this_val)
+        let call_args = [acc, val, new_short_int(idx as i32), this_val];
+        acc = match crate::interpreter::call_with_this(ctx, func, JS_UNDEFINED, &call_args) {
+            Ok(r) => r,
+            Err(_) => return JS_EXCEPTION,
+        };
+    }
+
+    acc
+}
+
+pub fn js_array_sort(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let (_, len) = match get_array_info(this_val) {
+        Some(info) => info,
+        None => return JS_EXCEPTION,
+    };
+
+    if len <= 1 {
+        return this_val;
+    }
+
+    let compare_fn = args.first().copied().filter(|v| conversion::is_function(*v));
+
+    // Build array of (value, original_index) pairs for stable sort
+    let mut pairs: Vec<(JSValue, u32)> = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let val = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
+            .unwrap_or(JS_UNDEFINED);
+        pairs.push((val, i));
+    }
+
+    // Sort using a simple stable sort
+    // Note: For production, this should use heapsort like C version for stability guarantees
+    let mut exception = false;
+    pairs.sort_by(|a, b| {
+        if exception {
+            return core::cmp::Ordering::Equal;
+        }
+
+        let cmp: i32 = if let Some(func) = compare_fn {
+            // Call custom comparator
+            let call_args = [a.0, b.0];
+            match crate::interpreter::call_with_this(ctx, func, JS_UNDEFINED, &call_args) {
+                Ok(res) => {
+                    let d = to_number(res);
+                    if d.is_nan() {
+                        0
+                    } else if d > 0.0 {
+                        1
+                    } else if d < 0.0 {
+                        -1
+                    } else {
+                        0
+                    }
+                }
+                Err(_) => {
+                    exception = true;
+                    0
+                }
+            }
+        } else {
+            // Default: convert to string and compare
+            let str_a = match conversion::to_string(ctx, a.0) {
+                Ok(s) => s,
+                Err(_) => {
+                    exception = true;
+                    return core::cmp::Ordering::Equal;
+                }
+            };
+            let str_b = match conversion::to_string(ctx, b.0) {
+                Ok(s) => s,
+                Err(_) => {
+                    exception = true;
+                    return core::cmp::Ordering::Equal;
+                }
+            };
+
+            let mut scratch_a = [0u8; 5];
+            let mut scratch_b = [0u8; 5];
+            let view_a = string_view(str_a, &mut scratch_a);
+            let view_b = string_view(str_b, &mut scratch_b);
+
+            match (view_a, view_b) {
+                (Some(va), Some(vb)) => match va.bytes().cmp(vb.bytes()) {
+                    core::cmp::Ordering::Less => -1,
+                    core::cmp::Ordering::Equal => 0,
+                    core::cmp::Ordering::Greater => 1,
+                },
+                _ => 0,
+            }
+        };
+
+        // Make stable by comparing original indices if values are equal
+        if cmp == 0 {
+            a.1.cmp(&b.1)
+        } else if cmp < 0 {
+            core::cmp::Ordering::Less
+        } else {
+            core::cmp::Ordering::Greater
+        }
+    });
+
+    if exception {
+        return JS_EXCEPTION;
+    }
+
+    // Write sorted values back
+    for (i, (val, _)) in pairs.iter().enumerate() {
+        let _ = crate::property::set_property(ctx, this_val, new_short_int(i as i32), *val);
+    }
+
+    this_val
+}
+
+fn to_bool(val: JSValue) -> bool {
+    if is_int(val) {
+        return value_get_int(val) != 0;
+    }
+    if is_bool(val) {
+        return value_get_special_value(val) != 0;
+    }
+    if is_undefined(val) || is_null(val) {
+        return false;
+    }
+    // Objects/strings/numbers are truthy (simplified)
+    true
 }
 
 // Helper functions for array operations
@@ -2139,6 +2763,317 @@ pub fn js_error_get_message(
     } else {
         ctx.get_error_stack(this_val).unwrap_or(JS_NULL)
     }
+}
+
+// ---------------------------------------------------------------------------
+// JSON builtins
+// ---------------------------------------------------------------------------
+
+pub fn js_json_parse(
+    ctx: &mut JSContext,
+    _this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let input = args.first().copied().unwrap_or(JS_UNDEFINED);
+
+    // Convert to string
+    let str_val = match conversion::to_string(ctx, input) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    // Get string bytes
+    let mut scratch = [0u8; 5];
+    let Some(view) = string_view(str_val, &mut scratch) else {
+        return JS_EXCEPTION;
+    };
+
+    // Use the API's JSON evaluation
+    crate::api::js_eval(ctx, view.bytes(), crate::capi_defs::JS_EVAL_JSON)
+}
+
+pub fn js_json_stringify(
+    ctx: &mut JSContext,
+    _this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
+    // TODO: handle replacer (args[1]) and space (args[2]) arguments
+    let mut result = Vec::new();
+    let mut visited = Vec::new();
+
+    if stringify_value(ctx, val, &mut result, &mut visited).is_err() {
+        return JS_EXCEPTION;
+    }
+
+    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+}
+
+fn stringify_value(
+    ctx: &mut JSContext,
+    val: JSValue,
+    result: &mut Vec<u8>,
+    visited: &mut Vec<JSValue>,
+) -> Result<(), ()> {
+    // Handle primitives
+    if is_null(val) {
+        result.extend_from_slice(b"null");
+        return Ok(());
+    }
+
+    if is_undefined(val) {
+        // undefined converts to "null" in array context, skipped in object context
+        // For top-level, we output undefined (but JSON.stringify returns undefined, not "undefined")
+        result.extend_from_slice(b"null");
+        return Ok(());
+    }
+
+    if is_bool(val) {
+        if value_get_special_value(val) != 0 {
+            result.extend_from_slice(b"true");
+        } else {
+            result.extend_from_slice(b"false");
+        }
+        return Ok(());
+    }
+
+    if is_int(val) {
+        let n = value_get_int(val);
+        let s = format!("{}", n);
+        result.extend_from_slice(s.as_bytes());
+        return Ok(());
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    if is_short_float(val) {
+        let d = short_float_to_f64(val);
+        return stringify_number(d, result);
+    }
+
+    if conversion::is_string(val) {
+        return stringify_string(ctx, val, result);
+    }
+
+    if is_ptr(val) {
+        // Check for Float64
+        if let Some(d) = read_float64(val) {
+            return stringify_number(d, result);
+        }
+
+        // Check for string (already handled above via is_string, but double check)
+        let mut scratch = [0u8; 5];
+        if let Some(view) = string_view(val, &mut scratch) {
+            result.push(b'"');
+            for &byte in view.bytes() {
+                match byte {
+                    b'"' => result.extend_from_slice(b"\\\""),
+                    b'\\' => result.extend_from_slice(b"\\\\"),
+                    b'\n' => result.extend_from_slice(b"\\n"),
+                    b'\r' => result.extend_from_slice(b"\\r"),
+                    b'\t' => result.extend_from_slice(b"\\t"),
+                    0x08 => result.extend_from_slice(b"\\b"),
+                    0x0C => result.extend_from_slice(b"\\f"),
+                    c if c < 0x20 => {
+                        result.extend_from_slice(b"\\u00");
+                        result.push(b"0123456789abcdef"[(c >> 4) as usize]);
+                        result.push(b"0123456789abcdef"[(c & 0xf) as usize]);
+                    }
+                    c => result.push(c),
+                }
+            }
+            result.push(b'"');
+            return Ok(());
+        }
+
+        // Check for function - functions return undefined
+        if conversion::is_function(val) {
+            result.extend_from_slice(b"null");
+            return Ok(());
+        }
+
+        // Check for circular reference
+        for &v in visited.iter() {
+            if crate::jsvalue::raw_bits(v) == crate::jsvalue::raw_bits(val) {
+                return Err(()); // Circular reference
+            }
+        }
+        visited.push(val);
+
+        // Handle Array
+        if let Some((_, len)) = get_array_info(val) {
+            result.push(b'[');
+            for i in 0..len {
+                if i > 0 {
+                    result.push(b',');
+                }
+                let elem = crate::property::get_property(ctx, val, new_short_int(i as i32))
+                    .unwrap_or(JS_UNDEFINED);
+                if is_undefined(elem) || conversion::is_function(elem) {
+                    result.extend_from_slice(b"null");
+                } else {
+                    stringify_value(ctx, elem, result, visited)?;
+                }
+            }
+            result.push(b']');
+            visited.pop();
+            return Ok(());
+        }
+
+        // Handle Object
+        if conversion::is_object(val) {
+            result.push(b'{');
+            let keys = match object_keys(ctx, val) {
+                Ok(k) => k,
+                Err(_) => return Err(()),
+            };
+
+            let (_, key_count) = get_array_info(keys).unwrap_or((JS_NULL, 0));
+            let mut first = true;
+
+            for i in 0..key_count {
+                let key = crate::property::get_property(ctx, keys, new_short_int(i as i32))
+                    .unwrap_or(JS_UNDEFINED);
+                let prop_key = match conversion::to_property_key(ctx, key) {
+                    Ok(k) => k,
+                    Err(_) => continue,
+                };
+                let prop_val = match crate::property::get_property(ctx, val, prop_key) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                // Skip undefined and function values
+                if is_undefined(prop_val) || conversion::is_function(prop_val) {
+                    continue;
+                }
+
+                if !first {
+                    result.push(b',');
+                }
+                first = false;
+
+                // Stringify the key
+                stringify_string(ctx, key, result)?;
+                result.push(b':');
+
+                // Stringify the value
+                stringify_value(ctx, prop_val, result, visited)?;
+            }
+
+            result.push(b'}');
+            visited.pop();
+            return Ok(());
+        }
+    }
+
+    // Default: null
+    result.extend_from_slice(b"null");
+    Ok(())
+}
+
+fn stringify_number(d: f64, result: &mut Vec<u8>) -> Result<(), ()> {
+    if !d.is_finite() {
+        result.extend_from_slice(b"null");
+    } else {
+        let s = match crate::dtoa::js_dtoa(d, 10, 0, crate::dtoa::JS_DTOA_FORMAT_FREE) {
+            Ok(s) => s,
+            Err(_) => return Err(()),
+        };
+        result.extend_from_slice(s.as_bytes());
+    }
+    Ok(())
+}
+
+fn stringify_string(ctx: &mut JSContext, val: JSValue, result: &mut Vec<u8>) -> Result<(), ()> {
+    result.push(b'"');
+    let len = ctx.string_len(val);
+    for i in 0..len {
+        let c = ctx.string_getc(val, i) as u32;
+        match c {
+            0x22 => result.extend_from_slice(b"\\\""), // "
+            0x5C => result.extend_from_slice(b"\\\\"), // \
+            0x0A => result.extend_from_slice(b"\\n"),  // newline
+            0x0D => result.extend_from_slice(b"\\r"),  // carriage return
+            0x09 => result.extend_from_slice(b"\\t"),  // tab
+            0x08 => result.extend_from_slice(b"\\b"),  // backspace
+            0x0C => result.extend_from_slice(b"\\f"),  // form feed
+            c if c < 0x20 => {
+                // Other control characters
+                result.extend_from_slice(b"\\u00");
+                result.push(b"0123456789abcdef"[(c >> 4) as usize]);
+                result.push(b"0123456789abcdef"[(c & 0xf) as usize]);
+            }
+            c => {
+                let mut buf = [0u8; 4];
+                let n = crate::cutils::unicode_to_utf8(&mut buf, c);
+                result.extend_from_slice(&buf[..n]);
+            }
+        }
+    }
+    result.push(b'"');
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// TypedArray / ArrayBuffer builtins (stubs - full implementation pending)
+// ---------------------------------------------------------------------------
+
+// TODO: Full TypedArray/ArrayBuffer implementation requires:
+// - ArrayBuffer allocation with byte storage
+// - TypedArray views with proper element type handling
+// - Element get/set with type coercion
+// These are stubbed for now and will return JS_EXCEPTION
+
+pub fn js_array_buffer_constructor(
+    _ctx: &mut JSContext,
+    _this_val: JSValue,
+    _args: &[JSValue],
+) -> JSValue {
+    // TODO: Implement ArrayBuffer allocation
+    JS_EXCEPTION
+}
+
+pub fn js_array_buffer_get_byteLength(
+    _ctx: &mut JSContext,
+    _this_val: JSValue,
+    _args: &[JSValue],
+) -> JSValue {
+    JS_EXCEPTION
+}
+
+pub fn js_typed_array_base_constructor(
+    _ctx: &mut JSContext,
+    _this_val: JSValue,
+    _args: &[JSValue],
+) -> JSValue {
+    JS_EXCEPTION
+}
+
+pub fn js_typed_array_constructor(
+    _ctx: &mut JSContext,
+    _this_val: JSValue,
+    _args: &[JSValue],
+    _magic: i32,
+) -> JSValue {
+    // TODO: Implement TypedArray allocation
+    JS_EXCEPTION
+}
+
+pub fn js_typed_array_get_length(
+    _ctx: &mut JSContext,
+    _this_val: JSValue,
+    _args: &[JSValue],
+    _magic: i32,
+) -> JSValue {
+    JS_EXCEPTION
+}
+
+pub fn js_typed_array_subarray(
+    _ctx: &mut JSContext,
+    _this_val: JSValue,
+    _args: &[JSValue],
+) -> JSValue {
+    JS_EXCEPTION
 }
 
 fn is_error(val: JSValue) -> bool {

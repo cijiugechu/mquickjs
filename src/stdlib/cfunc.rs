@@ -122,6 +122,7 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_string_slice" => BuiltinCFunction::Generic(builtins::js_string_slice),
             "js_string_substring" => BuiltinCFunction::Generic(builtins::js_string_substring),
             "js_string_concat" => BuiltinCFunction::Generic(builtins::js_string_concat),
+            "js_string_split" => BuiltinCFunction::Generic(builtins::js_string_split),
             // Array
             "js_array_get_length" => BuiltinCFunction::Generic(builtins::js_array_get_length),
             "js_array_set_length" => BuiltinCFunction::Generic(builtins::js_array_set_length),
@@ -133,8 +134,26 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_array_reverse" => BuiltinCFunction::Generic(builtins::js_array_reverse),
             "js_array_concat" => BuiltinCFunction::Generic(builtins::js_array_concat),
             "js_array_slice" => BuiltinCFunction::Generic(builtins::js_array_slice),
+            "js_array_splice" => BuiltinCFunction::Generic(builtins::js_array_splice),
+            "js_array_sort" => BuiltinCFunction::Generic(builtins::js_array_sort),
             // Error
             "js_error_toString" => BuiltinCFunction::Generic(builtins::js_error_toString),
+            // JSON
+            "js_json_parse" => BuiltinCFunction::Generic(builtins::js_json_parse),
+            "js_json_stringify" => BuiltinCFunction::Generic(builtins::js_json_stringify),
+            // ArrayBuffer / TypedArray
+            "js_array_buffer_constructor" => {
+                BuiltinCFunction::Generic(builtins::js_array_buffer_constructor)
+            }
+            "js_array_buffer_get_byteLength" => {
+                BuiltinCFunction::Generic(builtins::js_array_buffer_get_byteLength)
+            }
+            "js_typed_array_base_constructor" => {
+                BuiltinCFunction::Generic(builtins::js_typed_array_base_constructor)
+            }
+            "js_typed_array_subarray" => {
+                BuiltinCFunction::Generic(builtins::js_typed_array_subarray)
+            }
             _ => BuiltinCFunction::Missing(proto),
         },
         BuiltinProto::GenericMagic => match func_name {
@@ -153,9 +172,16 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_string_fromCharCode" => {
                 BuiltinCFunction::GenericMagic(builtins::js_string_fromCharCode)
             }
+            "js_string_replace" => BuiltinCFunction::GenericMagic(builtins::js_string_replace),
             // Array
             "js_array_push" => BuiltinCFunction::GenericMagic(builtins::js_array_push),
             "js_array_indexOf" => BuiltinCFunction::GenericMagic(builtins::js_array_indexOf),
+            "js_array_every" => BuiltinCFunction::GenericMagic(builtins::js_array_every),
+            "js_array_reduce" => BuiltinCFunction::GenericMagic(builtins::js_array_reduce),
+            // TypedArray
+            "js_typed_array_get_length" => {
+                BuiltinCFunction::GenericMagic(builtins::js_typed_array_get_length)
+            }
             // Error
             "js_error_get_message" => {
                 BuiltinCFunction::GenericMagic(builtins::js_error_get_message)
@@ -177,6 +203,9 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
         BuiltinProto::ConstructorMagic => match func_name {
             "js_error_constructor" => {
                 BuiltinCFunction::ConstructorMagic(builtins::js_error_constructor)
+            }
+            "js_typed_array_constructor" => {
+                BuiltinCFunction::ConstructorMagic(builtins::js_typed_array_constructor)
             }
             _ => BuiltinCFunction::Missing(proto),
         },

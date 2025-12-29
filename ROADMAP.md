@@ -33,11 +33,20 @@
 5. **Iteration and RegExp** (done)
    - Implemented `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`.
    - Implemented `OP_regexp` and connected RegExp exec runtime with tests.
-6. **Builtins and public API** (in progress)
+6. **Builtins and public API** (mostly complete)
    - Port missing builtin families in priority order: Object/Function/String/Array, then Error/RegExp/JSON, then TypedArray/ArrayBuffer.
    - [x] Added public API module (`src/api.rs`) with `js_eval`, `js_parse`, `js_call`, `js_run` entry points.
    - [x] API routes JSON evaluation, RegExp compilation, and JavaScript program execution through the parser and interpreter.
-   - [ ] Start running `mquickjs-c/tests/*.js` as integration tests once bytecode evaluation is stable.
+   - [x] Added Object builtins: constructor, hasOwnProperty, toString, defineProperty, getPrototypeOf, setPrototypeOf, create, keys.
+   - [x] Added Function builtins: constructor, call, apply, bind, toString, get_prototype, set_prototype, get_length_name.
+   - [x] Added String builtins: constructor, length, slice, substring, charAt, charCodeAt, codePointAt, fromCharCode, fromCodePoint, concat, indexOf, lastIndexOf, toLowerCase, toUpperCase, trim, trimStart, trimEnd, split, replace, replaceAll.
+   - [x] Added Array builtins: constructor, length, push, pop, shift, unshift, join, toString, isArray, reverse, concat, indexOf, lastIndexOf, slice, splice, every, some, forEach, map, filter, reduce, reduceRight, sort.
+   - [x] Added JSON builtins: parse, stringify.
+   - [x] Added Error builtins: constructor, toString, get_message.
+   - [x] Added TypedArray/ArrayBuffer stubs (full implementation pending).
+   - [x] Created integration test framework in `tests/integration_tests.rs`.
+   - [ ] Full TypedArray/ArrayBuffer implementation with proper byte storage and element type handling.
+   - [ ] Run complete `mquickjs-c/tests/*.js` test suite once bytecode evaluation is stable.
 
 ## References
 - `mquickjs-c/mquickjs.c` (opcode dispatch and runtime logic)
