@@ -198,6 +198,12 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
                 BuiltinCFunction::Constructor(builtins::js_string_constructor)
             }
             "js_array_constructor" => BuiltinCFunction::Constructor(builtins::js_array_constructor),
+            "js_array_buffer_constructor" => {
+                BuiltinCFunction::Constructor(builtins::js_array_buffer_constructor)
+            }
+            "js_typed_array_base_constructor" => {
+                BuiltinCFunction::Constructor(builtins::js_typed_array_base_constructor)
+            }
             _ => BuiltinCFunction::Missing(proto),
         },
         BuiltinProto::ConstructorMagic => match func_name {

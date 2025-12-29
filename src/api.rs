@@ -65,8 +65,10 @@ fn js_eval_internal(
             ParseOutput::RegExp(bytecode) => {
                 ParsedResult::RegExp(bytecode, source.to_vec())
             }
-            ParseOutput::Program(parser) => {
-                let func_bytecode = parser.take_func_bytecode();
+            ParseOutput::Program(mut parser) => {
+                let func_bytecode = parser
+                    .materialize_bytecode()
+                    .map_err(|err| ApiError::Runtime(err.message().into_owned()))?;
                 ParsedResult::Bytecode(func_bytecode)
             }
         }
@@ -127,8 +129,10 @@ fn js_parse_internal(
             ParseOutput::RegExp(bytecode) => {
                 ParsedResult::RegExp(bytecode, source.to_vec())
             }
-            ParseOutput::Program(parser) => {
-                let func_bytecode = parser.take_func_bytecode();
+            ParseOutput::Program(mut parser) => {
+                let func_bytecode = parser
+                    .materialize_bytecode()
+                    .map_err(|err| ApiError::Runtime(err.message().into_owned()))?;
                 ParsedResult::Bytecode(func_bytecode)
             }
         }
@@ -151,9 +155,9 @@ fn js_parse_internal(
             if func_bytecode == JS_NULL {
                 return Err(ApiError::NotABytecode);
             }
-            // Return the closure without executing
-            ctx.alloc_closure(func_bytecode, 0)
-                .map_err(|_| ApiError::Runtime("failed to create closure".to_string()))
+            // Return the closure without executing (resolves external vars)
+            create_closure(ctx, func_bytecode, None)
+                .map_err(|e| ApiError::Runtime(format!("{:?}", e)))
         }
     }
 }

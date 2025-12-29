@@ -1,6 +1,8 @@
 use crate::array_buffer::ArrayBuffer;
 use crate::array_data::ArrayData;
-use crate::containers::{StringHeader, ValueArrayHeader, VarRefHeader, JS_VALUE_ARRAY_SIZE_MAX};
+use crate::containers::{
+    ByteArrayHeader, StringHeader, ValueArrayHeader, VarRefHeader, JS_VALUE_ARRAY_SIZE_MAX,
+};
 use crate::context::JSContext;
 use crate::conversion;
 use crate::enums::{JSObjectClass, JSPropType};
@@ -395,6 +397,32 @@ fn get_byte_array_ptr(byte_buffer: JSValue) -> Option<NonNull<u8>> {
     // Payload starts after the header
     let data_ptr = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) };
     NonNull::new(data_ptr)
+}
+
+fn get_byte_array_size(byte_buffer: JSValue) -> Option<u32> {
+    let ptr = value_to_ptr::<u8>(byte_buffer)?;
+    let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
+    let header = MbHeader::from_word(header_word);
+    if header.tag() != MTag::ByteArray {
+        return None;
+    }
+    Some(ByteArrayHeader::from(header).size() as u32)
+}
+
+fn prop_is_bytes(prop: JSValue, bytes: &[u8]) -> bool {
+    let mut scratch = [0u8; 5];
+    let Some(view) = string_view(prop, &mut scratch) else {
+        return false;
+    };
+    view.bytes() == bytes
+}
+
+fn number_from_u64(ctx: &mut JSContext, value: u64) -> Result<JSValue, PropertyError> {
+    if value <= i32::MAX as u64 {
+        return Ok(new_short_int(value as i32));
+    }
+    ctx.new_float64(value as f64)
+        .map_err(|_| PropertyError::OutOfMemory)
 }
 
 // Read element from TypedArray with context (for float allocation)
@@ -1213,15 +1241,41 @@ pub fn get_property(
             } else if is_numeric_property(prop) {
                 return Ok(JS_UNDEFINED);
             }
-        } else if (JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8).contains(&class_id) {
-            if let Some(idx) = prop_index_from_value(prop) {
-                let ta = unsafe {
-                    // SAFETY: typed_array_ptr returns a valid TypedArray pointer.
-                    ptr::read_unaligned(typed_array_ptr(obj_ptr))
+        } else if class_id == JSObjectClass::ArrayBuffer as u8 {
+            if prop_is_bytes(prop, b"byteLength") {
+                let ab = unsafe {
+                    // SAFETY: array_buffer_ptr returns a valid ArrayBuffer pointer.
+                    ptr::read_unaligned(array_buffer_ptr(obj_ptr))
                 };
+                let size = get_byte_array_size(ab.byte_buffer())
+                    .ok_or(PropertyError::InvalidValueArray)?;
+                return number_from_u64(ctx, size as u64);
+            }
+        } else if (JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8).contains(&class_id) {
+            let ta = unsafe {
+                // SAFETY: typed_array_ptr returns a valid TypedArray pointer.
+                ptr::read_unaligned(typed_array_ptr(obj_ptr))
+            };
+            if let Some(idx) = prop_index_from_value(prop) {
                 return typed_array_get_element_ctx(ctx, ta, idx, class_id);
             } else if is_numeric_property(prop) {
                 return Ok(JS_UNDEFINED);
+            }
+            if prop_is_bytes(prop, b"length") {
+                return number_from_u64(ctx, ta.len() as u64);
+            }
+            let size_log2 =
+                TYPED_ARRAY_SIZE_LOG2[(class_id - JSObjectClass::Uint8CArray as u8) as usize];
+            if prop_is_bytes(prop, b"byteLength") {
+                let byte_len = (ta.len() as u64) << size_log2;
+                return number_from_u64(ctx, byte_len);
+            }
+            if prop_is_bytes(prop, b"byteOffset") {
+                let byte_off = (ta.offset() as u64) << size_log2;
+                return number_from_u64(ctx, byte_off);
+            }
+            if prop_is_bytes(prop, b"buffer") {
+                return Ok(ta.buffer());
             }
         }
         let list = PropertyList::from_value(object_props(obj_ptr))?;

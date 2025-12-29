@@ -1,5 +1,6 @@
 use core::marker::PhantomData;
-use core::ptr::NonNull;
+use core::mem::size_of;
+use core::ptr::{self, NonNull};
 
 use crate::context::JSContext;
 use crate::cutils::{get_u16, put_u16};
@@ -7,7 +8,7 @@ use crate::enums::JSVarRefKind;
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::jsvalue::{
     is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value, value_from_ptr,
-    value_to_ptr, JSValue, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT,
+    value_to_ptr, JSValue, JSWord, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT,
     JS_TAG_SPECIAL_BITS,
 };
 use crate::opcode::{
@@ -56,6 +57,13 @@ use crate::parser::vars::{
     get_ext_var_name, put_var, resolve_var_refs, ByteArray, VarAllocator, VarError, ValueArray,
 };
 use crate::string::runtime::string_view;
+
+fn map_func_value(map: &[(JSValue, JSValue)], value: JSValue) -> JSValue {
+    map.iter()
+        .find(|(old, _)| *old == value)
+        .map(|(_, new)| *new)
+        .unwrap_or(value)
+}
 
 const ERR_TOO_MANY_CONSTANTS: &str = "too many constants";
 const ERR_TOO_MANY_CALL_ARGUMENTS: &str = "too many call arguments";
@@ -376,6 +384,81 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         self.func.value()
     }
 
+    pub(crate) fn materialize_bytecode(&mut self) -> Result<JSValue, ParserError> {
+        let mut func_values = Vec::with_capacity(1 + self.nested_funcs.len());
+        func_values.push(self.func.value());
+        for func in &self.nested_funcs {
+            func_values.push(func.value());
+        }
+
+        let mut func_map = Vec::with_capacity(func_values.len());
+        for func_val in &func_values {
+            let (header, func_name, stack_size, ext_vars_len, filename, source_pos) = {
+                let func = self.function_ref(*func_val)?;
+                (
+                    func.header(),
+                    func.func_name(),
+                    func.stack_size(),
+                    func.ext_vars_len(),
+                    func.filename(),
+                    func.source_pos(),
+                )
+            };
+            let fields = FunctionBytecodeFields {
+                func_name,
+                byte_code: JS_NULL,
+                cpool: JS_NULL,
+                vars: JS_NULL,
+                ext_vars: JS_NULL,
+                stack_size,
+                ext_vars_len,
+                filename,
+                pc2line: JS_NULL,
+                source_pos,
+            };
+            let new_val = self
+                .lexer
+                .ctx_mut()
+                .alloc_function_bytecode(header, fields)
+                .map_err(|_| ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0))?;
+            func_map.push((*func_val, new_val));
+        }
+
+        let mut array_map: Vec<(JSValue, JSValue)> = Vec::new();
+        for func_val in &func_values {
+            let (byte_code, pc2line, cpool, vars, ext_vars) = {
+                let func = self.function_ref(*func_val)?;
+                (
+                    func.byte_code(),
+                    func.pc2line(),
+                    func.cpool(),
+                    func.vars(),
+                    func.ext_vars(),
+                )
+            };
+            let new_val = map_func_value(&func_map, *func_val);
+            let mut func_ptr = value_to_ptr::<FunctionBytecode>(new_val).ok_or_else(|| {
+                ParserError::new(ParserErrorKind::Static(ERR_INVALID_FUNCTION_PTR), 0)
+            })?;
+            // SAFETY: new_val points at a live function bytecode allocation.
+            let new_func = unsafe { func_ptr.as_mut() };
+
+            let byte_code = self.materialize_value(byte_code, &func_map, &mut array_map)?;
+            let pc2line = self.materialize_value(pc2line, &func_map, &mut array_map)?;
+            let cpool = self.materialize_value(cpool, &func_map, &mut array_map)?;
+            let vars = self.materialize_value(vars, &func_map, &mut array_map)?;
+            let ext_vars = self.materialize_value(ext_vars, &func_map, &mut array_map)?;
+
+            new_func.set_byte_code(byte_code);
+            new_func.set_pc2line(pc2line);
+            new_func.set_cpool(cpool);
+            new_func.set_vars(vars);
+            new_func.set_ext_vars(ext_vars);
+        }
+
+        Ok(map_func_value(&func_map, self.func.value()))
+    }
+
     pub fn add_local_var(&mut self, name: &str) -> Result<JSValue, ParserError> {
         let value = self
             .lexer
@@ -464,6 +547,48 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         })?;
         // SAFETY: value points to a ByteArray allocated by VarAllocator.
         Ok(unsafe { ptr.as_mut() })
+    }
+
+    fn materialize_value(
+        &mut self,
+        value: JSValue,
+        func_map: &[(JSValue, JSValue)],
+        array_map: &mut Vec<(JSValue, JSValue)>,
+    ) -> Result<JSValue, ParserError> {
+        if let Some(mapped) = func_map.iter().find(|(old, _)| *old == value) {
+            return Ok(mapped.1);
+        }
+        if let Some(mapped) = array_map.iter().find(|(old, _)| *old == value) {
+            return Ok(mapped.1);
+        }
+        if let Some(array) = self.alloc.value_array_ref(value) {
+            let items: Vec<JSValue> = array.values().to_vec();
+            let ctx = self.lexer.ctx_mut();
+            let ptr = ctx
+                .alloc_value_array(items.len())
+                .map_err(|_| ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0))?;
+            let new_val = value_from_ptr(ptr);
+            array_map.push((value, new_val));
+            let base = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
+            for (idx, item) in items.iter().enumerate() {
+                let out = self.materialize_value(*item, func_map, array_map)?;
+                unsafe {
+                    // SAFETY: base points at a writable ValueArray slot.
+                    ptr::write_unaligned(base.add(idx), out);
+                }
+            }
+            return Ok(new_val);
+        }
+        if let Some(array) = self.alloc.byte_array_ref(value) {
+            let buf = array.buf().to_vec();
+            let ctx = self.lexer.ctx_mut();
+            let new_val = ctx
+                .alloc_byte_array(&buf)
+                .map_err(|_| ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0))?;
+            array_map.push((value, new_val));
+            return Ok(new_val);
+        }
+        Ok(value)
     }
 
     fn parse_expr2(&mut self, parse_flags: i32) -> Result<(), ParserError> {

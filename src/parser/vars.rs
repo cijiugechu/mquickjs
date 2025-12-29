@@ -236,6 +236,26 @@ impl VarAllocator {
         self.byte_arrays.push(ptr);
         value_from_ptr(ptr)
     }
+
+    pub fn value_array_ref(&self, val: JSValue) -> Option<&ValueArray> {
+        let ptr = value_to_ptr::<ValueArray>(val)?;
+        let stored = self
+            .value_arrays
+            .iter()
+            .find(|stored| stored.as_ptr() == ptr.as_ptr())?;
+        // SAFETY: stored is allocated by this allocator and still alive.
+        Some(unsafe { stored.as_ref() })
+    }
+
+    pub fn byte_array_ref(&self, val: JSValue) -> Option<&ByteArray> {
+        let ptr = value_to_ptr::<ByteArray>(val)?;
+        let stored = self
+            .byte_arrays
+            .iter()
+            .find(|stored| stored.as_ptr() == ptr.as_ptr())?;
+        // SAFETY: stored is allocated by this allocator and still alive.
+        Some(unsafe { stored.as_ref() })
+    }
 }
 
 impl Drop for VarAllocator {

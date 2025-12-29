@@ -7,7 +7,7 @@ use mquickjs::api::{
     js_eval, js_get_global_object, js_get_property_str, js_is_exception, js_is_number,
     js_is_object, js_is_string, js_to_number,
 };
-use mquickjs::capi_defs::JS_EVAL_JSON;
+use mquickjs::capi_defs::{JS_EVAL_JSON, JS_EVAL_RETVAL};
 use mquickjs::context::{ContextConfig, JSContext};
 use mquickjs::jsvalue::{is_bool, value_get_special_value, JS_EXCEPTION};
 use mquickjs::stdlib::MQUICKJS_STDLIB_IMAGE;
@@ -129,9 +129,12 @@ fn eval_js_number(ctx: &mut JSContext, code: &[u8]) -> f64 {
 #[test]
 fn test_typed_array_js_eval() {
     let mut ctx = new_context();
-    
     // Simple test: create a Uint8Array and check its length
-    let result = js_eval(&mut ctx, b"var a = new Uint8Array(4); a.length;", 0);
+    let result = js_eval(
+        &mut ctx,
+        b"var a = new Uint8Array(4); a.length;",
+        JS_EVAL_RETVAL,
+    );
     assert!(!js_is_exception(result), "TypedArray creation failed");
     assert!(js_is_number(result));
     assert_eq!(js_to_number(&mut ctx, result), 4.0);
@@ -142,7 +145,11 @@ fn test_typed_array_element_access_js() {
     let mut ctx = new_context();
     
     // Test element assignment and read
-    let result = js_eval(&mut ctx, b"var a = new Uint8Array(4); a[0] = 42; a[0];", 0);
+    let result = js_eval(
+        &mut ctx,
+        b"var a = new Uint8Array(4); a[0] = 42; a[0];",
+        JS_EVAL_RETVAL,
+    );
     assert!(!js_is_exception(result), "TypedArray element access failed");
     assert!(js_is_number(result));
     assert_eq!(js_to_number(&mut ctx, result), 42.0);
@@ -153,7 +160,11 @@ fn test_typed_array_int8_overflow_js() {
     let mut ctx = new_context();
     
     // Test Int8Array overflow behavior (255 wraps to -1)
-    let result = js_eval(&mut ctx, b"var a = new Int8Array(1); a[0] = 255; a[0];", 0);
+    let result = js_eval(
+        &mut ctx,
+        b"var a = new Int8Array(1); a[0] = 255; a[0];",
+        JS_EVAL_RETVAL,
+    );
     assert!(!js_is_exception(result), "Int8Array overflow test failed");
     assert!(js_is_number(result));
     assert_eq!(js_to_number(&mut ctx, result), -1.0);
@@ -164,7 +175,11 @@ fn test_array_buffer_js() {
     let mut ctx = new_context();
     
     // Test ArrayBuffer creation
-    let result = js_eval(&mut ctx, b"var buf = new ArrayBuffer(16); buf.byteLength;", 0);
+    let result = js_eval(
+        &mut ctx,
+        b"var buf = new ArrayBuffer(16); buf.byteLength;",
+        JS_EVAL_RETVAL,
+    );
     assert!(!js_is_exception(result), "ArrayBuffer creation failed");
     assert!(js_is_number(result));
     assert_eq!(js_to_number(&mut ctx, result), 16.0);
@@ -178,7 +193,7 @@ fn test_typed_array_from_array_buffer_js() {
     let result = js_eval(
         &mut ctx,
         b"var buf = new ArrayBuffer(16); var a = new Uint32Array(buf, 12, 1); a[0] = 42; a[0];",
-        0,
+        JS_EVAL_RETVAL,
     );
     assert!(!js_is_exception(result), "TypedArray from ArrayBuffer failed");
     assert!(js_is_number(result));
