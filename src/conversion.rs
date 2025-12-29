@@ -141,6 +141,10 @@ pub(crate) fn to_uint32(ctx: &mut JSContext, val: JSValue) -> Result<u32, Conver
     Ok(to_int32_internal(ctx, val, false)? as u32)
 }
 
+pub(crate) fn to_int32(ctx: &mut JSContext, val: JSValue) -> Result<i32, ConversionError> {
+    to_int32_internal(ctx, val, false)
+}
+
 pub(crate) fn to_string(ctx: &mut JSContext, mut val: JSValue) -> Result<JSValue, ConversionError> {
     loop {
         if is_int(val) {

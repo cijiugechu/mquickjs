@@ -69,6 +69,7 @@ pub fn build_c_function_table(
 fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunction {
     match proto {
         BuiltinProto::Generic => match func_name {
+            // Number
             "js_number_toString" => BuiltinCFunction::Generic(builtins::js_number_toString),
             "js_number_toFixed" => BuiltinCFunction::Generic(builtins::js_number_toFixed),
             "js_number_toExponential" => {
@@ -77,22 +78,110 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_number_toPrecision" => BuiltinCFunction::Generic(builtins::js_number_toPrecision),
             "js_number_parseInt" => BuiltinCFunction::Generic(builtins::js_number_parseInt),
             "js_number_parseFloat" => BuiltinCFunction::Generic(builtins::js_number_parseFloat),
+            // Math
             "js_math_imul" => BuiltinCFunction::Generic(builtins::js_math_imul),
             "js_math_clz32" => BuiltinCFunction::Generic(builtins::js_math_clz32),
             "js_math_atan2" => BuiltinCFunction::Generic(builtins::js_math_atan2),
             "js_math_pow" => BuiltinCFunction::Generic(builtins::js_math_pow),
             "js_math_random" => BuiltinCFunction::Generic(builtins::js_math_random),
+            // Date
             "js_date_now" => BuiltinCFunction::Generic(builtins::js_date_now),
+            // Global
             "js_global_isNaN" => BuiltinCFunction::Generic(builtins::js_global_isNaN),
             "js_global_isFinite" => BuiltinCFunction::Generic(builtins::js_global_isFinite),
+            // Object
+            "js_object_hasOwnProperty" => {
+                BuiltinCFunction::Generic(builtins::js_object_hasOwnProperty)
+            }
+            "js_object_toString" => BuiltinCFunction::Generic(builtins::js_object_toString),
+            "js_object_defineProperty" => {
+                BuiltinCFunction::Generic(builtins::js_object_defineProperty)
+            }
+            "js_object_getPrototypeOf" => {
+                BuiltinCFunction::Generic(builtins::js_object_getPrototypeOf)
+            }
+            "js_object_setPrototypeOf" => {
+                BuiltinCFunction::Generic(builtins::js_object_setPrototypeOf)
+            }
+            "js_object_create" => BuiltinCFunction::Generic(builtins::js_object_create),
+            "js_object_keys" => BuiltinCFunction::Generic(builtins::js_object_keys),
+            // Function
+            "js_function_call" => BuiltinCFunction::Generic(builtins::js_function_call),
+            "js_function_apply" => BuiltinCFunction::Generic(builtins::js_function_apply),
+            "js_function_bind" => BuiltinCFunction::Generic(builtins::js_function_bind),
+            "js_function_toString" => BuiltinCFunction::Generic(builtins::js_function_toString),
+            "js_function_get_prototype" => {
+                BuiltinCFunction::Generic(builtins::js_function_get_prototype)
+            }
+            "js_function_set_prototype" => {
+                BuiltinCFunction::Generic(builtins::js_function_set_prototype)
+            }
+            // String
+            "js_string_get_length" => BuiltinCFunction::Generic(builtins::js_string_get_length),
+            "js_string_set_length" => BuiltinCFunction::Generic(builtins::js_string_set_length),
+            "js_string_slice" => BuiltinCFunction::Generic(builtins::js_string_slice),
+            "js_string_substring" => BuiltinCFunction::Generic(builtins::js_string_substring),
+            "js_string_concat" => BuiltinCFunction::Generic(builtins::js_string_concat),
+            // Array
+            "js_array_get_length" => BuiltinCFunction::Generic(builtins::js_array_get_length),
+            "js_array_set_length" => BuiltinCFunction::Generic(builtins::js_array_set_length),
+            "js_array_pop" => BuiltinCFunction::Generic(builtins::js_array_pop),
+            "js_array_shift" => BuiltinCFunction::Generic(builtins::js_array_shift),
+            "js_array_join" => BuiltinCFunction::Generic(builtins::js_array_join),
+            "js_array_toString" => BuiltinCFunction::Generic(builtins::js_array_toString),
+            "js_array_isArray" => BuiltinCFunction::Generic(builtins::js_array_isArray),
+            "js_array_reverse" => BuiltinCFunction::Generic(builtins::js_array_reverse),
+            "js_array_concat" => BuiltinCFunction::Generic(builtins::js_array_concat),
+            "js_array_slice" => BuiltinCFunction::Generic(builtins::js_array_slice),
+            // Error
+            "js_error_toString" => BuiltinCFunction::Generic(builtins::js_error_toString),
             _ => BuiltinCFunction::Missing(proto),
         },
         BuiltinProto::GenericMagic => match func_name {
             "js_math_min_max" => BuiltinCFunction::GenericMagic(builtins::js_math_min_max),
+            // Function
+            "js_function_get_length_name" => {
+                BuiltinCFunction::GenericMagic(builtins::js_function_get_length_name)
+            }
+            // String
+            "js_string_charAt" => BuiltinCFunction::GenericMagic(builtins::js_string_charAt),
+            "js_string_indexOf" => BuiltinCFunction::GenericMagic(builtins::js_string_indexOf),
+            "js_string_toLowerCase" => {
+                BuiltinCFunction::GenericMagic(builtins::js_string_toLowerCase)
+            }
+            "js_string_trim" => BuiltinCFunction::GenericMagic(builtins::js_string_trim),
+            "js_string_fromCharCode" => {
+                BuiltinCFunction::GenericMagic(builtins::js_string_fromCharCode)
+            }
+            // Array
+            "js_array_push" => BuiltinCFunction::GenericMagic(builtins::js_array_push),
+            "js_array_indexOf" => BuiltinCFunction::GenericMagic(builtins::js_array_indexOf),
+            // Error
+            "js_error_get_message" => {
+                BuiltinCFunction::GenericMagic(builtins::js_error_get_message)
+            }
             _ => BuiltinCFunction::Missing(proto),
         },
         BuiltinProto::Constructor => match func_name {
             "js_number_constructor" => BuiltinCFunction::Constructor(builtins::js_number_constructor),
+            "js_object_constructor" => BuiltinCFunction::Constructor(builtins::js_object_constructor),
+            "js_function_constructor" => {
+                BuiltinCFunction::Constructor(builtins::js_function_constructor)
+            }
+            "js_string_constructor" => {
+                BuiltinCFunction::Constructor(builtins::js_string_constructor)
+            }
+            "js_array_constructor" => BuiltinCFunction::Constructor(builtins::js_array_constructor),
+            _ => BuiltinCFunction::Missing(proto),
+        },
+        BuiltinProto::ConstructorMagic => match func_name {
+            "js_error_constructor" => {
+                BuiltinCFunction::ConstructorMagic(builtins::js_error_constructor)
+            }
+            _ => BuiltinCFunction::Missing(proto),
+        },
+        BuiltinProto::GenericParams => match func_name {
+            "js_function_bound" => BuiltinCFunction::GenericParams(builtins::js_function_bound),
             _ => BuiltinCFunction::Missing(proto),
         },
         BuiltinProto::FF => match func_name {
@@ -116,7 +205,6 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_trunc" => BuiltinCFunction::FF(js_libm::js_trunc),
             _ => BuiltinCFunction::Missing(proto),
         },
-        _ => BuiltinCFunction::Missing(proto),
     }
 }
 

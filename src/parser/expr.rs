@@ -371,6 +371,11 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         self.emitter.byte_code()
     }
 
+    /// Returns the function bytecode JSValue after parsing.
+    pub fn take_func_bytecode(&self) -> JSValue {
+        self.func.value()
+    }
+
     pub fn add_local_var(&mut self, name: &str) -> Result<JSValue, ParserError> {
         let value = self
             .lexer

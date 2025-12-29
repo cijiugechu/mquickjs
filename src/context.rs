@@ -634,6 +634,17 @@ impl JSContext {
         self.new_string_len(input.as_bytes())
     }
 
+    /// Creates a string from a single codepoint.
+    pub fn new_string_char(&mut self, codepoint: u32) -> Result<JSValue, ContextError> {
+        if codepoint <= 0x7f {
+            let buf = [codepoint as u8];
+            return self.new_string_len(&buf);
+        }
+        let mut buf = [0u8; 4];
+        let len = crate::cutils::unicode_to_utf8(&mut buf, codepoint);
+        self.new_string_len(&buf[..len])
+    }
+
     pub fn intern_string(&mut self, bytes: &[u8]) -> Result<JSValue, ContextError> {
         let val = self.new_string_len(bytes)?;
         Ok(self.atom_tables.make_unique_string(val))
@@ -1067,6 +1078,16 @@ impl JSContext {
         Ok(func)
     }
 
+    /// Creates a new CFunction object with parameters (for bound functions, etc.).
+    pub fn new_cfunction_params(
+        &mut self,
+        idx: u32,
+        params: JSValue,
+    ) -> Result<JSValue, ContextError> {
+        let proto = self.class_proto()[JSObjectClass::Closure as usize];
+        self.new_cfunction_proto(idx, proto, Some(params))
+    }
+
     fn set_object_props(&mut self, obj: JSValue, props: JSValue) -> Result<(), ContextError> {
         let obj_ptr = value_to_ptr::<u8>(obj).ok_or(ContextError::InvalidRomClassValue)?;
         let header_word = unsafe {
@@ -1210,7 +1231,18 @@ impl JSContext {
         Ok(value_from_ptr(ptr))
     }
 
-    pub(crate) fn alloc_array(&mut self, len: usize) -> Result<JSValue, ContextError> {
+    /// Allocates a new plain Object with default prototype.
+    pub fn alloc_object_default(&mut self) -> Result<JSValue, ContextError> {
+        let proto = self.class_proto()[JSObjectClass::Object as usize];
+        self.alloc_object(JSObjectClass::Object, proto, 0)
+    }
+
+    /// Allocates a new Object with a specific prototype.
+    pub fn alloc_object_with_proto(&mut self, proto: JSValue) -> Result<JSValue, ContextError> {
+        self.alloc_object(JSObjectClass::Object, proto, 0)
+    }
+
+    pub fn alloc_array(&mut self, len: usize) -> Result<JSValue, ContextError> {
         let len_u32 = u32::try_from(len).map_err(|_| ContextError::ArrayTooLong {
             len,
             max: ArrayData::LEN_MAX,
@@ -1237,6 +1269,172 @@ impl JSContext {
             ptr::write_unaligned(array_ptr, ArrayData::new(tab, len_u32));
         }
         Ok(array)
+    }
+
+    /// Resizes an array to a new length, allocating more space if needed.
+    pub fn array_resize(&mut self, arr: JSValue, new_len: usize) -> Result<(), ContextError> {
+        let obj_ptr = value_to_ptr::<Object>(arr).ok_or(ContextError::InvalidRomClassValue)?;
+        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        let header = ObjectHeader::from_word(header_word);
+        if header.tag() != MTag::Object || header.class_id() != JSObjectClass::Array as u8 {
+            return Err(ContextError::InvalidRomClassValue);
+        }
+
+        let data = unsafe {
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            ptr::read_unaligned(core::ptr::addr_of!((*payload).array))
+        };
+        let old_len = data.len() as usize;
+        let old_tab = data.tab();
+
+        if new_len > ArrayData::LEN_MAX as usize {
+            return Err(ContextError::ArrayTooLong {
+                len: new_len,
+                max: ArrayData::LEN_MAX,
+            });
+        }
+
+        let new_tab = if new_len == 0 {
+            JS_NULL
+        } else if old_tab == JS_NULL {
+            let ptr = self.alloc_value_array(new_len)?;
+            let arr = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
+            unsafe {
+                for i in 0..new_len {
+                    ptr::write_unaligned(arr.add(i), JS_UNDEFINED);
+                }
+            }
+            value_from_ptr(ptr)
+        } else {
+            // Need to resize existing array
+            let old_ptr = value_to_ptr::<u8>(old_tab).ok_or(ContextError::OutOfMemory)?;
+            let new_ptr = self.alloc_value_array(new_len)?;
+            let old_arr = unsafe { old_ptr.as_ptr().add(size_of::<JSWord>()) as *const JSValue };
+            let new_arr = unsafe { new_ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
+            unsafe {
+                // Copy old elements
+                let copy_len = old_len.min(new_len);
+                for i in 0..copy_len {
+                    ptr::write_unaligned(new_arr.add(i), ptr::read_unaligned(old_arr.add(i)));
+                }
+                // Initialize new elements to undefined
+                for i in copy_len..new_len {
+                    ptr::write_unaligned(new_arr.add(i), JS_UNDEFINED);
+                }
+            }
+            value_from_ptr(new_ptr)
+        };
+
+        // Update the array data
+        unsafe {
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let array_ptr = core::ptr::addr_of_mut!((*payload).array);
+            ptr::write_unaligned(array_ptr, ArrayData::new(new_tab, new_len as u32));
+        }
+        Ok(())
+    }
+
+    /// Sets the length of an array.
+    pub fn array_set_length(&mut self, arr: JSValue, new_len: u32) -> Result<(), ContextError> {
+        let obj_ptr = value_to_ptr::<Object>(arr).ok_or(ContextError::InvalidRomClassValue)?;
+        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        let header = ObjectHeader::from_word(header_word);
+        if header.tag() != MTag::Object || header.class_id() != JSObjectClass::Array as u8 {
+            return Err(ContextError::InvalidRomClassValue);
+        }
+
+        let data = unsafe {
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            ptr::read_unaligned(core::ptr::addr_of!((*payload).array))
+        };
+        let old_len = data.len();
+
+        if new_len == old_len {
+            return Ok(());
+        }
+
+        // Just update the length - the tab will be handled separately if needed
+        unsafe {
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let array_ptr = core::ptr::addr_of_mut!((*payload).array);
+            ptr::write_unaligned(array_ptr, ArrayData::new(data.tab(), new_len));
+        }
+        Ok(())
+    }
+
+    /// Allocates a new Error object.
+    pub fn alloc_error(
+        &mut self,
+        proto: JSValue,
+        class_id: u8,
+    ) -> Result<JSValue, ContextError> {
+        use crate::error_data::ErrorData;
+        let error = self.alloc_object(
+            // Safety: class_id is validated by the caller
+            unsafe { core::mem::transmute::<u8, JSObjectClass>(class_id) },
+            proto,
+            size_of::<ErrorData>(),
+        )?;
+        let obj_ptr = value_to_ptr::<Object>(error).expect("error allocation must be a pointer");
+        unsafe {
+            // SAFETY: error points at a writable error object allocation.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let error_ptr = core::ptr::addr_of_mut!((*payload).error);
+            ptr::write_unaligned(error_ptr, ErrorData::new(JS_NULL, JS_NULL));
+        }
+        Ok(error)
+    }
+
+    /// Sets the message on an Error object.
+    pub fn set_error_message(&mut self, error: JSValue, message: JSValue) -> Result<(), ContextError> {
+        let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
+        unsafe {
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let error_ptr = core::ptr::addr_of_mut!((*payload).error);
+            let msg_ptr = crate::error_data::ErrorData::message_ptr(error_ptr);
+            ptr::write_unaligned(msg_ptr, message);
+        }
+        Ok(())
+    }
+
+    /// Gets the message from an Error object.
+    pub fn get_error_message(&self, error: JSValue) -> Result<JSValue, ContextError> {
+        let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
+        let data = unsafe {
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            ptr::read_unaligned(core::ptr::addr_of!((*payload).error))
+        };
+        Ok(data.message())
+    }
+
+    /// Gets the stack from an Error object.
+    pub fn get_error_stack(&self, error: JSValue) -> Result<JSValue, ContextError> {
+        let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
+        let data = unsafe {
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            ptr::read_unaligned(core::ptr::addr_of!((*payload).error))
+        };
+        Ok(data.stack())
+    }
+
+    /// Allocates a new RegExp object.
+    pub fn alloc_regexp(
+        &mut self,
+        source: JSValue,
+        byte_code: JSValue,
+        flags: i32,
+    ) -> Result<JSValue, ContextError> {
+        use crate::object::RegExp;
+        let proto = self.class_proto()[JSObjectClass::RegExp as usize];
+        let regexp = self.alloc_object(JSObjectClass::RegExp, proto, size_of::<RegExp>())?;
+        let obj_ptr = value_to_ptr::<Object>(regexp).expect("regexp allocation must be a pointer");
+        unsafe {
+            // SAFETY: regexp points at a writable regexp object allocation.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let regexp_ptr = core::ptr::addr_of_mut!((*payload).regexp);
+            ptr::write_unaligned(regexp_ptr, RegExp::new(source, byte_code, flags));
+        }
+        Ok(regexp)
     }
 
     #[allow(dead_code)]

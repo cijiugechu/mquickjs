@@ -104,6 +104,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Integrated GC collection into runtime allocations: `JSContext` now triggers mark/sweep/compact during heap pressure with stack/class roots, atom tables, string pos cache, GC refs, and registered parser state; parser registers/restores its `JSParseState` for GC safety.
 - Routed parser strings/atoms through the runtime: lexer now interns/allocates via `JSContext`, property names are atomized, lexer tokens sync into `JSParseState` roots, and parser attach/detach runs after boxing for stable GC-visible pointers.
 - Fixed Miri stacked-borrows in parser parse-state tracking by switching `JSParseState` fields to interior mutability (`Cell`), syncing lexer tokens via raw pointer writes to avoid aliasing, and using a Miri-only pointer exposure when attaching parse state so GC/lexer pointers survive interior updates.
+- Added public API module in `src/api.rs` with `js_eval`, `js_parse`, `js_call`, `js_run` entry points; routes JSON parsing through `src/parser/json.rs`, RegExp compilation through `src/parser/regexp.rs`, and JavaScript program evaluation through the parser/interpreter pipeline with tests for JSON values and basic object/array creation.
 
 ## Parser port scope (C -> Rust)
 

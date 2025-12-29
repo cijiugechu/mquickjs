@@ -37,6 +37,7 @@ pub mod runtime;
 pub mod interpreter;
 pub mod regexp;
 pub mod builtins;
+pub mod api;
 
 pub use parser::pos as parser_pos;
 pub use parser::types as parser_types;

@@ -33,10 +33,11 @@
 5. **Iteration and RegExp** (done)
    - Implemented `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`.
    - Implemented `OP_regexp` and connected RegExp exec runtime with tests.
-6. **Builtins and public API**
+6. **Builtins and public API** (in progress)
    - Port missing builtin families in priority order: Object/Function/String/Array, then Error/RegExp/JSON, then TypedArray/ArrayBuffer.
-   - Implement public API entry points (`JS_NewContext`, `JS_Eval`, `JS_Parse`, `JS_Call`) and connect to parser/runtime/stdlib.
-   - Start running `mquickjs-c/tests/*.js` as integration tests once evaluation works.
+   - [x] Added public API module (`src/api.rs`) with `js_eval`, `js_parse`, `js_call`, `js_run` entry points.
+   - [x] API routes JSON evaluation, RegExp compilation, and JavaScript program execution through the parser and interpreter.
+   - [ ] Start running `mquickjs-c/tests/*.js` as integration tests once bytecode evaluation is stable.
 
 ## References
 - `mquickjs-c/mquickjs.c` (opcode dispatch and runtime logic)

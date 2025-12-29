@@ -1017,7 +1017,7 @@ pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSVa
     Ok(JS_UNDEFINED)
 }
 
-pub(crate) fn object_keys(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, PropertyError> {
+pub fn object_keys(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, PropertyError> {
     let obj_ptr = object_ptr(obj)?;
     let header = object_header(obj_ptr);
     let class_id = header.class_id();
@@ -1107,6 +1107,45 @@ pub fn has_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<bool
         current = proto;
     }
     Ok(false)
+}
+
+/// Checks if an object has its own property (not inherited from prototype chain).
+pub fn find_own_property_exposed(
+    ctx: &JSContext,
+    obj: JSValue,
+    prop: JSValue,
+) -> Result<bool, PropertyError> {
+    let obj_ptr = object_ptr(obj)?;
+    let header = object_header(obj_ptr);
+    let class_id = header.class_id();
+
+    // Check array indices for arrays and typed arrays.
+    if class_id == JSObjectClass::Array as u8 {
+        if let Some(idx) = prop_index_from_value(prop) {
+            let data = unsafe {
+                // SAFETY: array_data_ptr returns a valid ArrayData pointer.
+                ptr::read_unaligned(array_data_ptr(obj_ptr))
+            };
+            return Ok(idx < data.len());
+        }
+    } else if (JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8)
+        .contains(&class_id)
+    {
+        if let Some(idx) = prop_index_from_value(prop) {
+            let data = unsafe {
+                // SAFETY: typed_array_ptr returns a valid TypedArray pointer.
+                ptr::read_unaligned(typed_array_ptr(obj_ptr))
+            };
+            return Ok(idx < data.len());
+        }
+    }
+
+    let list = PropertyList::from_value(object_props(obj_ptr))?;
+    if ctx.is_rom_ptr(list.array.base) {
+        Ok(find_own_property_linear_rom(ctx, &list, prop).is_some())
+    } else {
+        Ok(find_own_property(&list, prop).is_some())
+    }
 }
 
 pub fn set_property(
