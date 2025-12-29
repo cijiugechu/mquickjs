@@ -3,14 +3,13 @@
 ## Current gaps
 
 ### Interpreter coverage
-- C dispatches 116 opcodes; Rust interpreter still missing the groups below.
-- Notable missing groups:
-  - Loops and regexp: `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`, `OP_regexp`.
+- C dispatches 116 opcodes; Rust interpreter still missing some groups (see roadmap items).
+- Previously missing loop/regexp opcodes (`OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`, `OP_regexp`) are now implemented.
 - Discrepancy: `OP_push_const8` is handled in Rust but does not appear in C dispatch.
 
 ### Runtime and builtins
 - Builtin gap: C declares 84 `js_*` builtins, Rust implements 18 (69 missing).
-- Missing families: Object, Function, String, Array, RegExp, JSON, TypedArray, ArrayBuffer, Error, Date, Boolean.
+- Missing families: Object, Function, String, Array, JSON, TypedArray, ArrayBuffer, Error, Date, Boolean. RegExp builtins are still missing; runtime exec is now in place.
 - Core conversions and slow paths exist in Rust (conversion module + interpreter slow paths); `JS_ToObject` still lacks primitive boxing.
 - Exceptions and Error objects are incomplete; `JS_Throw*` and error formatting are not implemented.
 - Public C API is largely absent: `JS_NewContext`, `JS_FreeContext`, `JS_Eval`, `JS_Parse`, `JS_Call`, etc. Only layouts and constants exist.
@@ -31,9 +30,9 @@
 4. **Functions, closures, and varrefs** (done)
    - Implemented `OP_fclosure`, `OP_call*`, `OP_arguments`, `OP_this_func`, `OP_new_target`, `OP_get/put_var_ref*`, `OP_array_from`.
    - Added interpreter tests for calls, constructor/new_target, arguments, array_from, and varref behavior.
-5. **Iteration and RegExp**
-   - Implement `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`.
-   - Implement `OP_regexp` and connect to RegExp exec runtime.
+5. **Iteration and RegExp** (done)
+   - Implemented `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`.
+   - Implemented `OP_regexp` and connected RegExp exec runtime with tests.
 6. **Builtins and public API**
    - Port missing builtin families in priority order: Object/Function/String/Array, then Error/RegExp/JSON, then TypedArray/ArrayBuffer.
    - Implement public API entry points (`JS_NewContext`, `JS_Eval`, `JS_Parse`, `JS_Call`) and connect to parser/runtime/stdlib.

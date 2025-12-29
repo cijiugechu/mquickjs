@@ -35,6 +35,7 @@ pub mod conversion;
 pub mod context;
 pub mod runtime;
 pub mod interpreter;
+pub mod regexp;
 pub mod builtins;
 
 pub use parser::pos as parser_pos;

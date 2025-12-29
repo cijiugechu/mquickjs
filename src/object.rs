@@ -97,6 +97,12 @@ impl RegExp {
         // SAFETY: caller guarantees `this` is valid for writes.
         unsafe { core::ptr::addr_of_mut!((*this).byte_code) }
     }
+
+    #[allow(dead_code)]
+    pub(crate) unsafe fn last_index_ptr(this: *mut Self) -> *mut i32 {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).last_index) }
+    }
 }
 
 // C: `JSObjectUserData` in mquickjs.c.

@@ -17,7 +17,7 @@ use crate::jsvalue::{
 };
 use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
 use crate::object::{Object, ObjectHeader};
-use crate::property::{define_property_varref, get_own_property_raw, PropertyError};
+use crate::property::{define_property_varref, get_own_property_raw, object_keys, PropertyError};
 use crate::heap::set_free_block;
 use crate::stdlib::cfunc::{BuiltinCFunction, CFunctionDef};
 use core::mem::size_of;
@@ -197,6 +197,83 @@ fn array_data(ptr: NonNull<Object>) -> ArrayData {
         let array_ptr = ptr::addr_of!((*payload).array);
         ptr::read_unaligned(array_ptr)
     }
+}
+
+fn for_of_start(ctx: &mut JSContext, mut val: JSValue, is_for_in: bool) -> Result<JSValue, InterpreterError> {
+    if is_for_in {
+        val = object_keys(ctx, val).map_err(map_property_error)?;
+    }
+    if !conversion::is_object(val) {
+        return Err(InterpreterError::TypeError("unsupported type in for...of"));
+    }
+    let obj_ptr = object_ptr(val)?;
+    let header = object_header(obj_ptr);
+    if header.class_id() != JSObjectClass::Array as u8 {
+        return Err(InterpreterError::TypeError("unsupported type in for...of"));
+    }
+    let iter_ptr = ctx.alloc_value_array(2)?;
+    unsafe {
+        // SAFETY: iter_ptr points to a freshly allocated value array.
+        let arr = iter_ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
+        ptr::write_unaligned(arr, val);
+        ptr::write_unaligned(arr.add(1), new_short_int(0));
+    }
+    Ok(value_from_ptr(iter_ptr))
+}
+
+fn for_of_next(
+    _ctx: &mut JSContext,
+    iter_val: JSValue,
+    done_slot: *mut JSValue,
+    value_slot: *mut JSValue,
+) -> Result<(), InterpreterError> {
+    let iter = unsafe {
+        // SAFETY: iter_val must be a value array from for_of_start.
+        ValueArrayRaw::from_value(iter_val)?
+    };
+    let target = unsafe { iter.read(0)? };
+    let idx_val = unsafe { iter.read(1)? };
+    if !is_int(idx_val) {
+        return Err(InterpreterError::InvalidValue("for_of index"));
+    }
+    let idx = value_get_int(idx_val);
+    if idx < 0 {
+        return Err(InterpreterError::InvalidValue("for_of index"));
+    }
+    let obj_ptr = object_ptr(target)?;
+    let header = object_header(obj_ptr);
+    if header.class_id() != JSObjectClass::Array as u8 {
+        return Err(InterpreterError::TypeError("unsupported type in for...of"));
+    }
+    let data = array_data(obj_ptr);
+    if (idx as u32) >= data.len() {
+        unsafe {
+            // SAFETY: caller provided writable stack slots.
+            ptr::write_unaligned(done_slot, new_bool(1));
+            ptr::write_unaligned(value_slot, JS_UNDEFINED);
+        }
+        return Ok(());
+    }
+    let tab = data.tab();
+    let value = if tab == JS_NULL {
+        JS_UNDEFINED
+    } else {
+        let arr = unsafe {
+            // SAFETY: tab is the backing value array for an ArrayData payload.
+            ValueArrayRaw::from_value(tab)?
+        };
+        unsafe { arr.read(idx as usize)? }
+    };
+    unsafe {
+        // SAFETY: caller provided writable stack slots.
+        ptr::write_unaligned(done_slot, new_bool(0));
+        ptr::write_unaligned(value_slot, value);
+    }
+    unsafe {
+        // SAFETY: iterator state array has length 2.
+        iter.write(1, new_short_int(idx + 1))?;
+    }
+    Ok(())
 }
 
 fn set_prototype_internal(obj: JSValue, proto: JSValue) -> Result<(), InterpreterError> {
@@ -2634,6 +2711,34 @@ pub fn call_with_this(
                 );
                 ptr::write_unaligned(sp, new_bool(deleted as i32));
             },
+            op if op == crate::opcode::OP_FOR_IN_START.0 as u8
+                || op == crate::opcode::OP_FOR_OF_START.0 as u8 =>
+            unsafe {
+                let val = ptr::read_unaligned(sp);
+                let iter = try_or_break!(for_of_start(
+                    ctx,
+                    val,
+                    op == crate::opcode::OP_FOR_IN_START.0 as u8
+                ));
+                ptr::write_unaligned(sp, iter);
+            },
+            op if op == crate::opcode::OP_FOR_OF_NEXT.0 as u8 => unsafe {
+                try_or_break!(stack_check(ctx, sp, 2));
+                let iter = ptr::read_unaligned(sp);
+                let done_slot = sp.sub(2);
+                let value_slot = sp.sub(1);
+                try_or_break!(for_of_next(ctx, iter, done_slot, value_slot));
+                sp = sp.sub(2);
+                ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+            },
+            op if op == crate::opcode::OP_REGEXP.0 as u8 => unsafe {
+                let byte_code = ptr::read_unaligned(sp);
+                let source = ptr::read_unaligned(sp.add(1));
+                let re_obj = try_or_break!(crate::regexp::new_regexp_object(ctx, source, byte_code));
+                ptr::write_unaligned(sp.add(1), re_obj);
+                sp = sp.add(1);
+                ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
+            },
             op if op == crate::opcode::OP_GET_LOC0.0 as u8 => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0));
                 push(ctx, &mut sp, val);
@@ -2822,15 +2927,17 @@ mod tests {
     use crate::opcode::{
         OP_ADD, OP_AND, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR, OP_CALL_METHOD,
         OP_CATCH, OP_DEFINE_FIELD, OP_DEFINE_GETTER, OP_DEFINE_SETTER, OP_DELETE, OP_DUP2, OP_EQ,
-        OP_FCLOSURE, OP_GET_ARG0, OP_GET_ARG1, OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD,
-        OP_GET_FIELD2, OP_GET_LENGTH, OP_GET_LENGTH2, OP_GET_VAR_REF, OP_GET_VAR_REF_NOCHECK,
-        OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE, OP_INSERT2, OP_INSERT3, OP_LT, OP_NEW_TARGET,
-        OP_NIP, OP_PERM3, OP_PERM4, OP_PUSH_0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4,
-        OP_PUSH_5, OP_PUSH_CONST, OP_PUSH_I8, OP_PUSH_TRUE, OP_PUT_ARRAY_EL, OP_PUT_FIELD,
-        OP_PUT_VAR_REF, OP_PUT_VAR_REF_NOCHECK, OP_RET, OP_RETURN, OP_ROT3L, OP_SET_PROTO,
+        OP_FCLOSURE, OP_FOR_IN_START, OP_FOR_OF_NEXT, OP_FOR_OF_START, OP_GET_ARG0, OP_GET_ARG1,
+        OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD, OP_GET_FIELD2, OP_GET_LENGTH,
+        OP_GET_LENGTH2, OP_GET_VAR_REF, OP_GET_VAR_REF_NOCHECK, OP_GOSUB, OP_GOTO, OP_IF_FALSE,
+        OP_IF_TRUE, OP_INSERT2, OP_INSERT3, OP_LT, OP_NEW_TARGET, OP_NIP, OP_PERM3, OP_PERM4,
+        OP_PUSH_0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4, OP_PUSH_5, OP_PUSH_CONST,
+        OP_PUSH_I8, OP_PUSH_TRUE, OP_PUT_ARRAY_EL, OP_PUT_FIELD, OP_PUT_VAR_REF,
+        OP_PUT_VAR_REF_NOCHECK, OP_REGEXP, OP_RET, OP_RETURN, OP_ROT3L, OP_SET_PROTO,
         OP_STRICT_EQ, OP_SUB, OP_SWAP, OP_THIS_FUNC, OP_THROW,
     };
     use crate::property::{debug_property, define_property_value, has_property, DebugProperty};
+    use crate::parser::regexp::compile_regexp;
     use crate::string::runtime::string_view;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
     use core::mem::size_of;
@@ -3585,6 +3692,81 @@ mod tests {
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 1);
+    }
+
+    #[test]
+    fn for_of_next_yields_value() {
+        let mut ctx = new_context();
+        let array = new_array(&mut ctx, &[new_short_int(7)]);
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_FOR_OF_START.0 as u8);
+        bytecode.push(OP_FOR_OF_NEXT.0 as u8);
+        bytecode.push(OP_IF_FALSE.0 as u8);
+        emit_i32(&mut bytecode, 6);
+        bytecode.push(OP_PUSH_0.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_NIP.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
+        assert!(is_int(result));
+        assert_eq!(value_get_int(result), 7);
+    }
+
+    #[test]
+    fn for_in_start_collects_keys() {
+        let mut ctx = new_context();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"k").expect("key");
+        define_property_value(&mut ctx, obj, key, new_short_int(1)).expect("define");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_CONST.0 as u8);
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_FOR_IN_START.0 as u8);
+        bytecode.push(OP_FOR_OF_NEXT.0 as u8);
+        bytecode.push(OP_IF_FALSE.0 as u8);
+        emit_i32(&mut bytecode, 6);
+        bytecode.push(OP_PUSH_0.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_NIP.0 as u8);
+        bytecode.push(OP_RETURN.0 as u8);
+
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj]);
+        let mut scratch = [0u8; 5];
+        let view = string_view(result, &mut scratch).expect("key string");
+        assert_eq!(view.bytes(), b"k");
+    }
+
+    #[test]
+    fn regexp_opcode_builds_object() {
+        let mut ctx = new_context();
+        let source = ctx.new_string("a").expect("source");
+        let compiled = compile_regexp(b"a", 0).expect("regexp");
+        let bytecode_val = ctx.alloc_byte_array(compiled.bytes()).expect("bytecode");
+        let bytecode = vec![
+            OP_PUSH_CONST.0 as u8,
+            0,
+            0,
+            OP_PUSH_CONST.0 as u8,
+            1,
+            0,
+            OP_REGEXP.0 as u8,
+            OP_RETURN.0 as u8,
+        ];
+        let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![source, bytecode_val]);
+        let obj_ptr = object_ptr(result).expect("regexp ptr");
+        let header = object_header(obj_ptr);
+        assert_eq!(header.class_id(), JSObjectClass::RegExp as u8);
+        let payload = unsafe { Object::payload_ptr(obj_ptr.as_ptr()) };
+        let regexp = unsafe { ptr::read_unaligned(core::ptr::addr_of!((*payload).regexp)) };
+        assert_eq!(regexp.source(), source);
+        assert_eq!(regexp.byte_code(), bytecode_val);
+        assert_eq!(regexp.last_index(), 0);
     }
 
     #[test]

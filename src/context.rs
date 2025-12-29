@@ -1239,6 +1239,7 @@ impl JSContext {
         Ok(array)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn alloc_function_bytecode(
         &mut self,
         header: FunctionBytecodeHeader,

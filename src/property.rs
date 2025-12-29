@@ -9,6 +9,7 @@ use crate::jsvalue::{
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
 use crate::string::runtime::string_view;
+use crate::typed_array::TypedArray;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 
@@ -357,6 +358,26 @@ fn array_data_ptr(ptr: NonNull<Object>) -> *mut ArrayData {
         Object::payload_ptr(ptr.as_ptr())
     };
     unsafe { ptr::addr_of_mut!((*payload).array) }
+}
+
+fn typed_array_ptr(ptr: NonNull<Object>) -> *mut TypedArray {
+    let payload = unsafe {
+        // SAFETY: ptr points to a valid Object payload.
+        Object::payload_ptr(ptr.as_ptr())
+    };
+    unsafe { ptr::addr_of_mut!((*payload).typed_array) }
+}
+
+fn key_to_string(ctx: &mut JSContext, key: JSValue) -> Result<JSValue, PropertyError> {
+    if is_int(key) {
+        let text = value_get_int(key).to_string();
+        return ctx.new_string(&text).map_err(|_| PropertyError::OutOfMemory);
+    }
+    let mut scratch = [0u8; 5];
+    if string_view(key, &mut scratch).is_some() {
+        return Ok(key);
+    }
+    Err(PropertyError::Unsupported("property key"))
 }
 
 fn is_numeric_property(prop: JSValue) -> bool {
@@ -994,6 +1015,76 @@ pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSVa
         current = proto;
     }
     Ok(JS_UNDEFINED)
+}
+
+pub(crate) fn object_keys(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, PropertyError> {
+    let obj_ptr = object_ptr(obj)?;
+    let header = object_header(obj_ptr);
+    let class_id = header.class_id();
+    let mut array_len = 0u32;
+    if class_id == JSObjectClass::Array as u8 {
+        let data = unsafe {
+            // SAFETY: array_data_ptr returns a valid ArrayData pointer.
+            ptr::read_unaligned(array_data_ptr(obj_ptr))
+        };
+        array_len = data.len();
+    } else if (JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8)
+        .contains(&class_id)
+    {
+        let data = unsafe {
+            // SAFETY: typed_array_ptr returns a valid TypedArray pointer.
+            ptr::read_unaligned(typed_array_ptr(obj_ptr))
+        };
+        array_len = data.len();
+    }
+
+    let list = PropertyList::from_value(object_props(obj_ptr))?;
+    let prop_count = list.prop_count();
+    let alloc_size = array_len as usize + prop_count;
+    let ret = ctx.alloc_array(alloc_size).map_err(|_| PropertyError::OutOfMemory)?;
+
+    let mut pos = 0usize;
+    for idx in 0..array_len {
+        let key = key_to_string(ctx, new_short_int(idx as i32))?;
+        set_property(ctx, ret, new_short_int(pos as i32), key)?;
+        pos += 1;
+    }
+
+    let prop_base = list.prop_base();
+    let mut seen = 0usize;
+    let mut idx = 0usize;
+    while seen < prop_count {
+        let base = prop_base + 3 * idx;
+        let mut key = list.array.read(base);
+        if ctx.is_rom_ptr(list.array.base) {
+            key = ctx.rom_value_from_word(raw_bits(key));
+        }
+        if key != JS_UNINITIALIZED {
+            let key = key_to_string(ctx, key)?;
+            set_property(ctx, ret, new_short_int(pos as i32), key)?;
+            pos += 1;
+            seen += 1;
+        }
+        idx += 1;
+    }
+
+    if pos != alloc_size {
+        let ret_ptr = object_ptr(ret)?;
+        let data_ptr = array_data_ptr(ret_ptr);
+        let data = unsafe {
+            // SAFETY: data_ptr points to a readable ArrayData.
+            ptr::read_unaligned(data_ptr)
+        };
+        let new_len = pos as u32;
+        if data.len() != new_len {
+            unsafe {
+                // SAFETY: data_ptr points to a writable ArrayData.
+                ptr::write_unaligned(data_ptr, ArrayData::new(data.tab(), new_len));
+            }
+        }
+    }
+
+    Ok(ret)
 }
 
 pub fn has_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<bool, PropertyError> {
