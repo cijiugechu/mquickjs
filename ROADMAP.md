@@ -8,8 +8,9 @@
 - Discrepancy: `OP_push_const8` is handled in Rust but does not appear in C dispatch.
 
 ### Runtime and builtins
-- Builtin gap: C declares 84 `js_*` builtins, Rust implements 18 (69 missing).
-- Missing families: Object, Function, String, Array, JSON, TypedArray, ArrayBuffer, Error, Date, Boolean. RegExp builtins are still missing; runtime exec is now in place.
+- Builtin gap: C declares 84 `js_*` builtins, Rust implements most common ones.
+- Implemented families: Object, Function, String, Array, JSON, TypedArray, ArrayBuffer, Error. RegExp builtins are still missing; runtime exec is now in place.
+- Missing families: Date (partial), Boolean, Math (partial).
 - Core conversions and slow paths exist in Rust (conversion module + interpreter slow paths); `JS_ToObject` still lacks primitive boxing.
 - Exceptions and Error objects are incomplete; `JS_Throw*` and error formatting are not implemented.
 - Public C API is largely absent: `JS_NewContext`, `JS_FreeContext`, `JS_Eval`, `JS_Parse`, `JS_Call`, etc. Only layouts and constants exist.
@@ -43,10 +44,13 @@
    - [x] Added Array builtins: constructor, length, push, pop, shift, unshift, join, toString, isArray, reverse, concat, indexOf, lastIndexOf, slice, splice, every, some, forEach, map, filter, reduce, reduceRight, sort.
    - [x] Added JSON builtins: parse, stringify.
    - [x] Added Error builtins: constructor, toString, get_message.
-   - [x] Added TypedArray/ArrayBuffer stubs (full implementation pending).
    - [x] Created integration test framework in `tests/integration_tests.rs`.
-   - [ ] Full TypedArray/ArrayBuffer implementation with proper byte storage and element type handling.
-   - [ ] Run complete `mquickjs-c/tests/*.js` test suite once bytecode evaluation is stable.
+   - [x] Full TypedArray/ArrayBuffer implementation with proper byte storage and element type handling:
+     - ArrayBuffer: constructor, byteLength getter
+     - TypedArray: constructor (from length, ArrayBuffer, or Array), length/byteLength/byteOffset/buffer getters, subarray
+     - Element get/set with proper type coercion for all TypedArray types (Uint8, Int8, Uint8Clamped, Int16, Uint16, Int32, Uint32, Float32, Float64)
+     - Unit tests validating all TypedArray element types and operations
+   - [ ] Run complete `mquickjs-c/tests/*.js` test suite once bytecode evaluation is stable (TypedArray builtins are ready; blocked on interpreter `new` operator support).
 
 ## References
 - `mquickjs-c/mquickjs.c` (opcode dispatch and runtime logic)

@@ -1437,6 +1437,65 @@ impl JSContext {
         Ok(regexp)
     }
 
+    /// Allocates a new ArrayBuffer object with zeroed byte storage.
+    pub fn alloc_array_buffer(&mut self, len: usize) -> Result<JSValue, ContextError> {
+        use crate::array_buffer::ArrayBuffer;
+        let len_word = JSWord::try_from(len).map_err(|_| ContextError::ByteArrayTooLong {
+            len,
+            max: JS_BYTE_ARRAY_SIZE_MAX,
+        })?;
+        if len_word > JS_BYTE_ARRAY_SIZE_MAX {
+            return Err(ContextError::ByteArrayTooLong {
+                len,
+                max: JS_BYTE_ARRAY_SIZE_MAX,
+            });
+        }
+        // Allocate byte array storage (zeroed)
+        let byte_size = byte_array_alloc_size(len_word);
+        let byte_ptr = self.alloc_mblock(byte_size, MTag::ByteArray)?;
+        let byte_header = ByteArrayHeader::new(len_word, false);
+        unsafe {
+            // SAFETY: byte_ptr points to writable byte array storage.
+            ptr::write_unaligned(byte_ptr.as_ptr().cast::<JSWord>(), MbHeader::from(byte_header).word());
+            let payload = byte_ptr.as_ptr().add(size_of::<JSWord>());
+            ptr::write_bytes(payload, 0, len);
+        }
+        let byte_buffer = value_from_ptr(byte_ptr);
+
+        // Create ArrayBuffer object
+        let proto = self.class_proto()[JSObjectClass::ArrayBuffer as usize];
+        let array_buffer = self.alloc_object(JSObjectClass::ArrayBuffer, proto, size_of::<ArrayBuffer>())?;
+        let obj_ptr = value_to_ptr::<Object>(array_buffer).expect("array_buffer allocation must be a pointer");
+        unsafe {
+            // SAFETY: array_buffer points at a writable object allocation.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let ab_ptr = core::ptr::addr_of_mut!((*payload).array_buffer);
+            ptr::write_unaligned(ab_ptr, ArrayBuffer::new(byte_buffer));
+        }
+        Ok(array_buffer)
+    }
+
+    /// Allocates a new TypedArray object with given class, buffer, offset and length.
+    pub fn alloc_typed_array(
+        &mut self,
+        class_id: JSObjectClass,
+        buffer: JSValue,
+        offset: u32,
+        len: u32,
+    ) -> Result<JSValue, ContextError> {
+        use crate::typed_array::TypedArray;
+        let proto = self.class_proto()[class_id as usize];
+        let typed_array = self.alloc_object(class_id, proto, size_of::<TypedArray>())?;
+        let obj_ptr = value_to_ptr::<Object>(typed_array).expect("typed_array allocation must be a pointer");
+        unsafe {
+            // SAFETY: typed_array points at a writable object allocation.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let ta_ptr = core::ptr::addr_of_mut!((*payload).typed_array);
+            ptr::write_unaligned(ta_ptr, TypedArray::new(buffer, len, offset));
+        }
+        Ok(typed_array)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn alloc_function_bytecode(
         &mut self,

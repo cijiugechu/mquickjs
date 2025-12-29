@@ -3015,30 +3015,94 @@ fn stringify_string(ctx: &mut JSContext, val: JSValue, result: &mut Vec<u8>) -> 
 }
 
 // ---------------------------------------------------------------------------
-// TypedArray / ArrayBuffer builtins (stubs - full implementation pending)
+// TypedArray / ArrayBuffer builtins
 // ---------------------------------------------------------------------------
 
-// TODO: Full TypedArray/ArrayBuffer implementation requires:
-// - ArrayBuffer allocation with byte storage
-// - TypedArray views with proper element type handling
-// - Element get/set with type coercion
-// These are stubbed for now and will return JS_EXCEPTION
+use crate::array_buffer::ArrayBuffer;
+use crate::containers::ByteArrayHeader;
+use crate::typed_array::TypedArray;
+
+// Size log2 for each TypedArray type (indexed by class_id - Uint8CArray)
+// Uint8C, Int8, Uint8, Int16, Uint16, Int32, Uint32, Float32, Float64
+const TYPED_ARRAY_SIZE_LOG2: [u8; 9] = [0, 0, 0, 1, 1, 2, 2, 2, 3];
+
+fn to_index(ctx: &mut JSContext, val: JSValue) -> Result<u64, ()> {
+    if is_undefined(val) {
+        return Ok(0);
+    }
+    let n = conversion::to_number(ctx, val).map_err(|_| ())?;
+    if n < 0.0 || n.is_nan() || n.is_infinite() || n > (u32::MAX as f64) {
+        return Err(());
+    }
+    Ok(n as u64)
+}
+
+fn get_array_buffer(val: JSValue) -> Option<(NonNull<Object>, ArrayBuffer)> {
+    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+    let header = ObjectHeader::from_word(header_word);
+    if header.tag() != MTag::Object || header.class_id() != JSObjectClass::ArrayBuffer as u8 {
+        return None;
+    }
+    let data = unsafe {
+        let payload = Object::payload_ptr(obj_ptr.as_ptr());
+        ptr::read_unaligned(core::ptr::addr_of!((*payload).array_buffer))
+    };
+    Some((obj_ptr, data))
+}
+
+fn get_byte_array_size(byte_buffer: JSValue) -> Option<u32> {
+    let ptr = value_to_ptr::<u8>(byte_buffer)?;
+    let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
+    let header = MbHeader::from_word(header_word);
+    if header.tag() != MTag::ByteArray {
+        return None;
+    }
+    Some(ByteArrayHeader::from(header).size() as u32)
+}
+
+fn get_typed_array(val: JSValue) -> Option<(NonNull<Object>, u8, TypedArray)> {
+    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+    let header = ObjectHeader::from_word(header_word);
+    if header.tag() != MTag::Object {
+        return None;
+    }
+    let class_id = header.class_id();
+    if !(JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8).contains(&class_id) {
+        return None;
+    }
+    let data = unsafe {
+        let payload = Object::payload_ptr(obj_ptr.as_ptr());
+        ptr::read_unaligned(core::ptr::addr_of!((*payload).typed_array))
+    };
+    Some((obj_ptr, class_id, data))
+}
 
 pub fn js_array_buffer_constructor(
-    _ctx: &mut JSContext,
+    ctx: &mut JSContext,
     _this_val: JSValue,
-    _args: &[JSValue],
+    args: &[JSValue],
 ) -> JSValue {
-    // TODO: Implement ArrayBuffer allocation
-    JS_EXCEPTION
+    let len = match to_index(ctx, args.first().copied().unwrap_or(JS_UNDEFINED)) {
+        Ok(l) => l as usize,
+        Err(_) => return JS_EXCEPTION, // RangeError: invalid array buffer length
+    };
+    ctx.alloc_array_buffer(len).unwrap_or(JS_EXCEPTION)
 }
 
 pub fn js_array_buffer_get_byteLength(
     _ctx: &mut JSContext,
-    _this_val: JSValue,
+    this_val: JSValue,
     _args: &[JSValue],
 ) -> JSValue {
-    JS_EXCEPTION
+    let Some((_, data)) = get_array_buffer(this_val) else {
+        return JS_EXCEPTION; // TypeError: expected an ArrayBuffer
+    };
+    let Some(size) = get_byte_array_size(data.byte_buffer()) else {
+        return JS_EXCEPTION;
+    };
+    new_short_int(size as i32)
 }
 
 pub fn js_typed_array_base_constructor(
@@ -3046,34 +3110,185 @@ pub fn js_typed_array_base_constructor(
     _this_val: JSValue,
     _args: &[JSValue],
 ) -> JSValue {
+    // TypedArray base constructor cannot be called directly
     JS_EXCEPTION
 }
 
-pub fn js_typed_array_constructor(
-    _ctx: &mut JSContext,
-    _this_val: JSValue,
-    _args: &[JSValue],
-    _magic: i32,
+fn typed_array_constructor_from_array(
+    ctx: &mut JSContext,
+    source: JSValue,
+    class_id: JSObjectClass,
 ) -> JSValue {
-    // TODO: Implement TypedArray allocation
+    // Get length from source array/typed array
+    let len = if let Some((_, len)) = get_array_info(source) {
+        len
+    } else if let Some((_, _, ta)) = get_typed_array(source) {
+        ta.len()
+    } else {
+        return JS_EXCEPTION;
+    };
+
+    // Create new TypedArray with that length
+    let size_log2 = TYPED_ARRAY_SIZE_LOG2[(class_id as u8 - JSObjectClass::Uint8CArray as u8) as usize];
+    let byte_len = (len as usize) << size_log2;
+    let buffer = match ctx.alloc_array_buffer(byte_len) {
+        Ok(b) => b,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    let typed_array = match ctx.alloc_typed_array(class_id, buffer, 0, len) {
+        Ok(ta) => ta,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    // Copy elements from source
+    for i in 0..len {
+        let elem = match get_property(ctx, source, new_short_int(i as i32)) {
+            Ok(v) => v,
+            Err(_) => return JS_EXCEPTION,
+        };
+        if crate::property::set_property(ctx, typed_array, new_short_int(i as i32), elem).is_err() {
+            return JS_EXCEPTION;
+        }
+    }
+
+    typed_array
+}
+
+pub fn js_typed_array_constructor(
+    ctx: &mut JSContext,
+    _this_val: JSValue,
+    args: &[JSValue],
+    magic: i32,
+) -> JSValue {
+    let class_id = match u8::try_from(magic) {
+        Ok(id) if (JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8).contains(&id) => {
+            // Safety: we've verified the range
+            unsafe { core::mem::transmute::<u8, JSObjectClass>(id) }
+        }
+        _ => return JS_EXCEPTION,
+    };
+
+    let size_log2 = TYPED_ARRAY_SIZE_LOG2[(class_id as u8 - JSObjectClass::Uint8CArray as u8) as usize];
+    let arg0 = args.first().copied().unwrap_or(JS_UNDEFINED);
+
+    // Case 1: Not an object - treat as length
+    if !conversion::is_object(arg0) {
+        let len = match to_index(ctx, arg0) {
+            Ok(l) => l,
+            Err(_) => return JS_EXCEPTION,
+        };
+        let byte_len = (len as usize) << size_log2;
+        let buffer = match ctx.alloc_array_buffer(byte_len) {
+            Ok(b) => b,
+            Err(_) => return JS_EXCEPTION,
+        };
+        return ctx.alloc_typed_array(class_id, buffer, 0, len as u32).unwrap_or(JS_EXCEPTION);
+    }
+
+    // Case 2: ArrayBuffer argument - create view
+    if let Some((_, ab_data)) = get_array_buffer(arg0) {
+        let byte_length = match get_byte_array_size(ab_data.byte_buffer()) {
+            Some(s) => s as u64,
+            None => return JS_EXCEPTION,
+        };
+
+        let offset = match to_index(ctx, args.get(1).copied().unwrap_or(JS_UNDEFINED)) {
+            Ok(o) => o,
+            Err(_) => return JS_EXCEPTION,
+        };
+
+        // Check offset alignment and bounds
+        if (offset & ((1 << size_log2) - 1)) != 0 || offset > byte_length {
+            return JS_EXCEPTION; // RangeError: invalid offset
+        }
+
+        let len = if args.get(2).copied().unwrap_or(JS_UNDEFINED) == JS_UNDEFINED {
+            // If length not specified, use remaining buffer
+            if (byte_length & ((1 << size_log2) - 1)) != 0 {
+                return JS_EXCEPTION; // RangeError: invalid length
+            }
+            (byte_length - offset) >> size_log2
+        } else {
+            let l = match to_index(ctx, args[2]) {
+                Ok(l) => l,
+                Err(_) => return JS_EXCEPTION,
+            };
+            if offset + (l << size_log2) > byte_length {
+                return JS_EXCEPTION; // RangeError: invalid length
+            }
+            l
+        };
+
+        // Offset is in elements for TypedArray struct
+        let offset_elements = (offset >> size_log2) as u32;
+        return ctx.alloc_typed_array(class_id, arg0, offset_elements, len as u32).unwrap_or(JS_EXCEPTION);
+    }
+
+    // Case 3: Array or TypedArray argument - copy elements
+    if get_array_info(arg0).is_some() || get_typed_array(arg0).is_some() {
+        return typed_array_constructor_from_array(ctx, arg0, class_id);
+    }
+
     JS_EXCEPTION
 }
 
 pub fn js_typed_array_get_length(
     _ctx: &mut JSContext,
-    _this_val: JSValue,
+    this_val: JSValue,
     _args: &[JSValue],
-    _magic: i32,
+    magic: i32,
 ) -> JSValue {
-    JS_EXCEPTION
+    let Some((_, class_id, ta)) = get_typed_array(this_val) else {
+        return JS_EXCEPTION; // TypeError: not a TypedArray
+    };
+    let size_log2 = TYPED_ARRAY_SIZE_LOG2[(class_id - JSObjectClass::Uint8CArray as u8) as usize];
+    
+    match magic {
+        0 => new_short_int(ta.len() as i32),                           // length
+        1 => new_short_int((ta.len() << size_log2) as i32),            // byteLength
+        2 => new_short_int((ta.offset() << size_log2) as i32),         // byteOffset
+        3 => ta.buffer(),                                               // buffer
+        _ => JS_EXCEPTION,
+    }
 }
 
 pub fn js_typed_array_subarray(
-    _ctx: &mut JSContext,
-    _this_val: JSValue,
-    _args: &[JSValue],
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
 ) -> JSValue {
-    JS_EXCEPTION
+    let Some((_, class_id, ta)) = get_typed_array(this_val) else {
+        return JS_EXCEPTION; // TypeError: not a TypedArray
+    };
+    
+    let len = ta.len() as i32;
+    
+    // Get start index with negative wrapping
+    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JS_UNDEFINED), len) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+    
+    // Get end index with negative wrapping
+    let end = if args.get(1).copied().unwrap_or(JS_UNDEFINED) == JS_UNDEFINED {
+        len
+    } else {
+        match to_int32_clamp_neg(ctx, args[1], len) {
+            Ok(e) => e,
+            Err(_) => return JS_EXCEPTION,
+        }
+    };
+    
+    // Calculate count (can't be negative)
+    let count = (end - start).max(0) as u32;
+    
+    // New offset = old offset + start
+    let new_offset = ta.offset() + start as u32;
+    
+    // Create new TypedArray with same buffer
+    let class = unsafe { core::mem::transmute::<u8, JSObjectClass>(class_id) };
+    ctx.alloc_typed_array(class, ta.buffer(), new_offset, count).unwrap_or(JS_EXCEPTION)
 }
 
 fn is_error(val: JSValue) -> bool {
@@ -3218,5 +3433,244 @@ mod tests {
     fn math_fround_rounds() {
         let out = js_math_fround(0.1);
         assert_eq!(out, 0.10000000149011612);
+    }
+
+    #[test]
+    fn array_buffer_constructor_creates_buffer() {
+        let mut ctx = new_context();
+        let ab = js_array_buffer_constructor(&mut ctx, JS_UNDEFINED, &[new_short_int(16)]);
+        assert_ne!(ab, JS_EXCEPTION);
+        
+        // Check byteLength
+        let len = js_array_buffer_get_byteLength(&mut ctx, ab, &[]);
+        assert_eq!(value_get_int(len), 16);
+    }
+
+    #[test]
+    fn typed_array_constructor_from_length() {
+        use crate::enums::JSObjectClass;
+        let mut ctx = new_context();
+        
+        // Create Uint8Array with length 4
+        let ta = js_typed_array_constructor(
+            &mut ctx,
+            JS_UNDEFINED,
+            &[new_short_int(4)],
+            JSObjectClass::Uint8Array as i32,
+        );
+        assert_ne!(ta, JS_EXCEPTION);
+        
+        // Check length
+        let len = js_typed_array_get_length(&mut ctx, ta, &[], 0);
+        assert_eq!(value_get_int(len), 4);
+        
+        // Check byteLength
+        let byte_len = js_typed_array_get_length(&mut ctx, ta, &[], 1);
+        assert_eq!(value_get_int(byte_len), 4);
+    }
+
+    #[test]
+    fn typed_array_element_access() {
+        use crate::enums::JSObjectClass;
+        use crate::property::{get_property, set_property};
+        
+        let mut ctx = new_context();
+        
+        // Create Uint8Array with length 4
+        let ta = js_typed_array_constructor(
+            &mut ctx,
+            JS_UNDEFINED,
+            &[new_short_int(4)],
+            JSObjectClass::Uint8Array as i32,
+        );
+        assert_ne!(ta, JS_EXCEPTION);
+        
+        // Set elements
+        set_property(&mut ctx, ta, new_short_int(0), new_short_int(10)).unwrap();
+        set_property(&mut ctx, ta, new_short_int(1), new_short_int(20)).unwrap();
+        set_property(&mut ctx, ta, new_short_int(2), new_short_int(30)).unwrap();
+        set_property(&mut ctx, ta, new_short_int(3), new_short_int(40)).unwrap();
+        
+        // Read elements back
+        let v0 = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        assert_eq!(value_get_int(v0), 10);
+        
+        let v1 = get_property(&ctx, ta, new_short_int(1)).unwrap();
+        assert_eq!(value_get_int(v1), 20);
+        
+        let v2 = get_property(&ctx, ta, new_short_int(2)).unwrap();
+        assert_eq!(value_get_int(v2), 30);
+        
+        let v3 = get_property(&ctx, ta, new_short_int(3)).unwrap();
+        assert_eq!(value_get_int(v3), 40);
+    }
+
+    #[test]
+    fn typed_array_uint8_overflow() {
+        use crate::enums::JSObjectClass;
+        use crate::property::{get_property, set_property};
+        
+        let mut ctx = new_context();
+        
+        // Create Uint8Array
+        let ta = js_typed_array_constructor(
+            &mut ctx,
+            JS_UNDEFINED,
+            &[new_short_int(1)],
+            JSObjectClass::Uint8Array as i32,
+        );
+        assert_ne!(ta, JS_EXCEPTION);
+        
+        // Set -1, should wrap to 255
+        set_property(&mut ctx, ta, new_short_int(0), new_short_int(-1)).unwrap();
+        let v = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        assert_eq!(value_get_int(v), 255);
+    }
+
+    #[test]
+    fn typed_array_int8_signed() {
+        use crate::enums::JSObjectClass;
+        use crate::property::{get_property, set_property};
+        
+        let mut ctx = new_context();
+        
+        // Create Int8Array
+        let ta = js_typed_array_constructor(
+            &mut ctx,
+            JS_UNDEFINED,
+            &[new_short_int(1)],
+            JSObjectClass::Int8Array as i32,
+        );
+        assert_ne!(ta, JS_EXCEPTION);
+        
+        // Set 255, should wrap to -1
+        set_property(&mut ctx, ta, new_short_int(0), new_short_int(255)).unwrap();
+        let v = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        assert_eq!(value_get_int(v), -1);
+    }
+
+    #[test]
+    fn typed_array_uint8_clamped() {
+        use crate::enums::JSObjectClass;
+        use crate::property::{get_property, set_property};
+        
+        let mut ctx = new_context();
+        
+        // Create Uint8ClampedArray
+        let ta = js_typed_array_constructor(
+            &mut ctx,
+            JS_UNDEFINED,
+            &[new_short_int(2)],
+            JSObjectClass::Uint8CArray as i32,
+        );
+        assert_ne!(ta, JS_EXCEPTION);
+        
+        // Set -100, should clamp to 0
+        set_property(&mut ctx, ta, new_short_int(0), new_short_int(-100)).unwrap();
+        let v0 = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        assert_eq!(value_get_int(v0), 0);
+        
+        // Set 1000, should clamp to 255
+        set_property(&mut ctx, ta, new_short_int(1), new_short_int(1000)).unwrap();
+        let v1 = get_property(&ctx, ta, new_short_int(1)).unwrap();
+        assert_eq!(value_get_int(v1), 255);
+    }
+
+    #[test]
+    fn typed_array_int32() {
+        use crate::enums::JSObjectClass;
+        use crate::property::{get_property, set_property};
+        
+        let mut ctx = new_context();
+        
+        // Create Int32Array
+        let ta = js_typed_array_constructor(
+            &mut ctx,
+            JS_UNDEFINED,
+            &[new_short_int(1)],
+            JSObjectClass::Int32Array as i32,
+        );
+        assert_ne!(ta, JS_EXCEPTION);
+        
+        // Check byteLength (4 bytes per element)
+        let byte_len = js_typed_array_get_length(&mut ctx, ta, &[], 1);
+        assert_eq!(value_get_int(byte_len), 4);
+        
+        // Set and read
+        set_property(&mut ctx, ta, new_short_int(0), new_short_int(-12345)).unwrap();
+        let v = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        assert_eq!(value_get_int(v), -12345);
+    }
+
+    #[test]
+    fn typed_array_subarray() {
+        use crate::enums::JSObjectClass;
+        use crate::property::{get_property, set_property};
+        
+        let mut ctx = new_context();
+        
+        // Create Uint8Array with 4 elements
+        let ta = js_typed_array_constructor(
+            &mut ctx,
+            JS_UNDEFINED,
+            &[new_short_int(4)],
+            JSObjectClass::Uint8Array as i32,
+        );
+        assert_ne!(ta, JS_EXCEPTION);
+        
+        // Set values [1, 2, 3, 4]
+        set_property(&mut ctx, ta, new_short_int(0), new_short_int(1)).unwrap();
+        set_property(&mut ctx, ta, new_short_int(1), new_short_int(2)).unwrap();
+        set_property(&mut ctx, ta, new_short_int(2), new_short_int(3)).unwrap();
+        set_property(&mut ctx, ta, new_short_int(3), new_short_int(4)).unwrap();
+        
+        // Create subarray [1, 3) -> should be [2, 3]
+        let sub = js_typed_array_subarray(&mut ctx, ta, &[new_short_int(1), new_short_int(3)]);
+        assert_ne!(sub, JS_EXCEPTION);
+        
+        // Check length is 2
+        let len = js_typed_array_get_length(&mut ctx, sub, &[], 0);
+        assert_eq!(value_get_int(len), 2);
+        
+        // Check values are [2, 3]
+        let v0 = get_property(&ctx, sub, new_short_int(0)).unwrap();
+        assert_eq!(value_get_int(v0), 2);
+        
+        let v1 = get_property(&ctx, sub, new_short_int(1)).unwrap();
+        assert_eq!(value_get_int(v1), 3);
+    }
+
+    #[test]
+    fn typed_array_from_array_buffer() {
+        use crate::enums::JSObjectClass;
+        use crate::property::{get_property, set_property};
+        
+        let mut ctx = new_context();
+        
+        // Create ArrayBuffer with 16 bytes
+        let ab = js_array_buffer_constructor(&mut ctx, JS_UNDEFINED, &[new_short_int(16)]);
+        assert_ne!(ab, JS_EXCEPTION);
+        
+        // Create Uint32Array view from byte 12, length 1
+        let ta = js_typed_array_constructor(
+            &mut ctx,
+            JS_UNDEFINED,
+            &[ab, new_short_int(12), new_short_int(1)],
+            JSObjectClass::Uint32Array as i32,
+        );
+        assert_ne!(ta, JS_EXCEPTION);
+        
+        // Check length is 1
+        let len = js_typed_array_get_length(&mut ctx, ta, &[], 0);
+        assert_eq!(value_get_int(len), 1);
+        
+        // Check byteOffset is 12
+        let offset = js_typed_array_get_length(&mut ctx, ta, &[], 2);
+        assert_eq!(value_get_int(offset), 12);
+        
+        // Set a value and check we can read it back
+        set_property(&mut ctx, ta, new_short_int(0), new_short_int(42)).unwrap();
+        let v = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        assert_eq!(value_get_int(v), 42);
     }
 }

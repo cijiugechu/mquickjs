@@ -1,6 +1,8 @@
+use crate::array_buffer::ArrayBuffer;
 use crate::array_data::ArrayData;
-use crate::context::JSContext;
 use crate::containers::{StringHeader, ValueArrayHeader, VarRefHeader, JS_VALUE_ARRAY_SIZE_MAX};
+use crate::context::JSContext;
+use crate::conversion;
 use crate::enums::{JSObjectClass, JSPropType};
 use crate::jsvalue::{
     from_bits, is_int, new_short_int, raw_bits, value_from_ptr, value_get_int, value_to_ptr,
@@ -12,6 +14,10 @@ use crate::string::runtime::string_view;
 use crate::typed_array::TypedArray;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
+
+// Size log2 for each TypedArray type (indexed by class_id - Uint8CArray)
+// Uint8C, Int8, Uint8, Int16, Uint16, Int32, Uint32, Float32, Float64
+const TYPED_ARRAY_SIZE_LOG2: [u8; 9] = [0, 0, 0, 1, 1, 2, 2, 2, 3];
 
 // C: `JSProperty` bitfields in mquickjs.c (`hash_next:30`, `prop_type:2`).
 #[repr(transparent)]
@@ -366,6 +372,181 @@ fn typed_array_ptr(ptr: NonNull<Object>) -> *mut TypedArray {
         Object::payload_ptr(ptr.as_ptr())
     };
     unsafe { ptr::addr_of_mut!((*payload).typed_array) }
+}
+
+fn array_buffer_ptr(ptr: NonNull<Object>) -> *mut ArrayBuffer {
+    let payload = unsafe {
+        // SAFETY: ptr points to a valid Object payload.
+        Object::payload_ptr(ptr.as_ptr())
+    };
+    unsafe { ptr::addr_of_mut!((*payload).array_buffer) }
+}
+
+// Get pointer to byte array data from ArrayBuffer's byte_buffer field
+fn get_byte_array_ptr(byte_buffer: JSValue) -> Option<NonNull<u8>> {
+    let ptr = value_to_ptr::<u8>(byte_buffer)?;
+    let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
+    let header = MbHeader::from_word(header_word);
+    if header.tag() != MTag::ByteArray {
+        return None;
+    }
+    // Payload starts after the header
+    let data_ptr = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) };
+    NonNull::new(data_ptr)
+}
+
+// Read element from TypedArray with context (for float allocation)
+fn typed_array_get_element_ctx(
+    ctx: &JSContext,
+    ta: TypedArray,
+    idx: u32,
+    class_id: u8,
+) -> Result<JSValue, PropertyError> {
+    if idx >= ta.len() {
+        return Ok(JS_UNDEFINED);
+    }
+    
+    // Get ArrayBuffer object
+    let ab_ptr = value_to_ptr::<Object>(ta.buffer()).ok_or(PropertyError::InvalidValueArray)?;
+    let ab_data = unsafe {
+        ptr::read_unaligned(array_buffer_ptr(ab_ptr))
+    };
+    
+    // Get byte array data
+    let data_ptr = get_byte_array_ptr(ab_data.byte_buffer())
+        .ok_or(PropertyError::InvalidValueArray)?;
+    
+    let size_log2 = TYPED_ARRAY_SIZE_LOG2[(class_id - JSObjectClass::Uint8CArray as u8) as usize];
+    let byte_idx = ((ta.offset() + idx) as usize) << size_log2;
+    
+    let result = unsafe {
+        let ptr = data_ptr.as_ptr().add(byte_idx);
+        match class_id {
+            c if c == JSObjectClass::Uint8CArray as u8 => {
+                new_short_int(*ptr as i32)
+            }
+            c if c == JSObjectClass::Uint8Array as u8 => {
+                new_short_int(*ptr as i32)
+            }
+            c if c == JSObjectClass::Int8Array as u8 => {
+                new_short_int(*(ptr as *const i8) as i32)
+            }
+            c if c == JSObjectClass::Uint16Array as u8 => {
+                new_short_int(ptr::read_unaligned(ptr as *const u16) as i32)
+            }
+            c if c == JSObjectClass::Int16Array as u8 => {
+                new_short_int(ptr::read_unaligned(ptr as *const i16) as i32)
+            }
+            c if c == JSObjectClass::Uint32Array as u8 => {
+                let v = ptr::read_unaligned(ptr as *const u32);
+                if v <= i32::MAX as u32 {
+                    new_short_int(v as i32)
+                } else {
+                    // Need to allocate as float for large values
+                    // This requires mutable context, so we handle it specially
+                    return Err(PropertyError::Unsupported("large uint32"));
+                }
+            }
+            c if c == JSObjectClass::Int32Array as u8 => {
+                new_short_int(ptr::read_unaligned(ptr as *const i32))
+            }
+            c if c == JSObjectClass::Float32Array as u8 => {
+                let f = ptr::read_unaligned(ptr as *const f32);
+                // For now, return as short int if it fits, else error
+                // Full float support requires mutable context for allocation
+                let f64_val = f as f64;
+                if f64_val.fract() == 0.0 && f64_val >= i32::MIN as f64 && f64_val <= i32::MAX as f64 {
+                    new_short_int(f64_val as i32)
+                } else {
+                    return Err(PropertyError::Unsupported("float value"));
+                }
+            }
+            c if c == JSObjectClass::Float64Array as u8 => {
+                let f = ptr::read_unaligned(ptr as *const f64);
+                if f.fract() == 0.0 && f >= i32::MIN as f64 && f <= i32::MAX as f64 {
+                    new_short_int(f as i32)
+                } else {
+                    return Err(PropertyError::Unsupported("float value"));
+                }
+            }
+            _ => return Err(PropertyError::Unsupported("unknown typed array type")),
+        }
+    };
+    let _ = ctx; // suppress unused warning
+    Ok(result)
+}
+
+// Write element to TypedArray at given index
+fn typed_array_set_element(
+    ctx: &mut JSContext,
+    ta: TypedArray,
+    idx: u32,
+    class_id: u8,
+    val: JSValue,
+) -> Result<(), PropertyError> {
+    if idx >= ta.len() {
+        return Err(PropertyError::Unsupported("invalid typed array subscript"));
+    }
+    
+    // Get ArrayBuffer object
+    let ab_ptr = value_to_ptr::<Object>(ta.buffer()).ok_or(PropertyError::InvalidValueArray)?;
+    let ab_data = unsafe {
+        ptr::read_unaligned(array_buffer_ptr(ab_ptr))
+    };
+    
+    // Get byte array data
+    let data_ptr = get_byte_array_ptr(ab_data.byte_buffer())
+        .ok_or(PropertyError::InvalidValueArray)?;
+    
+    let size_log2 = TYPED_ARRAY_SIZE_LOG2[(class_id - JSObjectClass::Uint8CArray as u8) as usize];
+    let byte_idx = ((ta.offset() + idx) as usize) << size_log2;
+    
+    // Convert value based on type
+    unsafe {
+        let ptr = data_ptr.as_ptr().add(byte_idx);
+        match class_id {
+            c if c == JSObjectClass::Uint8CArray as u8 => {
+                // Uint8ClampedArray: clamp to 0-255
+                let n = conversion::to_number(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))? as i32;
+                let clamped = n.clamp(0, 255) as u8;
+                *ptr = clamped;
+            }
+            c if c == JSObjectClass::Uint8Array as u8 => {
+                let n = conversion::to_int32(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                *ptr = n as u8;
+            }
+            c if c == JSObjectClass::Int8Array as u8 => {
+                let n = conversion::to_int32(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                *(ptr as *mut i8) = n as i8;
+            }
+            c if c == JSObjectClass::Uint16Array as u8 => {
+                let n = conversion::to_int32(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                ptr::write_unaligned(ptr as *mut u16, n as u16);
+            }
+            c if c == JSObjectClass::Int16Array as u8 => {
+                let n = conversion::to_int32(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                ptr::write_unaligned(ptr as *mut i16, n as i16);
+            }
+            c if c == JSObjectClass::Uint32Array as u8 => {
+                let n = conversion::to_uint32(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                ptr::write_unaligned(ptr as *mut u32, n);
+            }
+            c if c == JSObjectClass::Int32Array as u8 => {
+                let n = conversion::to_int32(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                ptr::write_unaligned(ptr as *mut i32, n);
+            }
+            c if c == JSObjectClass::Float32Array as u8 => {
+                let n = conversion::to_number(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                ptr::write_unaligned(ptr as *mut f32, n as f32);
+            }
+            c if c == JSObjectClass::Float64Array as u8 => {
+                let n = conversion::to_number(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                ptr::write_unaligned(ptr as *mut f64, n);
+            }
+            _ => return Err(PropertyError::Unsupported("unknown typed array type")),
+        }
+    }
+    Ok(())
 }
 
 fn key_to_string(ctx: &mut JSContext, key: JSValue) -> Result<JSValue, PropertyError> {
@@ -973,7 +1154,8 @@ pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSVa
     loop {
         let obj_ptr = object_ptr(current)?;
         let header = object_header(obj_ptr);
-        if header.class_id() == JSObjectClass::Array as u8 {
+        let class_id = header.class_id();
+        if class_id == JSObjectClass::Array as u8 {
             if let Some(idx) = prop_index_from_value(prop) {
                 let data = unsafe {
                     // SAFETY: array_data_ptr returns a valid ArrayData pointer.
@@ -986,6 +1168,16 @@ pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSVa
                         return Ok(array.read(idx as usize));
                     }
                 }
+            } else if is_numeric_property(prop) {
+                return Ok(JS_UNDEFINED);
+            }
+        } else if (JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8).contains(&class_id) {
+            if let Some(idx) = prop_index_from_value(prop) {
+                let ta = unsafe {
+                    // SAFETY: typed_array_ptr returns a valid TypedArray pointer.
+                    ptr::read_unaligned(typed_array_ptr(obj_ptr))
+                };
+                return typed_array_get_element_ctx(ctx, ta, idx, class_id);
             } else if is_numeric_property(prop) {
                 return Ok(JS_UNDEFINED);
             }
@@ -1156,7 +1348,8 @@ pub fn set_property(
 ) -> Result<(), PropertyError> {
     let obj_ptr = object_ptr(obj)?;
     let header = object_header(obj_ptr);
-    if header.class_id() == JSObjectClass::Array as u8 {
+    let class_id = header.class_id();
+    if class_id == JSObjectClass::Array as u8 {
         if let Some(idx) = prop_index_from_value(prop) {
             let data_ptr = array_data_ptr(obj_ptr);
             let mut data = unsafe {
@@ -1183,6 +1376,16 @@ pub fn set_property(
             return Err(PropertyError::Unsupported("invalid array subscript"));
         } else if is_numeric_property(prop) {
             return Err(PropertyError::Unsupported("invalid array subscript"));
+        }
+    } else if (JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8).contains(&class_id) {
+        if let Some(idx) = prop_index_from_value(prop) {
+            let ta = unsafe {
+                // SAFETY: typed_array_ptr returns a valid TypedArray pointer.
+                ptr::read_unaligned(typed_array_ptr(obj_ptr))
+            };
+            return typed_array_set_element(ctx, ta, idx, class_id, val);
+        } else if is_numeric_property(prop) {
+            return Err(PropertyError::Unsupported("invalid typed array subscript"));
         }
     }
 

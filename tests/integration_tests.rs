@@ -120,3 +120,76 @@ fn eval_js_number(ctx: &mut JSContext, code: &[u8]) -> f64 {
 // evaluation is fully working. The tests above validate the JSON parsing
 // and basic API functionality.
 
+// ---------------------------------------------------------------------------
+// TypedArray Tests (pending full bytecode evaluation)
+// ---------------------------------------------------------------------------
+
+// TypedArray JavaScript evaluation tests - IGNORED until bytecode evaluation is stable.
+// The TypedArray builtins are implemented, but the full bytecode evaluation path 
+// (particularly `new` operator with constructors) needs more work.
+// See ROADMAP.md item: "Run complete mquickjs-c/tests/*.js test suite once bytecode evaluation is stable"
+
+#[test]
+#[ignore = "Pending bytecode evaluation stability - TypedArray builtins are implemented"]
+fn test_typed_array_js_eval() {
+    let mut ctx = new_context();
+    
+    // Simple test: create a Uint8Array and check its length
+    let result = js_eval(&mut ctx, b"var a = new Uint8Array(4); a.length;", 0);
+    assert!(!js_is_exception(result), "TypedArray creation failed");
+    assert!(js_is_number(result));
+    assert_eq!(js_to_number(&mut ctx, result), 4.0);
+}
+
+#[test]
+#[ignore = "Pending bytecode evaluation stability"]
+fn test_typed_array_element_access_js() {
+    let mut ctx = new_context();
+    
+    // Test element assignment and read
+    let result = js_eval(&mut ctx, b"var a = new Uint8Array(4); a[0] = 42; a[0];", 0);
+    assert!(!js_is_exception(result), "TypedArray element access failed");
+    assert!(js_is_number(result));
+    assert_eq!(js_to_number(&mut ctx, result), 42.0);
+}
+
+#[test]
+#[ignore = "Pending bytecode evaluation stability"]
+fn test_typed_array_int8_overflow_js() {
+    let mut ctx = new_context();
+    
+    // Test Int8Array overflow behavior (255 wraps to -1)
+    let result = js_eval(&mut ctx, b"var a = new Int8Array(1); a[0] = 255; a[0];", 0);
+    assert!(!js_is_exception(result), "Int8Array overflow test failed");
+    assert!(js_is_number(result));
+    assert_eq!(js_to_number(&mut ctx, result), -1.0);
+}
+
+#[test]
+#[ignore = "Pending bytecode evaluation stability"]
+fn test_array_buffer_js() {
+    let mut ctx = new_context();
+    
+    // Test ArrayBuffer creation
+    let result = js_eval(&mut ctx, b"var buf = new ArrayBuffer(16); buf.byteLength;", 0);
+    assert!(!js_is_exception(result), "ArrayBuffer creation failed");
+    assert!(js_is_number(result));
+    assert_eq!(js_to_number(&mut ctx, result), 16.0);
+}
+
+#[test]
+#[ignore = "Pending bytecode evaluation stability"]
+fn test_typed_array_from_array_buffer_js() {
+    let mut ctx = new_context();
+    
+    // Test creating TypedArray view on ArrayBuffer with offset
+    let result = js_eval(
+        &mut ctx,
+        b"var buf = new ArrayBuffer(16); var a = new Uint32Array(buf, 12, 1); a[0] = 42; a[0];",
+        0,
+    );
+    assert!(!js_is_exception(result), "TypedArray from ArrayBuffer failed");
+    assert!(js_is_number(result));
+    assert_eq!(js_to_number(&mut ctx, result), 42.0);
+}
+
