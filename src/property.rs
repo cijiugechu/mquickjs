@@ -4,9 +4,10 @@ use crate::containers::{StringHeader, ValueArrayHeader, VarRefHeader, JS_VALUE_A
 use crate::context::JSContext;
 use crate::conversion;
 use crate::enums::{JSObjectClass, JSPropType};
+use crate::interpreter::{call_with_this, InterpreterError};
 use crate::jsvalue::{
-    from_bits, is_int, new_short_int, raw_bits, value_from_ptr, value_get_int, value_to_ptr,
-    JSValue, JSWord, JSW, JS_NULL, JS_UNDEFINED, JS_UNINITIALIZED,
+    from_bits, is_exception, is_int, new_short_int, raw_bits, value_from_ptr, value_get_int,
+    value_to_ptr, JSValue, JSWord, JSW, JS_NULL, JS_UNDEFINED, JS_UNINITIALIZED,
 };
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
@@ -94,12 +95,13 @@ impl Property {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum PropertyError {
     OutOfMemory,
     NotObject,
     InvalidValueArray,
     Unsupported(&'static str),
+    Interpreter(InterpreterError),
 }
 
 // Property array layout (JSValueArray):
@@ -971,6 +973,41 @@ fn write_var_ref_value(val: JSValue, new_value: JSValue) -> Result<(), PropertyE
     Ok(())
 }
 
+fn call_getset_getter(
+    ctx: &mut JSContext,
+    receiver: JSValue,
+    getset: JSValue,
+) -> Result<JSValue, PropertyError> {
+    let array = unsafe { ValueArrayRaw::from_value(getset)? };
+    let getter = array.read(0);
+    if getter == JS_UNDEFINED {
+        return Ok(JS_UNDEFINED);
+    }
+    let value = call_with_this(ctx, getter, receiver, &[])
+        .map_err(PropertyError::Interpreter)?;
+    if is_exception(value) {
+        return Err(PropertyError::Interpreter(InterpreterError::Thrown(value)));
+    }
+    Ok(value)
+}
+
+fn call_getset_setter(
+    ctx: &mut JSContext,
+    receiver: JSValue,
+    getset: JSValue,
+    value: JSValue,
+) -> Result<(), PropertyError> {
+    let array = unsafe { ValueArrayRaw::from_value(getset)? };
+    let setter = array.read(1);
+    let args = [value];
+    let result = call_with_this(ctx, setter, receiver, &args)
+        .map_err(PropertyError::Interpreter)?;
+    if is_exception(result) {
+        return Err(PropertyError::Interpreter(InterpreterError::Thrown(result)));
+    }
+    Ok(())
+}
+
 fn find_own_property(list: &PropertyList, prop: JSValue) -> Option<PropertyRef> {
     let hash_mask = list.hash_mask();
     let h = (hash_prop(prop) as usize) & hash_mask;
@@ -1149,7 +1186,12 @@ pub(crate) fn get_own_property_raw(
     Ok(None)
 }
 
-pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSValue, PropertyError> {
+pub fn get_property(
+    ctx: &mut JSContext,
+    obj: JSValue,
+    prop: JSValue,
+) -> Result<JSValue, PropertyError> {
+    let receiver = obj;
     let mut current = obj;
     loop {
         let obj_ptr = object_ptr(current)?;
@@ -1189,7 +1231,7 @@ pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSVa
                     JSPropType::Normal => Ok(value),
                     JSPropType::VarRef => read_var_ref_value(value),
                     JSPropType::Special => get_special_prop(ctx, value),
-                    JSPropType::GetSet => Err(PropertyError::Unsupported("getter/setter")),
+                    JSPropType::GetSet => call_getset_getter(ctx, receiver, value),
                 };
             }
         } else if let Some(entry) = find_own_property(&list, prop) {
@@ -1197,7 +1239,7 @@ pub fn get_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<JSVa
                 JSPropType::Normal => Ok(entry.value()),
                 JSPropType::VarRef => read_var_ref_value(entry.value()),
                 JSPropType::Special => get_special_prop(ctx, entry.value()),
-                JSPropType::GetSet => Err(PropertyError::Unsupported("getter/setter")),
+                JSPropType::GetSet => call_getset_getter(ctx, receiver, entry.value()),
             };
         }
         let proto = object_proto(obj_ptr);
@@ -1406,9 +1448,31 @@ pub fn set_property(
                 return set_property(ctx, obj, prop, val);
             }
             JSPropType::GetSet => {
-                return Err(PropertyError::Unsupported("setter"));
+                call_getset_setter(ctx, obj, entry.value(), val)?;
+                return Ok(());
             }
         }
+    }
+    let mut current = object_proto(obj_ptr);
+    while current != JS_NULL {
+        let proto_ptr = object_ptr(current)?;
+        let proto_props = PropertyList::from_value(object_props(proto_ptr))?;
+        if ctx.is_rom_ptr(proto_props.array.base) {
+            if let Some((value, meta)) = find_own_property_linear_rom(ctx, &proto_props, prop) {
+                if meta.prop_type() == JSPropType::GetSet {
+                    call_getset_setter(ctx, obj, value, val)?;
+                    return Ok(());
+                }
+                break;
+            }
+        } else if let Some(entry) = find_own_property(&proto_props, prop) {
+            if entry.meta().prop_type() == JSPropType::GetSet {
+                call_getset_setter(ctx, obj, entry.value(), val)?;
+                return Ok(());
+            }
+            break;
+        }
+        current = object_proto(proto_ptr);
     }
     define_property_internal(
         ctx,
@@ -1524,6 +1588,9 @@ pub(crate) fn debug_property(
 mod tests {
     use super::*;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
+    use crate::jsvalue::{
+        is_bool, value_get_special_value, value_make_special, JS_TAG_SHORT_FUNC,
+    };
     use core::mem::{align_of, size_of};
 
     fn new_ctx() -> JSContext {
@@ -1533,6 +1600,18 @@ mod tests {
             prepare_compilation: false,
         })
         .expect("context init")
+    }
+
+    fn short_func_by_name(ctx: &JSContext, func_name: &str) -> JSValue {
+        let idx = ctx
+            .c_function_table()
+            .iter()
+            .position(|def| def.func_name == func_name)
+            .expect("cfunc index");
+        value_make_special(
+            JS_TAG_SHORT_FUNC,
+            u32::try_from(idx).expect("cfunc index fits"),
+        )
     }
 
     #[test]
@@ -1585,7 +1664,7 @@ mod tests {
         let key = new_short_int(1);
         let value = new_short_int(123);
         define_property_value(&mut ctx, obj, key, value).expect("define");
-        let got = get_property(&ctx, obj, key).expect("get");
+        let got = get_property(&mut ctx, obj, key).expect("get");
         assert_eq!(got, value);
         assert!(has_property(&ctx, obj, key).expect("has"));
     }
@@ -1673,5 +1752,33 @@ mod tests {
         assert_eq!(entry.meta().prop_type(), JSPropType::Normal);
         let expected = ctx.class_proto()[JSObjectClass::Object as usize];
         assert_eq!(entry.value(), expected);
+    }
+
+    #[test]
+    fn get_property_calls_getter() {
+        let mut ctx = new_ctx();
+        let obj = ctx
+            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .expect("object");
+        let key = ctx.intern_string(b"value").expect("key");
+        let getter = short_func_by_name(&ctx, "js_global_isNaN");
+        define_property_getset(&mut ctx, obj, key, getter, JS_UNDEFINED).expect("define");
+
+        let got = get_property(&mut ctx, obj, key).expect("get");
+        assert!(is_bool(got));
+        assert_eq!(value_get_special_value(got), 1);
+    }
+
+    #[test]
+    fn set_property_calls_setter() {
+        let mut ctx = new_ctx();
+        let array = ctx.alloc_array(0).expect("array");
+        let key = ctx.intern_string(b"x").expect("key");
+        let setter = short_func_by_name(&ctx, "js_array_push");
+        define_property_getset(&mut ctx, array, key, JS_UNDEFINED, setter).expect("define");
+
+        set_property(&mut ctx, array, key, new_short_int(7)).expect("set");
+        let got = get_property(&mut ctx, array, new_short_int(0)).expect("get");
+        assert_eq!(value_get_int(got), 7);
     }
 }

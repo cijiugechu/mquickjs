@@ -1005,34 +1005,25 @@ pub fn js_function_get_prototype(
     }
     match header.class_id() {
         c if c == JSObjectClass::Closure as u8 => {
-            // Check if prototype property exists, otherwise create one
+            let obj = match ctx.alloc_object_default() {
+                Ok(o) => o,
+                Err(_) => return JS_EXCEPTION,
+            };
+            let ctor_key = match ctx.intern_string(b"constructor") {
+                Ok(k) => k,
+                Err(_) => return JS_EXCEPTION,
+            };
+            if define_property_value(ctx, obj, ctor_key, this_val).is_err() {
+                return JS_EXCEPTION;
+            }
             let proto_key = match ctx.intern_string(b"prototype") {
                 Ok(k) => k,
                 Err(_) => return JS_EXCEPTION,
             };
-            match get_property(ctx, this_val, proto_key) {
-                Ok(val) if !is_undefined(val) => val,
-                _ => {
-                    // Create a new prototype object
-                    let obj = match ctx.alloc_object_default() {
-                        Ok(o) => o,
-                        Err(_) => return JS_EXCEPTION,
-                    };
-                    // Set constructor property
-                    let ctor_key = match ctx.intern_string(b"constructor") {
-                        Ok(k) => k,
-                        Err(_) => return JS_EXCEPTION,
-                    };
-                    if define_property_value(ctx, obj, ctor_key, this_val).is_err() {
-                        return JS_EXCEPTION;
-                    }
-                    // Set prototype property on the function
-                    if define_property_value(ctx, this_val, proto_key, obj).is_err() {
-                        return JS_EXCEPTION;
-                    }
-                    obj
-                }
+            if define_property_value(ctx, this_val, proto_key, obj).is_err() {
+                return JS_EXCEPTION;
             }
+            obj
         }
         c if c == JSObjectClass::CFunction as u8 => JS_UNDEFINED,
         _ => JS_EXCEPTION,
@@ -3492,16 +3483,16 @@ mod tests {
         set_property(&mut ctx, ta, new_short_int(3), new_short_int(40)).unwrap();
         
         // Read elements back
-        let v0 = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        let v0 = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
         assert_eq!(value_get_int(v0), 10);
         
-        let v1 = get_property(&ctx, ta, new_short_int(1)).unwrap();
+        let v1 = get_property(&mut ctx, ta, new_short_int(1)).unwrap();
         assert_eq!(value_get_int(v1), 20);
         
-        let v2 = get_property(&ctx, ta, new_short_int(2)).unwrap();
+        let v2 = get_property(&mut ctx, ta, new_short_int(2)).unwrap();
         assert_eq!(value_get_int(v2), 30);
         
-        let v3 = get_property(&ctx, ta, new_short_int(3)).unwrap();
+        let v3 = get_property(&mut ctx, ta, new_short_int(3)).unwrap();
         assert_eq!(value_get_int(v3), 40);
     }
 
@@ -3523,7 +3514,7 @@ mod tests {
         
         // Set -1, should wrap to 255
         set_property(&mut ctx, ta, new_short_int(0), new_short_int(-1)).unwrap();
-        let v = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
         assert_eq!(value_get_int(v), 255);
     }
 
@@ -3545,7 +3536,7 @@ mod tests {
         
         // Set 255, should wrap to -1
         set_property(&mut ctx, ta, new_short_int(0), new_short_int(255)).unwrap();
-        let v = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
         assert_eq!(value_get_int(v), -1);
     }
 
@@ -3567,12 +3558,12 @@ mod tests {
         
         // Set -100, should clamp to 0
         set_property(&mut ctx, ta, new_short_int(0), new_short_int(-100)).unwrap();
-        let v0 = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        let v0 = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
         assert_eq!(value_get_int(v0), 0);
         
         // Set 1000, should clamp to 255
         set_property(&mut ctx, ta, new_short_int(1), new_short_int(1000)).unwrap();
-        let v1 = get_property(&ctx, ta, new_short_int(1)).unwrap();
+        let v1 = get_property(&mut ctx, ta, new_short_int(1)).unwrap();
         assert_eq!(value_get_int(v1), 255);
     }
 
@@ -3598,7 +3589,7 @@ mod tests {
         
         // Set and read
         set_property(&mut ctx, ta, new_short_int(0), new_short_int(-12345)).unwrap();
-        let v = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
         assert_eq!(value_get_int(v), -12345);
     }
 
@@ -3633,10 +3624,10 @@ mod tests {
         assert_eq!(value_get_int(len), 2);
         
         // Check values are [2, 3]
-        let v0 = get_property(&ctx, sub, new_short_int(0)).unwrap();
+        let v0 = get_property(&mut ctx, sub, new_short_int(0)).unwrap();
         assert_eq!(value_get_int(v0), 2);
         
-        let v1 = get_property(&ctx, sub, new_short_int(1)).unwrap();
+        let v1 = get_property(&mut ctx, sub, new_short_int(1)).unwrap();
         assert_eq!(value_get_int(v1), 3);
     }
 
@@ -3670,7 +3661,7 @@ mod tests {
         
         // Set a value and check we can read it back
         set_property(&mut ctx, ta, new_short_int(0), new_short_int(42)).unwrap();
-        let v = get_property(&ctx, ta, new_short_int(0)).unwrap();
+        let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
         assert_eq!(value_get_int(v), 42);
     }
 }

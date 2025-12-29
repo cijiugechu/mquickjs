@@ -40,7 +40,10 @@ impl From<ContextError> for ConversionError {
 
 impl From<PropertyError> for ConversionError {
     fn from(err: PropertyError) -> Self {
-        ConversionError::Property(err)
+        match err {
+            PropertyError::Interpreter(err) => ConversionError::Interpreter(err),
+            err => ConversionError::Property(err),
+        }
     }
 }
 
@@ -263,7 +266,7 @@ pub(crate) fn concat_strings(
 }
 
 fn get_property_for_value(
-    ctx: &JSContext,
+    ctx: &mut JSContext,
     val: JSValue,
     prop: JSValue,
 ) -> Result<JSValue, ConversionError> {

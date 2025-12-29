@@ -872,6 +872,7 @@ fn call_cfunction_def(
 fn map_property_error(err: PropertyError) -> InterpreterError {
     match err {
         PropertyError::OutOfMemory => InterpreterError::Context(ContextError::OutOfMemory),
+        PropertyError::Interpreter(err) => err,
         _ => InterpreterError::TypeError("property"),
     }
 }
@@ -1055,7 +1056,7 @@ fn add_global_var(
     define_property_varref(ctx, global_obj, name, init).map_err(map_property_error)
 }
 
-fn create_closure(
+pub(crate) fn create_closure(
     ctx: &mut JSContext,
     bfunc: JSValue,
     fp: Option<*mut JSValue>,

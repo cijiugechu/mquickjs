@@ -16,7 +16,7 @@ fn new_context() -> JSContext {
     JSContext::new(ContextConfig {
         image: &MQUICKJS_STDLIB_IMAGE,
         memory_size: 256 * 1024,
-        prepare_compilation: true,
+        prepare_compilation: false,
     })
     .expect("context init")
 }
@@ -124,13 +124,9 @@ fn eval_js_number(ctx: &mut JSContext, code: &[u8]) -> f64 {
 // TypedArray Tests (pending full bytecode evaluation)
 // ---------------------------------------------------------------------------
 
-// TypedArray JavaScript evaluation tests - IGNORED until bytecode evaluation is stable.
-// The TypedArray builtins are implemented, but the full bytecode evaluation path 
-// (particularly `new` operator with constructors) needs more work.
-// See ROADMAP.md item: "Run complete mquickjs-c/tests/*.js test suite once bytecode evaluation is stable"
+// TypedArray JavaScript evaluation tests.
 
 #[test]
-#[ignore = "Pending bytecode evaluation stability - TypedArray builtins are implemented"]
 fn test_typed_array_js_eval() {
     let mut ctx = new_context();
     
@@ -142,7 +138,6 @@ fn test_typed_array_js_eval() {
 }
 
 #[test]
-#[ignore = "Pending bytecode evaluation stability"]
 fn test_typed_array_element_access_js() {
     let mut ctx = new_context();
     
@@ -154,7 +149,6 @@ fn test_typed_array_element_access_js() {
 }
 
 #[test]
-#[ignore = "Pending bytecode evaluation stability"]
 fn test_typed_array_int8_overflow_js() {
     let mut ctx = new_context();
     
@@ -166,7 +160,6 @@ fn test_typed_array_int8_overflow_js() {
 }
 
 #[test]
-#[ignore = "Pending bytecode evaluation stability"]
 fn test_array_buffer_js() {
     let mut ctx = new_context();
     
@@ -178,7 +171,6 @@ fn test_array_buffer_js() {
 }
 
 #[test]
-#[ignore = "Pending bytecode evaluation stability"]
 fn test_typed_array_from_array_buffer_js() {
     let mut ctx = new_context();
     
@@ -192,4 +184,3 @@ fn test_typed_array_from_array_buffer_js() {
     assert!(js_is_number(result));
     assert_eq!(js_to_number(&mut ctx, result), 42.0);
 }
-

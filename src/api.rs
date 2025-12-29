@@ -8,7 +8,7 @@
 
 use crate::context::JSContext;
 use crate::conversion;
-use crate::interpreter::{call, call_with_this};
+use crate::interpreter::{call, call_with_this, create_closure};
 use crate::jsvalue::{JSValue, JS_EXCEPTION, JS_NULL, JS_UNDEFINED};
 use crate::parser::entry::{parse_source, ParseError, ParseOutput};
 use crate::parser::json::JsonValue;
@@ -89,10 +89,9 @@ fn js_eval_internal(
             if func_bytecode == JS_NULL {
                 return Err(ApiError::NotABytecode);
             }
-            // Create a closure from the bytecode
-            let closure = ctx
-                .alloc_closure(func_bytecode, 0)
-                .map_err(|_| ApiError::Runtime("failed to create closure".to_string()))?;
+            // Create a closure from the bytecode (resolves external vars)
+            let closure = create_closure(ctx, func_bytecode, None)
+                .map_err(|e| ApiError::Runtime(format!("{:?}", e)))?;
             // Execute the closure
             call(ctx, closure, &[]).map_err(|e| ApiError::Runtime(format!("{:?}", e)))
         }
@@ -440,5 +439,5 @@ mod tests {
         let global = js_get_global_object(&ctx);
         assert!(js_is_object(global));
     }
-}
 
+}

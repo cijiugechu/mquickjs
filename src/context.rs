@@ -1701,7 +1701,7 @@ fn string_convert_pos(
 
 fn map_property_error(err: PropertyError) -> ContextError {
     debug_assert!(
-        matches!(err, PropertyError::OutOfMemory),
+        matches!(&err, PropertyError::OutOfMemory),
         "unexpected property error: {:?}",
         err
     );
@@ -1830,38 +1830,38 @@ mod tests {
         let global_this_key = ctx.intern_string(b"globalThis").expect("atom");
 
         let global = ctx.global_obj();
-        let object_ctor = get_property(&ctx, global, object_key).expect("Object ctor");
-        let function_ctor = get_property(&ctx, global, function_key).expect("Function ctor");
+        let object_ctor = get_property(&mut ctx, global, object_key).expect("Object ctor");
+        let function_ctor = get_property(&mut ctx, global, function_key).expect("Function ctor");
         assert_eq!(object_ctor, ctx.class_obj()[JSObjectClass::Object as usize]);
         assert_eq!(function_ctor, ctx.class_obj()[JSObjectClass::Closure as usize]);
 
         let object_proto = ctx.class_proto()[JSObjectClass::Object as usize];
         let function_proto = ctx.class_proto()[JSObjectClass::Closure as usize];
         assert_eq!(
-            get_property(&ctx, object_ctor, proto_key).expect("Object.prototype"),
+            get_property(&mut ctx, object_ctor, proto_key).expect("Object.prototype"),
             object_proto
         );
         assert_eq!(
-            get_property(&ctx, function_ctor, proto_key).expect("Function.prototype"),
+            get_property(&mut ctx, function_ctor, proto_key).expect("Function.prototype"),
             function_proto
         );
         assert_eq!(
-            get_property(&ctx, object_proto, ctor_key).expect("Object.prototype.constructor"),
+            get_property(&mut ctx, object_proto, ctor_key).expect("Object.prototype.constructor"),
             object_ctor
         );
         assert_eq!(
-            get_property(&ctx, function_proto, ctor_key).expect("Function.prototype.constructor"),
+            get_property(&mut ctx, function_proto, ctor_key).expect("Function.prototype.constructor"),
             function_ctor
         );
 
-        let has_own = get_property(&ctx, object_proto, has_own_key).expect("hasOwnProperty");
+        let has_own = get_property(&mut ctx, object_proto, has_own_key).expect("hasOwnProperty");
         assert_eq!(value_get_special_tag(has_own), JS_TAG_SHORT_FUNC);
-        let to_string = get_property(&ctx, object_proto, to_string_key).expect("toString");
+        let to_string = get_property(&mut ctx, object_proto, to_string_key).expect("toString");
         assert_eq!(value_get_special_tag(to_string), JS_TAG_SHORT_FUNC);
-        let call = get_property(&ctx, function_proto, call_key).expect("call");
+        let call = get_property(&mut ctx, function_proto, call_key).expect("call");
         assert_eq!(value_get_special_tag(call), JS_TAG_SHORT_FUNC);
 
-        let global_this = get_property(&ctx, global, global_this_key).expect("globalThis");
+        let global_this = get_property(&mut ctx, global, global_this_key).expect("globalThis");
         assert_eq!(global_this, global);
     }
 

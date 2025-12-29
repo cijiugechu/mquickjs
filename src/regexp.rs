@@ -1222,14 +1222,14 @@ mod tests {
         let result = regexp_exec(&mut ctx, re, input, RegExpExecMode::Exec).expect("exec");
         let index_key = ctx.intern_string(b"index").expect("index");
         let input_key = ctx.intern_string(b"input").expect("input key");
-        let index_val = get_property(&ctx, result, index_key).expect("index prop");
+        let index_val = get_property(&mut ctx, result, index_key).expect("index prop");
         assert!(is_int(index_val));
         assert_eq!(value_get_int(index_val), 1);
-        let input_val = get_property(&ctx, result, input_key).expect("input prop");
+        let input_val = get_property(&mut ctx, result, input_key).expect("input prop");
         let mut scratch = [0u8; 5];
         let view = string_view(input_val, &mut scratch).expect("input view");
         assert_eq!(view.bytes(), b"cat");
-        let match_val = get_property(&ctx, result, new_short_int(0)).expect("match");
+        let match_val = get_property(&mut ctx, result, new_short_int(0)).expect("match");
         let view = string_view(match_val, &mut scratch).expect("match view");
         assert_eq!(view.bytes(), b"a");
     }
