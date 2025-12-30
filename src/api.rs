@@ -7,7 +7,9 @@
 //! - `js_run` - Execute parsed bytecode
 
 use crate::context::{BacktraceLocation, JSContext};
+pub use crate::exception::JsFormatArg;
 use crate::conversion;
+use crate::enums::JSObjectClass;
 use crate::interpreter::{call, call_with_this, create_closure};
 use crate::jsvalue::{JSValue, JS_EXCEPTION, JS_NULL, JS_UNDEFINED};
 use crate::parser::entry::{parse_source, ParseError, ParseOutput};
@@ -203,6 +205,105 @@ pub fn js_run(ctx: &mut JSContext, func: JSValue) -> JSValue {
         Ok(val) => val,
         Err(_) => JS_EXCEPTION,
     }
+}
+
+/// Throw a JavaScript value as an exception.
+pub fn js_throw(ctx: &mut JSContext, obj: JSValue) -> JSValue {
+    ctx.throw(obj)
+}
+
+/// Throw a formatted Error instance with the given class.
+pub fn js_throw_error(
+    ctx: &mut JSContext,
+    class: JSObjectClass,
+    message: &str,
+) -> JSValue {
+    ctx.throw_error(class, message)
+}
+
+/// Throw a formatted Error instance with the given class.
+pub fn js_throw_error_fmt(
+    ctx: &mut JSContext,
+    class: JSObjectClass,
+    fmt: &str,
+    args: &[JsFormatArg<'_>],
+) -> JSValue {
+    ctx.throw_error_fmt(class, fmt, args)
+}
+
+/// Throw a TypeError with a static message.
+pub fn js_throw_type_error(ctx: &mut JSContext, message: &str) -> JSValue {
+    ctx.throw_type_error(message)
+}
+
+/// Throw a TypeError with formatted args.
+pub fn js_throw_type_error_fmt(
+    ctx: &mut JSContext,
+    fmt: &str,
+    args: &[JsFormatArg<'_>],
+) -> JSValue {
+    ctx.throw_type_error_fmt(fmt, args)
+}
+
+/// Throw a ReferenceError with a static message.
+pub fn js_throw_reference_error(ctx: &mut JSContext, message: &str) -> JSValue {
+    ctx.throw_reference_error(message)
+}
+
+/// Throw a ReferenceError with formatted args.
+pub fn js_throw_reference_error_fmt(
+    ctx: &mut JSContext,
+    fmt: &str,
+    args: &[JsFormatArg<'_>],
+) -> JSValue {
+    ctx.throw_reference_error_fmt(fmt, args)
+}
+
+/// Throw a RangeError with a static message.
+pub fn js_throw_range_error(ctx: &mut JSContext, message: &str) -> JSValue {
+    ctx.throw_range_error(message)
+}
+
+/// Throw a RangeError with formatted args.
+pub fn js_throw_range_error_fmt(
+    ctx: &mut JSContext,
+    fmt: &str,
+    args: &[JsFormatArg<'_>],
+) -> JSValue {
+    ctx.throw_range_error_fmt(fmt, args)
+}
+
+/// Throw a SyntaxError with a static message.
+pub fn js_throw_syntax_error(ctx: &mut JSContext, message: &str) -> JSValue {
+    ctx.throw_syntax_error(message)
+}
+
+/// Throw a SyntaxError with formatted args.
+pub fn js_throw_syntax_error_fmt(
+    ctx: &mut JSContext,
+    fmt: &str,
+    args: &[JsFormatArg<'_>],
+) -> JSValue {
+    ctx.throw_syntax_error_fmt(fmt, args)
+}
+
+/// Throw an InternalError with a static message.
+pub fn js_throw_internal_error(ctx: &mut JSContext, message: &str) -> JSValue {
+    ctx.throw_internal_error(message)
+}
+
+/// Throw an InternalError with formatted args.
+pub fn js_throw_internal_error_fmt(
+    ctx: &mut JSContext,
+    fmt: &str,
+    args: &[JsFormatArg<'_>],
+) -> JSValue {
+    ctx.throw_internal_error_fmt(fmt, args)
+}
+
+/// Throw the standard out-of-memory error.
+pub fn js_throw_out_of_memory(ctx: &mut JSContext) -> JSValue {
+    ctx.throw_out_of_memory()
 }
 
 /// Get the global object from the context.

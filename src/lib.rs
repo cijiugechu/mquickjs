@@ -6,6 +6,7 @@ pub mod js_libm;
 pub mod stdlib;
 pub mod string;
 pub mod dtoa;
+pub mod exception;
 pub mod jsvalue;
 pub mod tagged_ptr;
 pub mod memblock;

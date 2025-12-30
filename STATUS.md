@@ -116,7 +116,6 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 
 ## Known gaps (non-CLI/REPL)
 - Date builtin partial: only `Date.now`; constructor throws TypeError and prototype methods are unsupported.
-- Error/exception helpers are incomplete: `JS_Throw*` equivalents and backtrace/stack formatting are missing.
 - Public C API functions are not ported yet (`JS_NewContext`, `JS_FreeContext`, `JS_Eval`, `JS_Parse`, `JS_Call`, etc.; only layouts/constants exist).
 
 ## Parser port scope (C -> Rust)

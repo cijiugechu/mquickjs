@@ -1677,6 +1677,12 @@ pub fn call_with_this(
         }
         let opcode = byte_slice[pc];
         pc += 1;
+        if let Ok(pc_offset) = i32::try_from(pc) {
+            unsafe {
+                // SAFETY: fp points at the current frame header.
+                ptr::write_unaligned(fp.offset(FRAME_OFFSET_CUR_PC), new_short_int(pc_offset));
+            }
+        }
         match opcode {
             op if op == crate::opcode::OP_RETURN.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);

@@ -8,6 +8,7 @@ use crate::containers::{
 };
 use crate::cutils::{float64_as_uint64, unicode_to_utf8, utf8_get};
 use crate::enums::JSObjectClass;
+use crate::exception::{format_js_message, JsFormatArg};
 use crate::gc::{GcMarkConfig};
 use crate::gc_ref::{GcRef, GcRefState};
 use crate::gc_runtime::{gc_collect, GcRuntimeRoots};
@@ -46,6 +47,7 @@ const ROOT_GLOBAL_OBJ: usize = 2;
 const ROOT_MINUS_ZERO: usize = 3;
 
 const BACKTRACE_MAX_LEN: usize = 127;
+const ERROR_MESSAGE_MAX_LEN: usize = 127;
 const BACKTRACE_MAX_LEVELS: usize = 10;
 
 // Keep in sync with the interpreter frame layout.
@@ -606,6 +608,27 @@ impl JSContext {
             Ok(val) => val,
             Err(_) => return self.throw_out_of_memory(),
         };
+        self.throw_error_with_message(class, msg_val)
+    }
+
+    pub(crate) fn throw_error_fmt(
+        &mut self,
+        class: JSObjectClass,
+        fmt: &str,
+        args: &[JsFormatArg<'_>],
+    ) -> JSValue {
+        let mut msg_bytes = format_js_message(fmt, args, ERROR_MESSAGE_MAX_LEN);
+        if let Some(pos) = msg_bytes.iter().position(|b| *b == 0) {
+            msg_bytes.truncate(pos);
+        }
+        let msg_val = match self.new_string_len(&msg_bytes) {
+            Ok(val) => val,
+            Err(_) => return self.throw_out_of_memory(),
+        };
+        self.throw_error_with_message(class, msg_val)
+    }
+
+    fn throw_error_with_message(&mut self, class: JSObjectClass, msg_val: JSValue) -> JSValue {
         let mut msg_ref = GcRef::new(JS_UNDEFINED);
         let msg_slot = self.gc_refs.push_gc_ref(&mut msg_ref);
         unsafe {
@@ -634,9 +657,22 @@ impl JSContext {
         self.throw_error(JSObjectClass::TypeError, message)
     }
 
+    pub(crate) fn throw_type_error_fmt(&mut self, fmt: &str, args: &[JsFormatArg<'_>]) -> JSValue {
+        self.throw_error_fmt(JSObjectClass::TypeError, fmt, args)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn throw_reference_error(&mut self, message: &str) -> JSValue {
         self.throw_error(JSObjectClass::ReferenceError, message)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn throw_reference_error_fmt(
+        &mut self,
+        fmt: &str,
+        args: &[JsFormatArg<'_>],
+    ) -> JSValue {
+        self.throw_error_fmt(JSObjectClass::ReferenceError, fmt, args)
     }
 
     #[allow(dead_code)]
@@ -644,12 +680,33 @@ impl JSContext {
         self.throw_error(JSObjectClass::RangeError, message)
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn throw_range_error_fmt(&mut self, fmt: &str, args: &[JsFormatArg<'_>]) -> JSValue {
+        self.throw_error_fmt(JSObjectClass::RangeError, fmt, args)
+    }
+
     pub(crate) fn throw_syntax_error(&mut self, message: &str) -> JSValue {
         self.throw_error(JSObjectClass::SyntaxError, message)
     }
 
+    pub(crate) fn throw_syntax_error_fmt(
+        &mut self,
+        fmt: &str,
+        args: &[JsFormatArg<'_>],
+    ) -> JSValue {
+        self.throw_error_fmt(JSObjectClass::SyntaxError, fmt, args)
+    }
+
     pub(crate) fn throw_internal_error(&mut self, message: &str) -> JSValue {
         self.throw_error(JSObjectClass::InternalError, message)
+    }
+
+    pub(crate) fn throw_internal_error_fmt(
+        &mut self,
+        fmt: &str,
+        args: &[JsFormatArg<'_>],
+    ) -> JSValue {
+        self.throw_error_fmt(JSObjectClass::InternalError, fmt, args)
     }
 
     pub(crate) fn throw_out_of_memory(&mut self) -> JSValue {
@@ -2086,15 +2143,25 @@ unsafe extern "C" fn dummy_write_func(_opaque: *mut c_void, _buf: *const c_void,
 mod tests {
     use super::*;
     use crate::cutils::unicode_to_utf8;
+    use crate::exception::JsFormatArg;
     use crate::jsvalue::{
         is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value,
-        value_to_ptr, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR,
+        value_to_ptr, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR, JS_EXCEPTION,
     };
     use crate::memblock::Float64Header;
     use crate::property::get_property;
     use crate::string::runtime::string_view;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
     use core::slice;
+
+    fn new_context() -> JSContext {
+        JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+        })
+        .expect("context init")
+    }
 
     fn bytes_from_val(val: JSValue) -> Vec<u8> {
         let mut scratch = [0u8; 5];
@@ -2431,4 +2498,35 @@ mod tests {
         assert_eq!(ctx.atom_tables().unique_len(), expected);
         assert_eq!(ctx.n_rom_atom_tables(), 0);
     }
+
+    #[test]
+    fn throw_error_format_includes_jsvalue() {
+        let mut ctx = new_context();
+        let prop = ctx.new_string("abc").expect("prop");
+        let val = ctx.throw_type_error_fmt(
+            "cannot read property '%o' of null",
+            &[JsFormatArg::from(prop)],
+        );
+        assert_eq!(val, JS_EXCEPTION);
+        let err = ctx.take_current_exception();
+        let msg = ctx.get_error_message(err).expect("message");
+        assert_eq!(
+            bytes_from_val(msg),
+            b"cannot read property 'abc' of null"
+        );
+    }
+
+    #[test]
+    fn throw_error_format_zero_pads_hex() {
+        let mut ctx = new_context();
+        let val = ctx.throw_internal_error_fmt(
+            "invalid opcode: pc=%u opcode=0x%02x",
+            &[JsFormatArg::from(12u32), JsFormatArg::from(3u32)],
+        );
+        assert_eq!(val, JS_EXCEPTION);
+        let err = ctx.take_current_exception();
+        let msg = ctx.get_error_message(err).expect("message");
+        assert_eq!(bytes_from_val(msg), b"invalid opcode: pc=12 opcode=0x03");
+    }
+
 }
