@@ -17,6 +17,7 @@ fn new_context() -> JSContext {
         image: &MQUICKJS_STDLIB_IMAGE,
         memory_size: 256 * 1024,
         prepare_compilation: false,
+        finalizers: &[],
     })
     .expect("context init")
 }

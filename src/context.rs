@@ -12,7 +12,7 @@ use crate::exception::{format_js_message, JsFormatArg};
 use crate::gc::{GcMarkConfig};
 use crate::gc_ref::{GcRef, GcRefState};
 use crate::gc_runtime::{gc_collect, GcRuntimeRoots};
-use crate::heap::{HeapLayout, JS_MIN_CRITICAL_FREE_SIZE, JS_MIN_FREE_SIZE};
+use crate::heap::{mblock_size, HeapLayout, JS_MIN_CRITICAL_FREE_SIZE, JS_MIN_FREE_SIZE, JS_STACK_SLACK};
 use crate::jsvalue::{
     from_bits, is_int, is_ptr, new_short_int, raw_bits, value_from_ptr, value_get_int,
     value_get_special_tag, value_get_special_value, value_make_special, value_to_ptr, JSValue,
@@ -49,6 +49,7 @@ const ROOT_MINUS_ZERO: usize = 3;
 const BACKTRACE_MAX_LEN: usize = 127;
 const ERROR_MESSAGE_MAX_LEN: usize = 127;
 const BACKTRACE_MAX_LEVELS: usize = 10;
+const JS_MAX_CALL_RECURSE: i32 = 8;
 
 // Keep in sync with the interpreter frame layout.
 const FRAME_OFFSET_FUNC_OBJ: isize = 3;
@@ -63,13 +64,37 @@ pub(crate) struct BacktraceLocation<'a> {
 
 struct HeapStorage {
     ptr: NonNull<[JSWord]>,
+    owned: bool,
 }
 
 impl HeapStorage {
     fn new(words: usize) -> Self {
         let boxed = vec![0 as JSWord; words].into_boxed_slice();
         let ptr = NonNull::new(Box::into_raw(boxed)).expect("heap storage must be non-null");
-        Self { ptr }
+        Self { ptr, owned: true }
+    }
+
+    unsafe fn from_raw(mem_start: NonNull<u8>, mem_size: usize) -> Result<Self, ContextError> {
+        let word_bytes = JSW as usize;
+        let addr = mem_start.as_ptr() as usize;
+        if !addr.is_multiple_of(word_bytes) {
+            return Err(ContextError::MemoryUnaligned {
+                addr,
+                align: word_bytes,
+            });
+        }
+        let mem_size = mem_size & !(word_bytes - 1);
+        if mem_size < MIN_CONTEXT_BYTES {
+            return Err(ContextError::MemoryTooSmall {
+                min: MIN_CONTEXT_BYTES,
+                actual: mem_size,
+            });
+        }
+        let words = mem_size / word_bytes;
+        let data = mem_start.as_ptr().cast::<JSWord>();
+        let slice = core::ptr::slice_from_raw_parts_mut(data, words);
+        let ptr = NonNull::new(slice).expect("heap storage must be non-null");
+        Ok(Self { ptr, owned: false })
     }
 
     fn base_ptr(&self) -> NonNull<u8> {
@@ -80,9 +105,11 @@ impl HeapStorage {
 
 impl Drop for HeapStorage {
     fn drop(&mut self) {
-        unsafe {
-            // SAFETY: ptr was created from Box::into_raw in HeapStorage::new.
-            drop(Box::from_raw(self.ptr.as_ptr()));
+        if self.owned {
+            unsafe {
+                // SAFETY: ptr was created from Box::into_raw in HeapStorage::new.
+                drop(Box::from_raw(self.ptr.as_ptr()));
+            }
         }
     }
 }
@@ -92,14 +119,17 @@ pub struct ContextConfig<'a> {
     pub image: &'a StdlibImage,
     pub memory_size: usize,
     pub prepare_compilation: bool,
+    pub finalizers: &'a [Option<crate::capi_defs::JSCFinalizer>],
 }
 
 #[derive(Debug)]
 pub enum ContextError {
     MemoryTooSmall { min: usize, actual: usize },
+    MemoryUnaligned { addr: usize, align: usize },
     StdlibWordBytesMismatch { expected: usize, actual: usize },
     StdlibWordTooLarge(u64),
     ClassCountOverflow(u32),
+    ClassIdOutOfBounds { class_id: u8, max: u16 },
     RomOffsetOutOfBounds { offset: usize, len: usize },
     InvalidValueArrayHeader { offset: usize, tag: MTag },
     InvalidRomString { offset: usize, tag: MTag },
@@ -370,6 +400,7 @@ pub struct JSContext {
     atom_tables: AtomTables,
     rom_table: Option<RomTable>,
     c_function_table: Vec<CFunctionDef>,
+    finalizers: Vec<Option<crate::capi_defs::JSCFinalizer>>,
     n_rom_atom_tables: u8,
     sorted_atoms_offset: usize,
     string_pos_cache: [StringPosCacheEntry; JS_STRING_POS_CACHE_SIZE],
@@ -389,13 +420,39 @@ pub struct JSContext {
 impl JSContext {
     pub fn new(config: ContextConfig<'_>) -> Result<Self, ContextError> {
         let word_bytes = JSW as usize;
+        let mem_size = config.memory_size & !(word_bytes - 1);
+        let words = mem_size / word_bytes;
+        let heap_storage = HeapStorage::new(words);
+        Self::init_with_storage(heap_storage, mem_size, config)
+    }
+
+    /// # Safety
+    /// `mem_start` must be valid for `mem_size` bytes and remain alive for
+    /// the lifetime of the context.
+    pub unsafe fn new_in_memory(
+        mem_start: NonNull<u8>,
+        mem_size: usize,
+        config: ContextConfig<'_>,
+    ) -> Result<Self, ContextError> {
+        let word_bytes = JSW as usize;
+        let mem_size = mem_size & !(word_bytes - 1);
+        let heap_storage = unsafe { HeapStorage::from_raw(mem_start, mem_size)? };
+        Self::init_with_storage(heap_storage, mem_size, config)
+    }
+
+    fn init_with_storage(
+        heap_storage: HeapStorage,
+        mem_size: usize,
+        config: ContextConfig<'_>,
+    ) -> Result<Self, ContextError> {
+        let word_bytes = JSW as usize;
         if config.image.word_bytes as usize != word_bytes {
             return Err(ContextError::StdlibWordBytesMismatch {
                 expected: word_bytes,
                 actual: config.image.word_bytes as usize,
             });
         }
-        let mem_size = config.memory_size & !(word_bytes - 1);
+        let mem_size = mem_size & !(word_bytes - 1);
         if mem_size < MIN_CONTEXT_BYTES {
             return Err(ContextError::MemoryTooSmall {
                 min: MIN_CONTEXT_BYTES,
@@ -405,8 +462,6 @@ impl JSContext {
         let class_count = u16::try_from(config.image.class_count)
             .map_err(|_| ContextError::ClassCountOverflow(config.image.class_count))?;
 
-        let words = mem_size / word_bytes;
-        let heap_storage = HeapStorage::new(words);
         let base = heap_storage.base_ptr();
         let stack_top = unsafe {
             // SAFETY: heap_storage has `mem_size` writable bytes.
@@ -438,6 +493,7 @@ impl JSContext {
             atom_tables: AtomTables::new(),
             rom_table: None,
             c_function_table: Vec::new(),
+            finalizers: config.finalizers.to_vec(),
             n_rom_atom_tables: 0,
             sorted_atoms_offset: config.image.sorted_atoms_offset as usize,
             string_pos_cache: [StringPosCacheEntry::new(JS_NULL, 0, 0); JS_STRING_POS_CACHE_SIZE],
@@ -474,6 +530,62 @@ impl JSContext {
         &mut self.heap
     }
 
+    pub fn set_opaque(&mut self, opaque: *mut c_void) {
+        self.opaque = opaque;
+    }
+
+    pub fn opaque(&self) -> *mut c_void {
+        self.opaque
+    }
+
+    pub fn set_interrupt_handler(&mut self, handler: Option<JSInterruptHandler>) {
+        self.interrupt_handler = handler;
+    }
+
+    pub fn set_log_func(&mut self, write_func: Option<JSWriteFunc>) {
+        self.write_func = write_func.unwrap_or(dummy_write_func);
+    }
+
+    pub fn set_random_seed(&mut self, seed: u64) {
+        self.random_state = seed;
+    }
+
+    pub fn push_gc_ref(&mut self, reference: &mut GcRef) -> *mut JSValue {
+        self.gc_refs.push_gc_ref(reference)
+    }
+
+    pub fn pop_gc_ref(&mut self, reference: &GcRef) -> JSValue {
+        self.gc_refs.pop_gc_ref(reference)
+    }
+
+    pub fn add_gc_ref(&mut self, reference: &mut GcRef) -> *mut JSValue {
+        self.gc_refs.add_gc_ref(reference)
+    }
+
+    pub fn delete_gc_ref(&mut self, reference: &GcRef) {
+        self.gc_refs.delete_gc_ref(reference);
+    }
+
+    pub fn write_log(&self, buf: &[u8]) {
+        unsafe {
+            // SAFETY: write_func follows the JSWriteFunc contract.
+            (self.write_func)(self.opaque, buf.as_ptr().cast::<c_void>(), buf.len());
+        }
+    }
+
+    pub fn gc(&mut self) {
+        let config = GcMarkConfig {
+            keep_atoms: true,
+            ..GcMarkConfig::default()
+        };
+        let heap = &mut self.heap as *mut HeapLayout;
+        let ctx_ptr = self as *mut JSContext;
+        unsafe {
+            // SAFETY: ctx_ptr/heap remain valid for the duration of the GC call.
+            (*ctx_ptr).run_gc_with_config(&mut *heap, config);
+        }
+    }
+
     pub fn sp(&self) -> NonNull<JSValue> {
         self.sp
     }
@@ -481,6 +593,58 @@ impl JSContext {
     pub(crate) fn set_sp(&mut self, sp: NonNull<JSValue>) {
         self.sp = sp;
         self.heap.set_stack_bottom(sp);
+    }
+
+    pub fn stack_check(&mut self, len: u32) -> Result<(), ContextError> {
+        let len = len as usize + JS_STACK_SLACK as usize;
+        let sp = self.sp.as_ptr();
+        let new_sp = unsafe { sp.sub(len) };
+        let new_bottom = NonNull::new(new_sp).expect("stack bottom must be non-null");
+        let size = len * size_of::<JSValue>();
+        let ctx_ptr = self as *mut JSContext;
+        let ok = self.heap.check_free_mem(new_bottom, size, |heap| unsafe {
+            let ctx = &mut *ctx_ptr;
+            if ctx.in_out_of_memory {
+                return;
+            }
+            ctx.in_out_of_memory = true;
+            ctx.run_gc_with_config(heap, GcMarkConfig {
+                keep_atoms: true,
+                ..GcMarkConfig::default()
+            });
+            ctx.in_out_of_memory = false;
+        });
+        if !ok {
+            let _ = self.throw_out_of_memory();
+            return Err(ContextError::OutOfMemory);
+        }
+        self.heap.set_stack_bottom(new_bottom);
+        Ok(())
+    }
+
+    pub fn push_arg(&mut self, val: JSValue) {
+        let new_sp = unsafe { self.sp.as_ptr().sub(1) };
+        unsafe {
+            // SAFETY: caller ensures the stack has room via stack_check.
+            ptr::write_unaligned(new_sp, val);
+        }
+        let new_sp = NonNull::new(new_sp).expect("stack pointer");
+        self.sp = new_sp;
+        if new_sp.as_ptr() < self.heap.stack_bottom().as_ptr() {
+            self.heap.set_stack_bottom(new_sp);
+        }
+    }
+
+    pub(crate) fn enter_call(&mut self) -> bool {
+        if self.js_call_rec_count >= JS_MAX_CALL_RECURSE {
+            return false;
+        }
+        self.js_call_rec_count += 1;
+        true
+    }
+
+    pub(crate) fn exit_call(&mut self) {
+        self.js_call_rec_count = self.js_call_rec_count.saturating_sub(1);
     }
 
     pub fn fp(&self) -> NonNull<JSValue> {
@@ -565,6 +729,11 @@ impl JSContext {
 
     pub fn atom_tables_mut(&mut self) -> &mut AtomTables {
         &mut self.atom_tables
+    }
+
+    pub(crate) fn add_rom_atom_table(&mut self, table: Vec<JSValue>) {
+        self.atom_tables.add_rom_table(table);
+        self.n_rom_atom_tables = self.n_rom_atom_tables.saturating_add(1);
     }
 
     pub fn empty_props(&self) -> JSValue {
@@ -729,6 +898,21 @@ impl JSContext {
             }
         }
         self.new_float64_slow(value)
+    }
+
+    pub fn new_int64(&mut self, value: i64) -> Result<JSValue, ContextError> {
+        if value >= JS_SHORTINT_MIN as i64 && value <= JS_SHORTINT_MAX as i64 {
+            return Ok(new_short_int(value as i32));
+        }
+        self.new_float64(value as f64)
+    }
+
+    pub fn new_int32(&mut self, value: i32) -> Result<JSValue, ContextError> {
+        self.new_int64(i64::from(value))
+    }
+
+    pub fn new_uint32(&mut self, value: u32) -> Result<JSValue, ContextError> {
+        self.new_int64(i64::from(value))
     }
 
     fn new_float64_slow(&mut self, value: f64) -> Result<JSValue, ContextError> {
@@ -1252,6 +1436,10 @@ impl JSContext {
     }
 
     fn run_gc(&mut self, heap: &mut HeapLayout) {
+        self.run_gc_with_config(heap, GcMarkConfig::default());
+    }
+
+    fn run_gc_with_config(&mut self, heap: &mut HeapLayout, mark_config: GcMarkConfig) {
         let parse_state = self.parse_state;
         let gc_refs = &self.gc_refs as *const GcRefState;
         let sp = self.sp.as_ptr();
@@ -1284,7 +1472,7 @@ impl JSContext {
         }
         unsafe {
             // SAFETY: heap layout and roots are valid for the duration of collection.
-            gc_collect(heap, &mut roots, GcMarkConfig::default(), None);
+            gc_collect(heap, &mut roots, mark_config, None);
         }
     }
 
@@ -1363,6 +1551,36 @@ impl JSContext {
         let size = Object::PAYLOAD_OFFSET + extra_words * JSW as usize;
         let ptr = self.alloc_mblock(size, MTag::Object)?;
         let header = ObjectHeader::new(class_id as u8, extra_words as JSWord, false);
+        unsafe {
+            // SAFETY: ptr is a writable object allocation.
+            ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), header.header().word());
+            let proto_ptr = ptr.as_ptr().add(Object::PROTO_OFFSET) as *mut JSValue;
+            let props_ptr = ptr.as_ptr().add(Object::PROPS_OFFSET) as *mut JSValue;
+            ptr::write_unaligned(proto_ptr, proto);
+            ptr::write_unaligned(props_ptr, self.empty_props());
+            if extra_words > 0 {
+                ptr::write_bytes(ptr.as_ptr().add(Object::PAYLOAD_OFFSET), 0, extra_words * JSW as usize);
+            }
+        }
+        Ok(value_from_ptr(ptr))
+    }
+
+    pub fn alloc_object_class_id(
+        &mut self,
+        class_id: u8,
+        proto: JSValue,
+        extra_size_bytes: usize,
+    ) -> Result<JSValue, ContextError> {
+        if class_id as usize >= self.class_count as usize {
+            return Err(ContextError::ClassIdOutOfBounds {
+                class_id,
+                max: self.class_count,
+            });
+        }
+        let extra_words = extra_size_bytes.div_ceil(JSW as usize);
+        let size = Object::PAYLOAD_OFFSET + extra_words * JSW as usize;
+        let ptr = self.alloc_mblock(size, MTag::Object)?;
+        let header = ObjectHeader::new(class_id, extra_words as JSWord, false);
         unsafe {
             // SAFETY: ptr is a writable object allocation.
             ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), header.header().word());
@@ -1886,6 +2104,66 @@ impl JSContext {
         Ok(value_from_ptr(ptr))
     }
 
+    fn run_finalizers(&mut self) {
+        if self.finalizers.is_empty() {
+            return;
+        }
+        let base = self.heap.heap_base().as_ptr();
+        let heap_free = self.heap.heap_free().as_ptr();
+        let mut ptr = base;
+        while ptr < heap_free {
+            let size = unsafe {
+                // SAFETY: ptr is within the heap and points at a memblock header.
+                mblock_size(NonNull::new_unchecked(ptr))
+            };
+            let header_word = unsafe {
+                // SAFETY: ptr points to a readable header word.
+                ptr::read_unaligned(ptr.cast::<JSWord>())
+            };
+            let header = MbHeader::from_word(header_word);
+            if header.tag() == MTag::Object {
+                let obj_header = ObjectHeader::from_word(header_word);
+                let class_id = obj_header.class_id();
+                let base_id = JSObjectClass::User as u8;
+                if class_id >= base_id {
+                    let idx = (class_id - base_id) as usize;
+                    if let Some(Some(finalizer)) = self.finalizers.get(idx) {
+                        let obj = ptr as *mut Object;
+                        let payload = unsafe {
+                            // SAFETY: obj points at a valid object payload.
+                            Object::payload_ptr(obj)
+                        };
+                        let user = unsafe {
+                            // SAFETY: payload layout matches the object header for user classes.
+                            core::ptr::addr_of!((*payload).user)
+                        };
+                        let opaque = unsafe {
+                            // SAFETY: user points at initialized user data.
+                            (*user).opaque()
+                        };
+                        unsafe {
+                            // SAFETY: finalizer expects a C-style JSContext pointer.
+                            finalizer(
+                                self as *mut JSContext as *mut crate::capi_defs::JSContext,
+                                opaque,
+                            );
+                        }
+                    }
+                }
+            }
+            ptr = unsafe {
+                // SAFETY: size is the memblock size for ptr.
+                ptr.add(size)
+            };
+        }
+    }
+
+}
+
+impl Drop for JSContext {
+    fn drop(&mut self) {
+        self.run_finalizers();
+    }
 }
 
 fn push_backtrace_line(buf: &mut String, line: &str) -> bool {
@@ -2149,16 +2427,20 @@ mod tests {
         value_to_ptr, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR, JS_EXCEPTION,
     };
     use crate::memblock::Float64Header;
+    use crate::object::{Object, ObjectUserData};
     use crate::property::get_property;
     use crate::string::runtime::string_view;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
+    use core::ffi::c_void;
     use core::slice;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     fn new_context() -> JSContext {
         JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 32 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init")
     }
@@ -2175,6 +2457,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2199,6 +2482,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2253,6 +2537,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2281,6 +2566,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2304,6 +2590,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2318,6 +2605,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2331,6 +2619,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2347,6 +2636,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2360,6 +2650,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2396,6 +2687,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2412,6 +2704,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2436,6 +2729,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2470,6 +2764,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2487,6 +2782,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 32 * 1024,
             prepare_compilation: true,
+            finalizers: &[],
         })
         .expect("context init");
 
@@ -2497,6 +2793,49 @@ mod tests {
             .len();
         assert_eq!(ctx.atom_tables().unique_len(), expected);
         assert_eq!(ctx.n_rom_atom_tables(), 0);
+    }
+
+    unsafe extern "C" fn record_finalizer(
+        _ctx: *mut crate::capi_defs::JSContext,
+        opaque: *mut c_void,
+    ) {
+        let counter = unsafe {
+            // SAFETY: opaque points at the AtomicUsize set by the test.
+            &*(opaque as *const AtomicUsize)
+        };
+        counter.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn drop_runs_user_finalizers() {
+        let counter = AtomicUsize::new(0);
+        let finalizers: [Option<crate::capi_defs::JSCFinalizer>; 1] = [Some(record_finalizer)];
+        {
+            let mut ctx = JSContext::new(ContextConfig {
+                image: &MQUICKJS_STDLIB_IMAGE,
+                memory_size: 16 * 1024,
+                prepare_compilation: false,
+                finalizers: &finalizers,
+            })
+            .expect("context init");
+            let proto = ctx.class_proto()[JSObjectClass::Object as usize];
+            let obj = ctx
+                .alloc_object(JSObjectClass::Object, proto, size_of::<ObjectUserData>())
+                .expect("user object");
+            let obj_ptr = value_to_ptr::<Object>(obj).expect("object ptr");
+            unsafe {
+                // SAFETY: obj_ptr points at a valid object payload.
+                let header_word = ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>());
+                let header = ObjectHeader::from_word(header_word);
+                let patched = ObjectHeader::new(JSObjectClass::User as u8, header.extra_size(), header.gc_mark());
+                ptr::write_unaligned(obj_ptr.as_ptr().cast::<JSWord>(), patched.header().word());
+                let payload = Object::payload_ptr(obj_ptr.as_ptr());
+                let user = core::ptr::addr_of_mut!((*payload).user);
+                let counter_ptr = core::ptr::addr_of!(counter) as *const AtomicUsize as *mut c_void;
+                ptr::write_unaligned(user, ObjectUserData::new(counter_ptr));
+            }
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     #[test]

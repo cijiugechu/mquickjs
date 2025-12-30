@@ -3180,6 +3180,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init")
     }

@@ -1329,10 +1329,29 @@ pub fn call_with_this(
     this_obj: JSValue,
     args: &[JSValue],
 ) -> Result<JSValue, InterpreterError> {
+    call_with_this_flags(ctx, func, this_obj, args, 0)
+}
+
+pub fn call_with_this_flags(
+    ctx: &mut JSContext,
+    func: JSValue,
+    this_obj: JSValue,
+    args: &[JSValue],
+    call_flags: i32,
+) -> Result<JSValue, InterpreterError> {
+    let call_flags =
+        (call_flags & !FRAME_CF_ARGC_MASK) | ((args.len() as i32) & FRAME_CF_ARGC_MASK);
     if let Some(idx) = short_func_index(func) {
         let def = *ctx
             .c_function(idx as usize)
             .ok_or(InterpreterError::InvalidCFunctionIndex(idx))?;
+        let is_ctor = matches!(
+            def.func,
+            BuiltinCFunction::Constructor(_) | BuiltinCFunction::ConstructorMagic(_)
+        );
+        if (call_flags & FRAME_CF_CTOR) != 0 && !is_ctor {
+            return Err(InterpreterError::TypeError("not a constructor"));
+        }
         let mut sp = ctx.sp().as_ptr();
         let prev_sp = ctx.sp();
         unsafe {
@@ -1348,6 +1367,13 @@ pub fn call_with_this(
         }
         let result = call_cfunction_def(ctx, &def, this_obj, &temp_args, JS_UNDEFINED);
         ctx.set_sp(prev_sp);
+        if let Ok(val) = result
+            && (call_flags & FRAME_CF_CTOR) != 0
+            && !is_exception(val)
+            && !val.is_object()
+        {
+            return Ok(this_obj);
+        }
         return result;
     }
     if !is_ptr(func) {
@@ -1437,7 +1463,7 @@ pub fn call_with_this(
         ptr::write_unaligned(sp.add(n_vars), JS_NULL);
         ptr::write_unaligned(sp.add(n_vars + 1), new_short_int(0));
         ptr::write_unaligned(fp.offset(FRAME_OFFSET_SAVED_FP), saved_fp);
-        ptr::write_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS), new_short_int(args.len() as i32));
+        ptr::write_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS), new_short_int(call_flags));
         ptr::write_unaligned(fp.offset(FRAME_OFFSET_THIS_OBJ), this_obj);
         ptr::write_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ), func);
         for idx in 0..max_args {
@@ -2964,6 +2990,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init")
     }

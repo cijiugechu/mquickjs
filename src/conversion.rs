@@ -150,6 +150,10 @@ pub(crate) fn to_int32(ctx: &mut JSContext, val: JSValue) -> Result<i32, Convers
     to_int32_internal(ctx, val, false)
 }
 
+pub(crate) fn to_int32_sat(ctx: &mut JSContext, val: JSValue) -> Result<i32, ConversionError> {
+    to_int32_internal(ctx, val, true)
+}
+
 pub(crate) fn to_string(ctx: &mut JSContext, mut val: JSValue) -> Result<JSValue, ConversionError> {
     loop {
         if is_int(val) {
@@ -526,6 +530,7 @@ mod tests {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 32 * 1024,
             prepare_compilation: false,
+            finalizers: &[],
         })
         .expect("context init")
     }

@@ -1,5 +1,6 @@
 use crate::jsvalue::{JSValue, JS_UNDEFINED};
 use core::cell::UnsafeCell;
+use core::marker::PhantomData;
 use crate::list::{LinkedList, LinkedListLink, UnsafeRef, intrusive_adapter};
 
 // C: `JSGCRef` in mquickjs.h.
@@ -142,6 +143,78 @@ impl GcRefState {
     }
 }
 
+pub struct GcRefStackGuard<'a> {
+    refs: *mut GcRefState,
+    reference: *const GcRef,
+    slot: *mut JSValue,
+    _marker: PhantomData<&'a mut GcRef>,
+}
+
+impl<'a> GcRefStackGuard<'a> {
+    pub fn new(refs: &mut GcRefState, reference: &'a mut GcRef) -> Self {
+        let slot = refs.push_gc_ref(reference);
+        Self {
+            refs: refs as *mut GcRefState,
+            reference: reference as *const GcRef,
+            slot,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn slot(&self) -> *mut JSValue {
+        self.slot
+    }
+
+    pub fn pop(self) -> JSValue {
+        let mut guard = core::mem::ManuallyDrop::new(self);
+        unsafe {
+            // SAFETY: guard holds the reference until pop completes.
+            (*guard.refs).pop_gc_ref(&*guard.reference)
+        }
+    }
+}
+
+impl Drop for GcRefStackGuard<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: refs/reference remain valid while the guard lives.
+            (*self.refs).pop_gc_ref(&*self.reference);
+        }
+    }
+}
+
+pub struct GcRefListGuard<'a> {
+    refs: *mut GcRefState,
+    reference: *const GcRef,
+    slot: *mut JSValue,
+    _marker: PhantomData<&'a mut GcRef>,
+}
+
+impl<'a> GcRefListGuard<'a> {
+    pub fn new(refs: &mut GcRefState, reference: &'a mut GcRef) -> Self {
+        let slot = refs.add_gc_ref(reference);
+        Self {
+            refs: refs as *mut GcRefState,
+            reference: reference as *const GcRef,
+            slot,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn slot(&self) -> *mut JSValue {
+        self.slot
+    }
+}
+
+impl Drop for GcRefListGuard<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: refs/reference remain valid while the guard lives.
+            (*self.refs).delete_gc_ref(&*self.reference);
+        }
+    }
+}
+
 impl Default for GcRefState {
     fn default() -> Self {
         Self::new()
@@ -180,6 +253,38 @@ mod tests {
         assert!(!state.is_list_empty());
         state.delete_gc_ref(&reference);
         assert!(state.is_list_empty());
+    }
+
+    #[test]
+    fn stack_guard_pops_on_drop() {
+        let mut state = GcRefState::new();
+        let mut reference = GcRef::new(JS_FALSE);
+        {
+            let guard = GcRefStackGuard::new(&mut state, &mut reference);
+            // SAFETY: slot points to the ref value while the ref is linked.
+            unsafe {
+                *guard.slot() = JS_TRUE;
+            }
+            assert!(!state.is_stack_empty());
+        }
+        assert!(state.is_stack_empty());
+        assert_eq!(reference.val(), JS_TRUE);
+    }
+
+    #[test]
+    fn list_guard_removes_on_drop() {
+        let mut state = GcRefState::new();
+        let mut reference = GcRef::new(JS_FALSE);
+        {
+            let guard = GcRefListGuard::new(&mut state, &mut reference);
+            // SAFETY: slot points to the ref value while the ref is linked.
+            unsafe {
+                *guard.slot() = JS_TRUE;
+            }
+            assert!(!state.is_list_empty());
+        }
+        assert!(state.is_list_empty());
+        assert_eq!(reference.val(), JS_TRUE);
     }
 
     #[test]
