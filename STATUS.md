@@ -106,8 +106,18 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Fixed Miri stacked-borrows in parser parse-state tracking by switching `JSParseState` fields to interior mutability (`Cell`), syncing lexer tokens via raw pointer writes to avoid aliasing, and using a Miri-only pointer exposure when attaching parse state so GC/lexer pointers survive interior updates.
 - Added public API module in `src/api.rs` with `js_eval`, `js_parse`, `js_call`, `js_run` entry points; routes JSON parsing through `src/parser/json.rs`, RegExp compilation through `src/parser/regexp.rs`, and JavaScript program evaluation through the parser/interpreter pipeline with tests for JSON values and basic object/array creation.
 - Extended `src/builtins.rs` with Object builtins (constructor, hasOwnProperty, toString, defineProperty, getPrototypeOf, setPrototypeOf, create, keys), Function builtins (constructor, call, apply, bind, toString, get/set prototype, get_length_name), String builtins (constructor, length, slice, substring, charAt, charCodeAt, codePointAt, fromCharCode, fromCodePoint, concat, indexOf, lastIndexOf, toLowerCase, toUpperCase, trim, trimStart, trimEnd, split, replace, replaceAll), Array builtins (constructor, length, push, pop, shift, unshift, join, toString, isArray, reverse, concat, indexOf, lastIndexOf, slice, splice, every, some, forEach, map, filter, reduce, reduceRight, sort), and JSON builtins (parse, stringify).
-- Added TypedArray/ArrayBuffer builtin stubs in `src/builtins.rs` (full implementation pending proper byte storage and element type handling).
+- Added full TypedArray/ArrayBuffer builtins in `src/builtins.rs` (constructors, length/byteLength/byteOffset/buffer getters, subarray, element get/set with per-type coercion) with unit tests.
 - Created integration test framework in `tests/integration_tests.rs` with JSON parsing and global object tests; wired `src/stdlib/cfunc.rs` to dispatch all new builtins.
+
+## Known gaps (non-CLI/REPL)
+
+- RegExp builtins are missing (RegExp constructor/prototype: lastIndex/source/flags, exec/test); String regexp helpers are missing (`match`, `search`, and the RegExp path for `split`/`replace`).
+- Boolean builtin missing (`js_boolean_constructor`), and `JS_ToObject` does not box primitives yet.
+- Date builtin partial: only `Date.now`; constructor/prototype methods are missing.
+- Global `eval` builtin not wired (`js_global_eval`).
+- Error/exception helpers are incomplete: `JS_Throw*` equivalents and backtrace/stack formatting are missing.
+- `JSON.stringify` replacer/space arguments are unimplemented.
+- Public C API functions are not ported yet (`JS_NewContext`, `JS_FreeContext`, `JS_Eval`, `JS_Parse`, `JS_Call`, etc.; only layouts/constants exist).
 
 ## Parser port scope (C -> Rust)
 

@@ -9,10 +9,11 @@
 
 ### Runtime and builtins
 - Builtin gap: C declares 84 `js_*` builtins, Rust implements most common ones.
-- Implemented families: Object, Function, String, Array, JSON, TypedArray, ArrayBuffer, Error. RegExp builtins are still missing; runtime exec is now in place.
-- Missing families: Date (partial), Boolean, Math (partial).
+- Implemented families: Object, Function, String (non-regexp methods), Array, JSON (basic), TypedArray, ArrayBuffer, Error, Math. RegExp builtins are still missing; runtime exec is now in place.
+- Missing builtins: RegExp constructor/prototype (lastIndex/source/flags, exec/test) and String regexp methods (match/search plus RegExp path for split/replace); Date constructor/prototype (only Date.now exists); Boolean constructor; global eval builtin.
+- JSON.stringify replacer/space arguments are unimplemented.
 - Core conversions and slow paths exist in Rust (conversion module + interpreter slow paths); `JS_ToObject` still lacks primitive boxing.
-- Exceptions and Error objects are incomplete; `JS_Throw*` and error formatting are not implemented.
+- Exceptions and Error objects are incomplete; `JS_Throw*` and error/backtrace formatting are not implemented.
 - Public C API is largely absent: `JS_NewContext`, `JS_FreeContext`, `JS_Eval`, `JS_Parse`, `JS_Call`, etc. Only layouts and constants exist.
 
 ## Port roadmap
@@ -35,7 +36,7 @@
    - Implemented `OP_for_in_start`, `OP_for_of_start`, `OP_for_of_next`.
    - Implemented `OP_regexp` and connected RegExp exec runtime with tests.
 6. **Builtins and public API** (mostly complete)
-   - Port missing builtin families in priority order: Object/Function/String/Array, then Error/RegExp/JSON, then TypedArray/ArrayBuffer.
+   - Port remaining builtin gaps in priority order: RegExp constructor/proto + String regexp helpers, Boolean, Date constructor/proto, global eval, JSON.stringify replacer/space, error throw/backtrace.
    - [x] Added public API module (`src/api.rs`) with `js_eval`, `js_parse`, `js_call`, `js_run` entry points.
    - [x] API routes JSON evaluation, RegExp compilation, and JavaScript program execution through the parser and interpreter.
    - [x] Added Object builtins: constructor, hasOwnProperty, toString, defineProperty, getPrototypeOf, setPrototypeOf, create, keys.
