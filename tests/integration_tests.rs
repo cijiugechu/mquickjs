@@ -73,6 +73,48 @@ fn test_json_parse_array() {
     assert!(js_is_object(result));
 }
 
+#[test]
+fn test_json_stringify_replacer_function() {
+    let mut ctx = new_context();
+    assert_js_true(
+        &mut ctx,
+        br#"var obj = JSON.parse('{"a":1,"b":2}'); var out = JSON.stringify(obj, function(){ if (arguments[0] === 'b') return 3; return arguments[1]; }); out === '{"a":1,"b":3}' || out === '{"b":3,"a":1}'"#,
+    );
+}
+
+#[test]
+fn test_json_stringify_replacer_array() {
+    let mut ctx = new_context();
+    assert_js_true(
+        &mut ctx,
+        br#"var obj = JSON.parse('{"a":1,"b":2,"c":3}'); var repl = JSON.parse('["b","a","b"]'); JSON.stringify(obj, repl) === '{"b":2,"a":1}'"#,
+    );
+}
+
+#[test]
+fn test_json_stringify_space_number() {
+    let mut ctx = new_context();
+    assert_js_true(
+        &mut ctx,
+        br#"var obj = JSON.parse('{"a":1,"b":{"c":2}}'); JSON.stringify(obj, null, 2) === "{\n  \"a\": 1,\n  \"b\": {\n    \"c\": 2\n  }\n}""#,
+    );
+}
+
+#[test]
+fn test_json_stringify_space_string() {
+    let mut ctx = new_context();
+    assert_js_true(
+        &mut ctx,
+        br#"var obj = JSON.parse('{"a":1}'); JSON.stringify(obj, null, "--") === "{\n--\"a\": 1\n}""#,
+    );
+}
+
+#[test]
+fn test_json_stringify_top_level_undefined() {
+    let mut ctx = new_context();
+    assert_js_true(&mut ctx, br#"JSON.stringify(undefined) === undefined"#);
+}
+
 // ---------------------------------------------------------------------------
 // Object Tests
 // ---------------------------------------------------------------------------
@@ -114,6 +156,13 @@ fn eval_js_bool(ctx: &mut JSContext, code: &[u8]) -> bool {
 fn eval_js_number(ctx: &mut JSContext, code: &[u8]) -> f64 {
     let result = eval_js(ctx, code);
     js_to_number(ctx, result)
+}
+
+fn assert_js_true(ctx: &mut JSContext, code: &[u8]) {
+    let result = js_eval(ctx, code, JS_EVAL_RETVAL);
+    assert!(!js_is_exception(result));
+    assert!(is_bool(result));
+    assert_eq!(value_get_special_value(result), 1);
 }
 
 // Note: More comprehensive tests can be added here once the bytecode

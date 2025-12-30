@@ -18,7 +18,7 @@ use crate::jsvalue::{
 #[cfg(target_pointer_width = "64")]
 use crate::jsvalue::{is_short_float, short_float_to_f64};
 use crate::memblock::{MbHeader, MTag};
-use crate::object::{Object, ObjectHeader, RegExp};
+use crate::object::{Object, ObjectHeader, PrimitiveValue, RegExp};
 use crate::parser::regexp_flags::{LRE_FLAG_GLOBAL, LRE_FLAG_STICKY};
 use crate::property::{
     define_property_getset, define_property_value, find_own_property_exposed, get_property,
@@ -3242,177 +3242,365 @@ pub fn js_json_stringify(
     args: &[JSValue],
 ) -> JSValue {
     let val = args.first().copied().unwrap_or(JS_UNDEFINED);
-    // TODO: handle replacer (args[1]) and space (args[2]) arguments
-    let mut result = Vec::new();
-    let mut visited = Vec::new();
+    let replacer = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+    let space = args.get(2).copied().unwrap_or(JS_UNDEFINED);
+    let mut state = match JsonStringifyState::new(ctx, replacer, space) {
+        Ok(state) => state,
+        Err(_) => return JS_EXCEPTION,
+    };
 
-    if stringify_value(ctx, val, &mut result, &mut visited).is_err() {
-        return JS_EXCEPTION;
+    let output = match state.stringify(val) {
+        Ok(output) => output,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    match output {
+        Some(bytes) => ctx.new_string_len(&bytes).unwrap_or(JS_EXCEPTION),
+        None => JS_UNDEFINED,
     }
-
-    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
 }
 
-fn stringify_value(
-    ctx: &mut JSContext,
-    val: JSValue,
-    result: &mut Vec<u8>,
-    visited: &mut Vec<JSValue>,
-) -> Result<(), ()> {
-    // Handle primitives
-    if is_null(val) {
-        result.extend_from_slice(b"null");
-        return Ok(());
+enum JsonReplacer {
+    Function(JSValue),
+    PropertyList(Vec<JSValue>),
+}
+
+struct JsonStringifyState<'a> {
+    ctx: &'a mut JSContext,
+    gap: Vec<u8>,
+    indent: Vec<u8>,
+    replacer: Option<JsonReplacer>,
+    stack: Vec<JSValue>,
+}
+
+impl<'a> JsonStringifyState<'a> {
+    fn new(ctx: &'a mut JSContext, replacer: JSValue, space: JSValue) -> Result<Self, ()> {
+        let replacer = build_json_replacer(ctx, replacer)?;
+        let gap = build_json_gap(ctx, space)?;
+        Ok(Self {
+            ctx,
+            gap,
+            indent: Vec::new(),
+            replacer,
+            stack: Vec::new(),
+        })
     }
 
-    if is_undefined(val) {
-        // undefined converts to "null" in array context, skipped in object context
-        // For top-level, we output undefined (but JSON.stringify returns undefined, not "undefined")
-        result.extend_from_slice(b"null");
-        return Ok(());
-    }
-
-    if is_bool(val) {
-        if value_get_special_value(val) != 0 {
-            result.extend_from_slice(b"true");
+    fn stringify(&mut self, value: JSValue) -> Result<Option<Vec<u8>>, ()> {
+        let holder = self.ctx.alloc_object_default().map_err(|_| ())?;
+        let empty_key = self.ctx.intern_string(b"").map_err(|_| ())?;
+        if crate::property::set_property(self.ctx, holder, empty_key, value).is_err() {
+            return Err(());
+        }
+        let mut out = Vec::new();
+        let wrote = self.str(empty_key, holder, &mut out)?;
+        if wrote {
+            Ok(Some(out))
         } else {
-            result.extend_from_slice(b"false");
+            Ok(None)
         }
-        return Ok(());
     }
 
-    if is_int(val) {
-        let n = value_get_int(val);
-        let s = format!("{}", n);
-        result.extend_from_slice(s.as_bytes());
-        return Ok(());
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    if is_short_float(val) {
-        let d = short_float_to_f64(val);
-        return stringify_number(d, result);
-    }
-
-    if val.is_string() {
-        return stringify_string(ctx, val, result);
-    }
-
-    if is_ptr(val) {
-        // Check for Float64
-        if let Some(d) = read_float64(val) {
-            return stringify_number(d, result);
+    fn str(&mut self, key: JSValue, holder: JSValue, out: &mut Vec<u8>) -> Result<bool, ()> {
+        let prop_key = conversion::to_property_key(self.ctx, key).map_err(|_| ())?;
+        let mut value = get_property(self.ctx, holder, prop_key).map_err(|_| ())?;
+        if value == JS_EXCEPTION {
+            return Err(());
         }
 
-        // Check for string (already handled above via is_string, but double check)
-        let mut scratch = [0u8; 5];
-        if let Some(view) = string_view(val, &mut scratch) {
-            result.push(b'"');
-            for &byte in view.bytes() {
-                match byte {
-                    b'"' => result.extend_from_slice(b"\\\""),
-                    b'\\' => result.extend_from_slice(b"\\\\"),
-                    b'\n' => result.extend_from_slice(b"\\n"),
-                    b'\r' => result.extend_from_slice(b"\\r"),
-                    b'\t' => result.extend_from_slice(b"\\t"),
-                    0x08 => result.extend_from_slice(b"\\b"),
-                    0x0C => result.extend_from_slice(b"\\f"),
-                    c if c < 0x20 => {
-                        result.extend_from_slice(b"\\u00");
-                        result.push(b"0123456789abcdef"[(c >> 4) as usize]);
-                        result.push(b"0123456789abcdef"[(c & 0xf) as usize]);
-                    }
-                    c => result.push(c),
+        if value.is_object() {
+            let to_json_key = self.ctx.intern_string(b"toJSON").map_err(|_| ())?;
+            let to_json = get_property(self.ctx, value, to_json_key).map_err(|_| ())?;
+            if to_json.is_function() {
+                value = crate::interpreter::call_with_this(self.ctx, to_json, value, &[key])
+                    .map_err(|_| ())?;
+                if value == JS_EXCEPTION {
+                    return Err(());
                 }
             }
-            result.push(b'"');
-            return Ok(());
         }
 
-        // Check for function - functions return undefined
-        if val.is_function() {
-            result.extend_from_slice(b"null");
-            return Ok(());
-        }
-
-        // Check for circular reference
-        for &v in visited.iter() {
-            if crate::jsvalue::raw_bits(v) == crate::jsvalue::raw_bits(val) {
-                return Err(()); // Circular reference
+        if let Some(func) = match &self.replacer {
+            Some(JsonReplacer::Function(func)) => Some(*func),
+            _ => None,
+        } {
+            value = crate::interpreter::call_with_this(self.ctx, func, holder, &[key, value])
+                .map_err(|_| ())?;
+            if value == JS_EXCEPTION {
+                return Err(());
             }
         }
-        visited.push(val);
 
-        // Handle Array
-        if let Some((_, len)) = get_array_info(val) {
-            result.push(b'[');
+        if let Some(primitive) = boxed_primitive_value(value) {
+            value = primitive;
+        }
+
+        if is_undefined(value) || value.is_function() {
+            return Ok(false);
+        }
+
+        if is_null(value) {
+            out.extend_from_slice(b"null");
+            return Ok(true);
+        }
+
+        if is_bool(value) {
+            if value_get_special_value(value) != 0 {
+                out.extend_from_slice(b"true");
+            } else {
+                out.extend_from_slice(b"false");
+            }
+            return Ok(true);
+        }
+
+        if value.is_number() {
+            let num = number_to_f64(value).ok_or(())?;
+            stringify_number(num, out)?;
+            return Ok(true);
+        }
+
+        if value.is_string() {
+            stringify_string(self.ctx, value, out)?;
+            return Ok(true);
+        }
+
+        if value.is_object() {
+            if get_array_info(value).is_some() {
+                self.serialize_array(value, out)?;
+            } else {
+                self.serialize_object(value, out)?;
+            }
+            return Ok(true);
+        }
+
+        out.extend_from_slice(b"null");
+        Ok(true)
+    }
+
+    fn serialize_array(&mut self, value: JSValue, out: &mut Vec<u8>) -> Result<(), ()> {
+        self.check_circular(value)?;
+        self.stack.push(value);
+
+        let stepback = self.indent.clone();
+        self.indent.extend_from_slice(&self.gap);
+        out.push(b'[');
+
+        let len = get_array_info(value).map(|(_, len)| len).unwrap_or(0);
+        if len > 0 {
+            if !self.gap.is_empty() {
+                out.push(b'\n');
+            }
             for i in 0..len {
                 if i > 0 {
-                    result.push(b',');
+                    out.push(b',');
+                    if !self.gap.is_empty() {
+                        out.push(b'\n');
+                    }
                 }
-                let elem = crate::property::get_property(ctx, val, new_short_int(i as i32))
-                    .unwrap_or(JS_UNDEFINED);
-                if is_undefined(elem) || elem.is_function() {
-                    result.extend_from_slice(b"null");
-                } else {
-                    stringify_value(ctx, elem, result, visited)?;
+                if !self.gap.is_empty() {
+                    out.extend_from_slice(&self.indent);
+                }
+                let key = index_key_string(self.ctx, i)?;
+                let wrote = self.str(key, value, out)?;
+                if !wrote {
+                    out.extend_from_slice(b"null");
                 }
             }
-            result.push(b']');
-            visited.pop();
-            return Ok(());
-        }
-
-        // Handle Object
-        if val.is_object() {
-            result.push(b'{');
-            let keys = match object_keys(ctx, val) {
-                Ok(k) => k,
-                Err(_) => return Err(()),
-            };
-
-            let (_, key_count) = get_array_info(keys).unwrap_or((JS_NULL, 0));
-            let mut first = true;
-
-            for i in 0..key_count {
-                let key = crate::property::get_property(ctx, keys, new_short_int(i as i32))
-                    .unwrap_or(JS_UNDEFINED);
-                let prop_key = match conversion::to_property_key(ctx, key) {
-                    Ok(k) => k,
-                    Err(_) => continue,
-                };
-                let prop_val = match crate::property::get_property(ctx, val, prop_key) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                // Skip undefined and function values
-                if is_undefined(prop_val) || prop_val.is_function() {
-                    continue;
-                }
-
-                if !first {
-                    result.push(b',');
-                }
-                first = false;
-
-                // Stringify the key
-                stringify_string(ctx, key, result)?;
-                result.push(b':');
-
-                // Stringify the value
-                stringify_value(ctx, prop_val, result, visited)?;
+            if !self.gap.is_empty() {
+                out.push(b'\n');
+                out.extend_from_slice(&stepback);
             }
-
-            result.push(b'}');
-            visited.pop();
-            return Ok(());
         }
+
+        out.push(b']');
+        self.indent = stepback;
+        self.stack.pop();
+        Ok(())
     }
 
-    // Default: null
-    result.extend_from_slice(b"null");
-    Ok(())
+    fn serialize_object(&mut self, value: JSValue, out: &mut Vec<u8>) -> Result<(), ()> {
+        self.check_circular(value)?;
+        self.stack.push(value);
+
+        let stepback = self.indent.clone();
+        self.indent.extend_from_slice(&self.gap);
+        out.push(b'{');
+
+        let keys = match &self.replacer {
+            Some(JsonReplacer::PropertyList(list)) => list.clone(),
+            _ => collect_object_keys(self.ctx, value)?,
+        };
+
+        let mut first = true;
+        for key in keys {
+            let key_str = key_to_string_value(self.ctx, key)?;
+            let mut prop_buf = Vec::new();
+            if !self.str(key_str, value, &mut prop_buf)? {
+                continue;
+            }
+            if first {
+                if !self.gap.is_empty() {
+                    out.push(b'\n');
+                }
+                first = false;
+            } else {
+                out.push(b',');
+                if !self.gap.is_empty() {
+                    out.push(b'\n');
+                }
+            }
+            if !self.gap.is_empty() {
+                out.extend_from_slice(&self.indent);
+            }
+            stringify_string(self.ctx, key_str, out)?;
+            if self.gap.is_empty() {
+                out.push(b':');
+            } else {
+                out.extend_from_slice(b": ");
+            }
+            out.extend_from_slice(&prop_buf);
+        }
+
+        if !first && !self.gap.is_empty() {
+            out.push(b'\n');
+            out.extend_from_slice(&stepback);
+        }
+        out.push(b'}');
+
+        self.indent = stepback;
+        self.stack.pop();
+        Ok(())
+    }
+
+    fn check_circular(&mut self, value: JSValue) -> Result<(), ()> {
+        for &entry in &self.stack {
+            if crate::jsvalue::raw_bits(entry) == crate::jsvalue::raw_bits(value) {
+                let _ = self.ctx.throw_type_error("circular reference");
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn build_json_gap(ctx: &mut JSContext, space: JSValue) -> Result<Vec<u8>, ()> {
+    let mut space_val = space;
+    if let Some(primitive) = boxed_primitive_value(space_val) {
+        space_val = primitive;
+    }
+
+    if space_val.is_number() {
+        let n = conversion::to_number(ctx, space_val).map_err(|_| ())?;
+        let mut count = if n.is_nan() || n <= 0.0 {
+            0
+        } else if n.is_infinite() {
+            10
+        } else {
+            n.trunc().min(10.0) as usize
+        };
+        if count > 10 {
+            count = 10;
+        }
+        return Ok(vec![b' '; count]);
+    }
+
+    if space_val.is_string() {
+        let len = ctx.string_len(space_val);
+        let keep = core::cmp::min(10, len) as usize;
+        let mut out = Vec::new();
+        for i in 0..keep as u32 {
+            let c = ctx.string_getc(space_val, i) as u32;
+            let mut buf = [0u8; 4];
+            let n = crate::cutils::unicode_to_utf8(&mut buf, c);
+            out.extend_from_slice(&buf[..n]);
+        }
+        return Ok(out);
+    }
+
+    Ok(Vec::new())
+}
+
+fn build_json_replacer(ctx: &mut JSContext, replacer: JSValue) -> Result<Option<JsonReplacer>, ()> {
+    if replacer.is_function() {
+        return Ok(Some(JsonReplacer::Function(replacer)));
+    }
+    let Some((_, len)) = get_array_info(replacer) else {
+        return Ok(None);
+    };
+    let mut property_list = Vec::new();
+    for i in 0..len {
+        let elem = get_property(ctx, replacer, new_short_int(i as i32)).map_err(|_| ())?;
+        let mut key_val = elem;
+        if let Some(primitive) = boxed_primitive_value(key_val) {
+            key_val = primitive;
+        }
+        if !key_val.is_string() && !key_val.is_number() {
+            continue;
+        }
+        let prop_key = conversion::to_property_key(ctx, key_val).map_err(|_| ())?;
+        if !property_list
+            .iter()
+            .any(|existing| crate::jsvalue::raw_bits(*existing) == crate::jsvalue::raw_bits(prop_key))
+        {
+            property_list.push(prop_key);
+        }
+    }
+    Ok(Some(JsonReplacer::PropertyList(property_list)))
+}
+
+fn collect_object_keys(ctx: &mut JSContext, obj: JSValue) -> Result<Vec<JSValue>, ()> {
+    let keys = object_keys(ctx, obj).map_err(|_| ())?;
+    let (_, key_count) = get_array_info(keys).unwrap_or((JS_NULL, 0));
+    let mut out = Vec::with_capacity(key_count as usize);
+    for i in 0..key_count {
+        let key = get_property(ctx, keys, new_short_int(i as i32)).map_err(|_| ())?;
+        out.push(key);
+    }
+    Ok(out)
+}
+
+fn key_to_string_value(ctx: &mut JSContext, key: JSValue) -> Result<JSValue, ()> {
+    let mut scratch = [0u8; 5];
+    if string_view(key, &mut scratch).is_some() {
+        return Ok(key);
+    }
+    conversion::to_string(ctx, key).map_err(|_| ())
+}
+
+fn index_key_string(ctx: &mut JSContext, index: u32) -> Result<JSValue, ()> {
+    ctx.new_string(&index.to_string()).map_err(|_| ())
+}
+
+fn number_to_f64(val: JSValue) -> Option<f64> {
+    if is_int(val) {
+        return Some(f64::from(value_get_int(val)));
+    }
+    #[cfg(target_pointer_width = "64")]
+    if is_short_float(val) {
+        return Some(short_float_to_f64(val));
+    }
+    read_float64(val)
+}
+
+fn boxed_primitive_value(val: JSValue) -> Option<JSValue> {
+    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+    let header = ObjectHeader::from_word(header_word);
+    if header.tag() != MTag::Object || header.extra_size() < 1 {
+        return None;
+    }
+    match header.class_id() {
+        c if c == JSObjectClass::Number as u8
+            || c == JSObjectClass::Boolean as u8
+            || c == JSObjectClass::String as u8 =>
+        unsafe {
+            // SAFETY: payload starts with PrimitiveValue for boxed primitives.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let primitive = core::ptr::addr_of_mut!((*payload).primitive);
+            Some(ptr::read_unaligned(PrimitiveValue::value_ptr(primitive)))
+        },
+        _ => None,
+    }
 }
 
 fn stringify_number(d: f64, result: &mut Vec<u8>) -> Result<(), ()> {
