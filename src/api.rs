@@ -178,7 +178,7 @@ pub fn js_call(
     this_obj: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    if !conversion::is_function(func) {
+    if !func.is_function() {
         return ctx.throw_type_error("not a function");
     }
     match call_with_this(ctx, func, this_obj, args) {
@@ -196,7 +196,7 @@ pub fn js_call(
 /// # Returns
 /// The result of executing the function, or `JS_EXCEPTION` on error.
 pub fn js_run(ctx: &mut JSContext, func: JSValue) -> JSValue {
-    if !conversion::is_function(func) {
+    if !func.is_function() {
         return ctx.throw_type_error("not a function");
     }
     match call(ctx, func, &[]) {
@@ -303,22 +303,22 @@ pub fn js_is_bool(val: JSValue) -> bool {
 
 /// Check if a value is a number.
 pub fn js_is_number(val: JSValue) -> bool {
-    conversion::is_number(val)
+    val.is_number()
 }
 
 /// Check if a value is a string.
 pub fn js_is_string(val: JSValue) -> bool {
-    conversion::is_string(val)
+    val.is_string()
 }
 
 /// Check if a value is an object.
 pub fn js_is_object(val: JSValue) -> bool {
-    conversion::is_object(val)
+    val.is_object()
 }
 
 /// Check if a value is a function.
 pub fn js_is_function(val: JSValue) -> bool {
-    conversion::is_function(val)
+    val.is_function()
 }
 
 /// Check if a value is an exception marker.

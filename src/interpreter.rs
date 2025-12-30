@@ -203,7 +203,7 @@ fn for_of_start(ctx: &mut JSContext, mut val: JSValue, is_for_in: bool) -> Resul
     if is_for_in {
         val = object_keys(ctx, val).map_err(map_property_error)?;
     }
-    if !conversion::is_object(val) {
+    if !val.is_object() {
         return Err(InterpreterError::TypeError("unsupported type in for...of"));
     }
     let obj_ptr = object_ptr(val)?;
@@ -531,7 +531,7 @@ unsafe fn pop(ctx: &mut JSContext, sp: &mut *mut JSValue) -> JSValue {
 fn add_slow(ctx: &mut JSContext, left: JSValue, right: JSValue) -> Result<JSValue, InterpreterError> {
     let left = conversion::to_primitive(ctx, left, ToPrimitiveHint::None)?;
     let right = conversion::to_primitive(ctx, right, ToPrimitiveHint::None)?;
-    if conversion::is_string(left) || conversion::is_string(right) {
+    if left.is_string() || right.is_string() {
         let left = conversion::to_string(ctx, left)?;
         let right = conversion::to_string(ctx, right)?;
         return Ok(conversion::concat_strings(ctx, left, right)?);
@@ -561,11 +561,11 @@ fn binary_arith_slow(
 }
 
 fn get_length_value(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, InterpreterError> {
-    if conversion::is_string(obj) {
+    if obj.is_string() {
         let len = ctx.string_len(obj);
         return Ok(new_short_int(len as i32));
     }
-    if conversion::is_object(obj) {
+    if obj.is_object() {
         let obj_ptr = object_ptr(obj)?;
         let header = object_header(obj_ptr);
         if header.class_id() == JSObjectClass::Array as u8 {
@@ -658,7 +658,7 @@ fn relational_slow(
 ) -> Result<JSValue, InterpreterError> {
     let left = conversion::to_primitive(ctx, left, ToPrimitiveHint::Number)?;
     let right = conversion::to_primitive(ctx, right, ToPrimitiveHint::Number)?;
-    let res = if conversion::is_string(left) && conversion::is_string(right) {
+    let res = if left.is_string() && right.is_string() {
         let cmp = string_compare(left, right);
         match opcode {
             op if op == crate::opcode::OP_LT.0 as u8 => cmp < 0,
@@ -682,16 +682,16 @@ fn relational_slow(
 }
 
 fn strict_eq(ctx: &mut JSContext, left: JSValue, right: JSValue) -> Result<bool, InterpreterError> {
-    if conversion::is_number(left) {
-        if !conversion::is_number(right) {
+    if left.is_number() {
+        if !right.is_number() {
             return Ok(false);
         }
         let d1 = conversion::to_number(ctx, left)?;
         let d2 = conversion::to_number(ctx, right)?;
         return Ok(d1 == d2);
     }
-    if conversion::is_string(left) {
-        if !conversion::is_string(right) {
+    if left.is_string() {
+        if !right.is_string() {
             return Ok(false);
         }
         return Ok(string_eq(left, right));
@@ -780,15 +780,15 @@ fn eq_slow(
 }
 
 fn typeof_value(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, InterpreterError> {
-    let name = if conversion::is_number(val) {
+    let name = if val.is_number() {
         "number"
-    } else if conversion::is_string(val) {
+    } else if val.is_string() {
         "string"
     } else if is_bool(val) {
         "boolean"
-    } else if conversion::is_function(val) {
+    } else if val.is_function() {
         "function"
-    } else if conversion::is_object(val) || is_null(val) {
+    } else if val.is_object() || is_null(val) {
         "object"
     } else {
         "undefined"
@@ -820,7 +820,7 @@ fn object_proto_value(ptr: NonNull<Object>) -> JSValue {
 }
 
 fn instanceof_check(obj: JSValue, proto: JSValue) -> Result<bool, InterpreterError> {
-    if !conversion::is_object(obj) {
+    if !obj.is_object() {
         return Ok(false);
     }
     let mut current = obj;
@@ -1160,7 +1160,7 @@ fn call_constructor_start(
         Err(PropertyError::Unsupported(_)) => JS_UNDEFINED,
         Err(err) => return Err(map_property_error(err)),
     };
-    let proto = if conversion::is_object(proto) {
+    let proto = if proto.is_object() {
         proto
     } else {
         ctx.class_proto()[JSObjectClass::Object as usize]
@@ -1206,7 +1206,7 @@ fn return_from_frame(
     }
     let call_flags = value_get_int(call_flags_val);
     if (call_flags & FRAME_CF_CTOR) != 0 && !is_exception(val)
-        && !conversion::is_object(val) {
+        && !val.is_object() {
             val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_THIS_OBJ)) };
         }
     *sp = unsafe { (*fp).add(FRAME_OFFSET_ARG0 as usize + frame_argc) };
@@ -2284,7 +2284,7 @@ pub fn call_with_this(
             },
             op if op == crate::opcode::OP_PLUS.0 as u8 => unsafe {
                 let val = pop(ctx, &mut sp);
-                let res = if conversion::is_number(val) {
+                let res = if val.is_number() {
                     Ok(val)
                 } else {
                     unary_arith_slow(ctx, opcode, val)
@@ -2543,7 +2543,7 @@ pub fn call_with_this(
             op if op == crate::opcode::OP_IN.0 as u8 => unsafe {
                 let obj = pop(ctx, &mut sp);
                 let prop = pop(ctx, &mut sp);
-                if !conversion::is_object(obj) {
+                if !obj.is_object() {
                     break Err(InterpreterError::TypeError("invalid 'in' operand"));
                 }
                 let prop = try_or_break!(conversion::to_property_key(ctx, prop));
@@ -2698,7 +2698,7 @@ pub fn call_with_this(
             op if op == crate::opcode::OP_SET_PROTO.0 as u8 => unsafe {
                 let proto = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
-                if conversion::is_object(proto) || is_null(proto) {
+                if proto.is_object() || is_null(proto) {
                     try_or_break!(set_prototype_internal(obj, proto));
                 }
             },

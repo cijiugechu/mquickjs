@@ -53,51 +53,53 @@ impl From<InterpreterError> for ConversionError {
     }
 }
 
-pub(crate) fn is_primitive(val: JSValue) -> bool {
-    if !is_ptr(val) {
-        return value_get_special_tag(val) != JS_TAG_SHORT_FUNC;
+impl JSValue {
+    pub(crate) fn is_primitive(self) -> bool {
+        if !is_ptr(self) {
+            return value_get_special_tag(self) != JS_TAG_SHORT_FUNC;
+        }
+        match mtag_from_value(self) {
+            Some(MTag::Object) => false,
+            Some(_) => true,
+            None => true,
+        }
     }
-    match mtag_from_value(val) {
-        Some(MTag::Object) => false,
-        Some(_) => true,
-        None => true,
-    }
-}
 
-pub(crate) fn is_object(val: JSValue) -> bool {
-    matches!(mtag_from_value(val), Some(MTag::Object))
-}
+    pub(crate) fn is_object(self) -> bool {
+        matches!(mtag_from_value(self), Some(MTag::Object))
+    }
 
-pub(crate) fn is_string(val: JSValue) -> bool {
-    if !is_ptr(val) {
-        return value_get_special_tag(val) == JS_TAG_STRING_CHAR;
+    pub(crate) fn is_string(self) -> bool {
+        if !is_ptr(self) {
+            return value_get_special_tag(self) == JS_TAG_STRING_CHAR;
+        }
+        matches!(mtag_from_value(self), Some(MTag::String))
     }
-    matches!(mtag_from_value(val), Some(MTag::String))
-}
 
-pub(crate) fn is_number(val: JSValue) -> bool {
-    if is_int(val) {
-        return true;
+    pub(crate) fn is_number(self) -> bool {
+        if is_int(self) {
+            return true;
+        }
+        #[cfg(target_pointer_width = "64")]
+        if is_short_float(self) {
+            return true;
+        }
+        matches!(mtag_from_value(self), Some(MTag::Float64))
     }
-    #[cfg(target_pointer_width = "64")]
-    if is_short_float(val) {
-        return true;
-    }
-    matches!(mtag_from_value(val), Some(MTag::Float64))
-}
 
-pub(crate) fn is_function(val: JSValue) -> bool {
-    if !is_ptr(val) {
-        return value_get_special_tag(val) == JS_TAG_SHORT_FUNC;
+    pub(crate) fn is_function(self) -> bool {
+        if !is_ptr(self) {
+            return value_get_special_tag(self) == JS_TAG_SHORT_FUNC;
+        }
+        let header = match object_header(self) {
+            Some(header) => header,
+            None => return false,
+        };
+        matches!(
+            header.class_id(),
+            class if class == JSObjectClass::Closure as u8 || class == JSObjectClass::CFunction as u8
+        )
     }
-    let header = match object_header(val) {
-        Some(header) => header,
-        None => return false,
-    };
-    matches!(
-        header.class_id(),
-        class if class == JSObjectClass::Closure as u8 || class == JSObjectClass::CFunction as u8
-    )
 }
 
 pub(crate) fn to_number(ctx: &mut JSContext, mut val: JSValue) -> Result<f64, ConversionError> {
@@ -229,7 +231,7 @@ fn alloc_primitive_object(
 
 #[allow(dead_code)]
 pub(crate) fn to_object(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, ConversionError> {
-    if is_object(val) {
+    if val.is_object() {
         return Ok(val);
     }
     if !is_ptr(val) && value_get_special_tag(val) == JS_TAG_SHORT_FUNC {
@@ -238,13 +240,13 @@ pub(crate) fn to_object(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, Co
     if is_null(val) || is_undefined(val) {
         return Err(ConversionError::TypeError("null or undefined"));
     }
-    if is_number(val) {
+    if val.is_number() {
         return alloc_primitive_object(ctx, JSObjectClass::Number, val);
     }
     if is_bool(val) {
         return alloc_primitive_object(ctx, JSObjectClass::Boolean, val);
     }
-    if is_string(val) {
+    if val.is_string() {
         return alloc_primitive_object(ctx, JSObjectClass::String, val);
     }
     Err(ConversionError::TypeError("not an object"))
@@ -255,7 +257,7 @@ pub(crate) fn to_primitive(
     val: JSValue,
     hint: ToPrimitiveHint,
 ) -> Result<JSValue, ConversionError> {
-    if is_primitive(val) {
+    if val.is_primitive() {
         return Ok(val);
     }
     if let Some(primitive) = object_primitive_value(val) {
@@ -270,9 +272,9 @@ pub(crate) fn to_primitive(
         let atom: &[u8] = if use_to_string { b"toString" } else { b"valueOf" };
         let prop = ctx.intern_string(atom)?;
         let method = get_property_for_value(ctx, val, prop)?;
-        if is_function(method) {
+        if method.is_function() {
             let ret = call_with_this(ctx, method, val, &[])?;
-            if !is_object(ret) {
+            if !ret.is_object() {
                 return Ok(ret);
             }
         }
@@ -302,14 +304,14 @@ fn get_property_for_value(
     val: JSValue,
     prop: JSValue,
 ) -> Result<JSValue, ConversionError> {
-    if is_object(val) {
+    if val.is_object() {
         return Ok(get_property(ctx, val, prop)?);
     }
-    let proto = if is_number(val) {
+    let proto = if val.is_number() {
         ctx.class_proto()[JSObjectClass::Number as usize]
     } else if is_bool(val) {
         ctx.class_proto()[JSObjectClass::Boolean as usize]
-    } else if is_string(val) {
+    } else if val.is_string() {
         ctx.class_proto()[JSObjectClass::String as usize]
     } else if value_get_special_tag(val) == JS_TAG_SHORT_FUNC {
         ctx.class_proto()[JSObjectClass::Closure as usize]

@@ -558,7 +558,7 @@ pub fn js_object_hasOwnProperty(
     this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    if !conversion::is_object(this_val) {
+    if !this_val.is_object() {
         return JS_EXCEPTION;
     }
     let prop = match conversion::to_property_key(ctx, args.first().copied().unwrap_or(JS_UNDEFINED))
@@ -639,7 +639,7 @@ pub fn js_object_defineProperty(
     let prop_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
     let desc = args.get(2).copied().unwrap_or(JS_UNDEFINED);
 
-    if !conversion::is_object(obj) {
+    if !obj.is_object() {
         return JS_EXCEPTION;
     }
     let prop = match conversion::to_property_key(ctx, prop_arg) {
@@ -707,7 +707,7 @@ pub fn js_object_getPrototypeOf(
     args: &[JSValue],
 ) -> JSValue {
     let obj = args.first().copied().unwrap_or(JS_UNDEFINED);
-    if !conversion::is_object(obj) {
+    if !obj.is_object() {
         return JS_EXCEPTION;
     }
     let obj_ptr = match value_to_ptr::<Object>(obj) {
@@ -725,10 +725,10 @@ pub fn js_object_setPrototypeOf(
     let obj = args.first().copied().unwrap_or(JS_UNDEFINED);
     let proto = args.get(1).copied().unwrap_or(JS_UNDEFINED);
 
-    if !conversion::is_object(obj) {
+    if !obj.is_object() {
         return JS_EXCEPTION;
     }
-    if proto != JS_NULL && !conversion::is_object(proto) {
+    if proto != JS_NULL && !proto.is_object() {
         return JS_EXCEPTION;
     }
 
@@ -778,7 +778,7 @@ pub fn js_object_create(
     args: &[JSValue],
 ) -> JSValue {
     let proto = args.first().copied().unwrap_or(JS_UNDEFINED);
-    if proto != JS_NULL && !conversion::is_object(proto) {
+    if proto != JS_NULL && !proto.is_object() {
         return JS_EXCEPTION;
     }
     if args.len() >= 2 && !is_undefined(args[1]) {
@@ -794,7 +794,7 @@ pub fn js_object_keys(
     args: &[JSValue],
 ) -> JSValue {
     let obj = args.first().copied().unwrap_or(JS_UNDEFINED);
-    if !conversion::is_object(obj) {
+    if !obj.is_object() {
         return JS_EXCEPTION;
     }
     match object_keys(ctx, obj) {
@@ -814,7 +814,7 @@ pub fn js_function_call(
 ) -> JSValue {
     // Function.prototype.call(thisArg, ...args)
     // this_val is the function to call
-    if !conversion::is_function(this_val) {
+    if !this_val.is_function() {
         return JS_EXCEPTION;
     }
     let this_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
@@ -831,14 +831,14 @@ pub fn js_function_apply(
     args: &[JSValue],
 ) -> JSValue {
     // Function.prototype.apply(thisArg, argsArray)
-    if !conversion::is_function(this_val) {
+    if !this_val.is_function() {
         return JS_EXCEPTION;
     }
     let this_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
     let args_array = args.get(1).copied().unwrap_or(JS_UNDEFINED);
 
     // Extract arguments from the array
-    let call_args = if conversion::is_object(args_array) {
+    let call_args = if args_array.is_object() {
         match extract_array_elements(ctx, args_array) {
             Ok(elements) => elements,
             Err(_) => return JS_EXCEPTION,
@@ -896,7 +896,7 @@ pub fn js_function_bind(
 ) -> JSValue {
     // Function.prototype.bind(thisArg, ...args)
     // Creates a bound function
-    if !conversion::is_function(this_val) {
+    if !this_val.is_function() {
         return JS_EXCEPTION;
     }
 
@@ -1088,7 +1088,7 @@ pub fn js_function_set_prototype(
     this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    if !conversion::is_function(this_val) {
+    if !this_val.is_function() {
         return JS_EXCEPTION;
     }
     let proto_key = match ctx.intern_string(b"prototype") {
@@ -1888,7 +1888,7 @@ pub fn js_string_replace(
     let is_regexp = is_regexp_object(search_arg);
 
     // Functional replace not supported
-    if conversion::is_function(replace_arg) {
+    if replace_arg.is_function() {
         return JS_EXCEPTION;
     }
 
@@ -2224,7 +2224,7 @@ fn append_replacement(
 
 // Helper to convert this_val to string, handling objects
 fn to_string_check_object(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, ()> {
-    if conversion::is_string(val) {
+    if val.is_string() {
         return Ok(val);
     }
     conversion::to_string(ctx, val).map_err(|_| ())
@@ -2267,7 +2267,7 @@ pub fn js_array_constructor(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let (len, has_init) = if args.len() == 1 && conversion::is_number(args[0]) {
+    let (len, has_init) = if args.len() == 1 && args[0].is_number() {
         let len = match conversion::to_int32(ctx, args[0]) {
             Ok(l) => l,
             Err(_) => return JS_EXCEPTION,
@@ -2459,7 +2459,7 @@ pub fn js_array_join(
     this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    if !conversion::is_object(this_val) {
+    if !this_val.is_object() {
         return JS_EXCEPTION;
     }
 
@@ -2832,7 +2832,7 @@ pub fn js_array_every(
     let func = args.first().copied().unwrap_or(JS_UNDEFINED);
     let this_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
 
-    if !conversion::is_function(func) {
+    if !func.is_function() {
         return JS_EXCEPTION; // TypeError: not a function
     }
 
@@ -2914,7 +2914,7 @@ pub fn js_array_reduce(
 
     let func = args.first().copied().unwrap_or(JS_UNDEFINED);
 
-    if !conversion::is_function(func) {
+    if !func.is_function() {
         return JS_EXCEPTION; // TypeError: not a function
     }
 
@@ -2970,7 +2970,7 @@ pub fn js_array_sort(
         return this_val;
     }
 
-    let compare_fn = args.first().copied().filter(|v| conversion::is_function(*v));
+    let compare_fn = args.first().copied().filter(|v| v.is_function());
 
     // Build array of (value, original_index) pairs for stable sort
     let mut pairs: Vec<(JSValue, u32)> = Vec::with_capacity(len as usize);
@@ -3294,7 +3294,7 @@ fn stringify_value(
         return stringify_number(d, result);
     }
 
-    if conversion::is_string(val) {
+    if val.is_string() {
         return stringify_string(ctx, val, result);
     }
 
@@ -3330,7 +3330,7 @@ fn stringify_value(
         }
 
         // Check for function - functions return undefined
-        if conversion::is_function(val) {
+        if val.is_function() {
             result.extend_from_slice(b"null");
             return Ok(());
         }
@@ -3352,7 +3352,7 @@ fn stringify_value(
                 }
                 let elem = crate::property::get_property(ctx, val, new_short_int(i as i32))
                     .unwrap_or(JS_UNDEFINED);
-                if is_undefined(elem) || conversion::is_function(elem) {
+                if is_undefined(elem) || elem.is_function() {
                     result.extend_from_slice(b"null");
                 } else {
                     stringify_value(ctx, elem, result, visited)?;
@@ -3364,7 +3364,7 @@ fn stringify_value(
         }
 
         // Handle Object
-        if conversion::is_object(val) {
+        if val.is_object() {
             result.push(b'{');
             let keys = match object_keys(ctx, val) {
                 Ok(k) => k,
@@ -3387,7 +3387,7 @@ fn stringify_value(
                 };
 
                 // Skip undefined and function values
-                if is_undefined(prop_val) || conversion::is_function(prop_val) {
+                if is_undefined(prop_val) || prop_val.is_function() {
                     continue;
                 }
 
@@ -3617,7 +3617,7 @@ pub fn js_typed_array_constructor(
     let arg0 = args.first().copied().unwrap_or(JS_UNDEFINED);
 
     // Case 1: Not an object - treat as length
-    if !conversion::is_object(arg0) {
+    if !arg0.is_object() {
         let len = match to_index(ctx, arg0) {
             Ok(l) => l,
             Err(_) => return JS_EXCEPTION,
