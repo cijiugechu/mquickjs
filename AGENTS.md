@@ -9,6 +9,7 @@ Current porting status located at [STATUS.md](./STATUS.md).
 
 - Always port the implementation and tests together.
 - If a C feature has no meaningful tests to port, do not add placeholder roundtrip tests just to have tests.
+- When behavior diverges, add a focused Catch2 test under `ctests/` to dump/inspect the C output (e.g., bytecode) and compare against Rust to drive alignment; keep the test as a regression oracle.
 
 - When using constants for mathematical operations, give priority to whether rust core provides them.
 
