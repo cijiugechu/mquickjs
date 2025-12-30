@@ -87,6 +87,7 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             // Date
             "js_date_now" => BuiltinCFunction::Generic(builtins::js_date_now),
             // Global
+            "js_global_eval" => BuiltinCFunction::Generic(builtins::js_global_eval),
             "js_global_isNaN" => BuiltinCFunction::Generic(builtins::js_global_isNaN),
             "js_global_isFinite" => BuiltinCFunction::Generic(builtins::js_global_isFinite),
             // Object

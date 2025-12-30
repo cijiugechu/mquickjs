@@ -487,6 +487,18 @@ pub fn js_date_constructor(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSV
     ctx.throw_type_error("only Date.now() is supported")
 }
 
+pub fn js_global_eval(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
+    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
+    if !val.is_string() {
+        return val;
+    }
+    let mut scratch = [0u8; 5];
+    let Some(view) = string_view(val, &mut scratch) else {
+        return JS_EXCEPTION;
+    };
+    crate::api::js_eval(ctx, view.bytes(), crate::capi_defs::JS_EVAL_RETVAL)
+}
+
 pub fn js_global_isNaN(_ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
     let val = args.first().copied().unwrap_or(JS_UNDEFINED);
     let num = to_number(val);

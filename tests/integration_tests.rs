@@ -126,6 +126,24 @@ fn test_global_object_exists() {
     assert!(js_is_object(global));
 }
 
+#[test]
+fn test_global_eval_builtin() {
+    let mut ctx = new_context();
+
+    assert_js_true(&mut ctx, br#"var g_eval = (1, eval); g_eval('1+1;') === 2"#);
+    assert_js_true(&mut ctx, br#"var g_eval = (1, eval); g_eval('var z=2; z;') === 2"#);
+
+    let z = js_eval(&mut ctx, b"z", JS_EVAL_RETVAL);
+    assert!(!js_is_exception(z));
+    assert_eq!(js_to_number(&mut ctx, z), 2.0);
+
+    assert_js_true(&mut ctx, br#"var g_eval = (1, eval); g_eval('if (1) 2; else 3;') === 2"#);
+    assert_js_true(&mut ctx, br#"var g_eval = (1, eval); g_eval('if (0) 2; else 3;') === 3"#);
+    assert_js_true(&mut ctx, br#"var g_eval = (1, eval); z = 2; g_eval('z') === 2"#);
+    assert_js_true(&mut ctx, br#"var g_eval = (1, eval); g_eval('z = 3'); z === 3"#);
+    assert_js_true(&mut ctx, br#"var g_eval = (1, eval); g_eval(1) === 1"#);
+}
+
 // ---------------------------------------------------------------------------
 // Utility to evaluate JS and check for no exceptions
 // (Kept for future use when bytecode evaluation is stable)

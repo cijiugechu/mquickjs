@@ -112,10 +112,10 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Added regexp-aware String helpers (`match`, `search`, RegExp-aware `split`/`replace`) in `src/builtins.rs` and wired stdlib entries in `src/stdlib/cfunc.rs`; aligned regexp quantifier capture reset ordering with C and added a C Catch2 bytecode dump test for the tag regexp in `ctests/parser_bytecode_catch2_test.cpp`.
 - Ported Boolean builtin constructor (`js_boolean_constructor`) with C-aligned truthiness semantics and stdlib dispatch wiring, plus unit tests.
 - Ported RegExp builtins (`js_regexp_constructor`, `js_regexp_get_lastIndex`/`set_lastIndex`, `js_regexp_get_source`, `js_regexp_get_flags`, `js_regexp_exec`/test) into `src/builtins.rs` with stdlib dispatch wiring and unit tests.
+- Wired global `eval` builtin (`js_global_eval`) to run JS_EVAL_RETVAL parses and added integration tests for indirect eval behavior.
 
 ## Known gaps (non-CLI/REPL)
 - Date builtin partial: only `Date.now`; constructor throws TypeError and prototype methods are unsupported.
-- Global `eval` builtin not wired (`js_global_eval`).
 - Error/exception helpers are incomplete: `JS_Throw*` equivalents and backtrace/stack formatting are missing.
 - Public C API functions are not ported yet (`JS_NewContext`, `JS_FreeContext`, `JS_Eval`, `JS_Parse`, `JS_Call`, etc.; only layouts/constants exist).
 
@@ -161,4 +161,3 @@ Replace with Rust std/core:
 Skip/avoid direct port:
 - C-only macros/attributes (`likely`, `unlikely`, `force_inline`, `no_inline`, `__maybe_unused`).
 - `offsetof`, `countof`, `container_of` (use Rust layouts, `memoffset` if needed, or `intrusive-collections` adapters).
-
