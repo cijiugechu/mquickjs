@@ -1173,6 +1173,17 @@ enum ReturnFlow {
     Continue { exception: bool },
 }
 
+struct FrameState<'a, 'b> {
+    stack_top: *mut JSValue,
+    initial_fp: *mut JSValue,
+    sp: &'a mut *mut JSValue,
+    fp: &'a mut *mut JSValue,
+    pc: &'a mut usize,
+    func_ptr: &'a mut NonNull<FunctionBytecode>,
+    byte_slice: &'a mut &'b [u8],
+    n_vars: &'a mut usize,
+}
+
 fn compute_n_vars(b: &FunctionBytecode) -> Result<usize, InterpreterError> {
     if b.vars() != JS_NULL {
         let vars = unsafe { ValueArrayRaw::from_value(b.vars())? };
@@ -1184,35 +1195,30 @@ fn compute_n_vars(b: &FunctionBytecode) -> Result<usize, InterpreterError> {
 
 fn return_from_frame(
     ctx: &mut JSContext,
-    stack_top: *mut JSValue,
-    initial_fp: *mut JSValue,
-    sp: &mut *mut JSValue,
-    fp: &mut *mut JSValue,
-    pc: &mut usize,
-    func_ptr: &mut NonNull<FunctionBytecode>,
-    byte_slice: &mut &[u8],
-    n_vars: &mut usize,
+    state: &mut FrameState<'_, '_>,
     mut val: JSValue,
     frame_argc: usize,
     has_varrefs: bool,
 ) -> Result<ReturnFlow, InterpreterError> {
     if has_varrefs {
-        let first_var_ref = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_FIRST_VARREF)) };
+        let first_var_ref =
+            unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_FIRST_VARREF)) };
         detach_var_refs(first_var_ref)?;
     }
-    let call_flags_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_CALL_FLAGS)) };
+    let call_flags_val =
+        unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_CALL_FLAGS)) };
     if !is_int(call_flags_val) {
         return Err(InterpreterError::InvalidValue("call flags"));
     }
     let call_flags = value_get_int(call_flags_val);
-    if (call_flags & FRAME_CF_CTOR) != 0 && !is_exception(val)
-        && !val.is_object() {
-            val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_THIS_OBJ)) };
-        }
-    *sp = unsafe { (*fp).add(FRAME_OFFSET_ARG0 as usize + frame_argc) };
-    let saved_fp_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_SAVED_FP)) };
-    let caller_fp = decode_stack_ptr(stack_top, saved_fp_val)?;
-    if caller_fp == initial_fp {
+    if (call_flags & FRAME_CF_CTOR) != 0 && !is_exception(val) && !val.is_object() {
+        val = unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_THIS_OBJ)) };
+    }
+    *state.sp = unsafe { (*state.fp).add(FRAME_OFFSET_ARG0 as usize + frame_argc) };
+    let saved_fp_val =
+        unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_SAVED_FP)) };
+    let caller_fp = decode_stack_ptr(state.stack_top, saved_fp_val)?;
+    if caller_fp == state.initial_fp {
         if is_exception(val) {
             let thrown = ctx.take_current_exception();
             let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
@@ -1220,10 +1226,11 @@ fn return_from_frame(
         }
         return Ok(ReturnFlow::Done(val));
     }
-    *fp = caller_fp;
-    ctx.set_fp(NonNull::new(*fp).expect("frame pointer"));
-    ctx.set_sp(NonNull::new(*sp).expect("stack pointer"));
-    let pc_offset_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_CUR_PC)) };
+    *state.fp = caller_fp;
+    ctx.set_fp(NonNull::new(*state.fp).expect("frame pointer"));
+    ctx.set_sp(NonNull::new(*state.sp).expect("stack pointer"));
+    let pc_offset_val =
+        unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_CUR_PC)) };
     if !is_int(pc_offset_val) {
         return Err(InterpreterError::InvalidValue("cur pc"));
     }
@@ -1231,13 +1238,15 @@ fn return_from_frame(
     if pc_offset < 0 {
         return Err(InterpreterError::InvalidValue("cur pc"));
     }
-    let func_obj = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_FUNC_OBJ)) };
+    let func_obj = unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_FUNC_OBJ)) };
     let func_obj_ptr = object_ptr(func_obj)?;
     let payload = unsafe { Object::payload_ptr(func_obj_ptr.as_ptr()) };
     let closure = unsafe { core::ptr::addr_of_mut!((*payload).closure) };
-    let func_val = unsafe { ptr::read_unaligned(crate::closure_data::ClosureData::func_bytecode_ptr(closure)) };
-    *func_ptr = function_bytecode_ptr(func_val)?;
-    let b = unsafe { func_ptr.as_ref() };
+    let func_val = unsafe {
+        ptr::read_unaligned(crate::closure_data::ClosureData::func_bytecode_ptr(closure))
+    };
+    *state.func_ptr = function_bytecode_ptr(func_val)?;
+    let b = unsafe { state.func_ptr.as_ref() };
     let byte_code_val = b.byte_code();
     if byte_code_val == JS_NULL {
         return Err(InterpreterError::InvalidBytecode("missing bytecode"));
@@ -1246,65 +1255,54 @@ fn return_from_frame(
     if pc_offset as usize >= byte_code.len() {
         return Err(InterpreterError::InvalidBytecode("cur pc"));
     }
-    *byte_slice = unsafe { core::slice::from_raw_parts(byte_code.buf().as_ptr(), byte_code.len()) };
-    *n_vars = compute_n_vars(b)?;
-    *pc = pc_offset as usize;
+    *state.byte_slice =
+        unsafe { core::slice::from_raw_parts(byte_code.buf().as_ptr(), byte_code.len()) };
+    *state.n_vars = compute_n_vars(b)?;
+    *state.pc = pc_offset as usize;
     if is_exception(val) {
         return Ok(ReturnFlow::Continue { exception: true });
     }
     if (call_flags & FRAME_CF_POP_RET) == 0 {
         unsafe {
-            push(ctx, sp, val);
+            push(ctx, state.sp, val);
         }
     }
     if (call_flags & FRAME_CF_PC_ADD1) == 0 {
-        *pc += 2;
+        *state.pc += 2;
     } else {
-        *pc += 1;
+        *state.pc += 1;
     }
     Ok(ReturnFlow::Continue { exception: false })
 }
 
 fn unwind_exception(
     ctx: &mut JSContext,
-    stack_top: *mut JSValue,
-    initial_fp: *mut JSValue,
-    sp: &mut *mut JSValue,
-    fp: &mut *mut JSValue,
-    pc: &mut usize,
-    func_ptr: &mut NonNull<FunctionBytecode>,
-    byte_slice: &mut &[u8],
-    n_vars: &mut usize,
+    state: &mut FrameState<'_, '_>,
     exception_val: JSValue,
 ) -> Result<ReturnFlow, InterpreterError> {
     let mut exception_val = exception_val;
     loop {
-        let handled = handle_exception(ctx, byte_slice.len(), *fp, *n_vars, sp, exception_val)?;
+        let handled = handle_exception(
+            ctx,
+            state.byte_slice.len(),
+            *state.fp,
+            *state.n_vars,
+            state.sp,
+            exception_val,
+        )?;
         if let Some(target) = handled {
-            *pc = target;
+            *state.pc = target;
             return Ok(ReturnFlow::Continue { exception: false });
         }
-        let b = unsafe { func_ptr.as_ref() };
-        let call_flags_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_CALL_FLAGS)) };
+        let b = unsafe { state.func_ptr.as_ref() };
+        let call_flags_val =
+            unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_CALL_FLAGS)) };
         if !is_int(call_flags_val) {
             return Err(InterpreterError::InvalidValue("call flags"));
         }
         let argc = call_argc(value_get_int(call_flags_val));
         let frame_argc = argc.max(b.arg_count() as usize);
-        match return_from_frame(
-            ctx,
-            stack_top,
-            initial_fp,
-            sp,
-            fp,
-            pc,
-            func_ptr,
-            byte_slice,
-            n_vars,
-            JS_EXCEPTION,
-            frame_argc,
-            true,
-        )? {
+        match return_from_frame(ctx, state, JS_EXCEPTION, frame_argc, true)? {
             ReturnFlow::Done(_) => {
                 let thrown = ctx.take_current_exception();
                 return Err(InterpreterError::Thrown(thrown));
@@ -1551,36 +1549,34 @@ pub fn call_with_this(
                 let argv_ptr = unsafe { fp.add(FRAME_OFFSET_ARG0 as usize) };
                 let argv = unsafe { core::slice::from_raw_parts(argv_ptr, pushed_argc) };
                 let val = try_or_break!(call_cfunction_def(ctx, &def, this_val, argv, cfunc_params));
-                let flow = if is_exception(val) {
-                    try_or_break!(return_from_frame(
-                        ctx,
+                let flow = {
+                    let mut frame_state = FrameState {
                         stack_top,
                         initial_fp,
-                        &mut sp,
-                        &mut fp,
-                        &mut pc,
-                        &mut func_ptr,
-                        &mut byte_slice,
-                        &mut n_vars,
-                        JS_EXCEPTION,
-                        pushed_argc,
-                        false
-                    ))
-                } else {
-                    try_or_break!(return_from_frame(
-                        ctx,
-                        stack_top,
-                        initial_fp,
-                        &mut sp,
-                        &mut fp,
-                        &mut pc,
-                        &mut func_ptr,
-                        &mut byte_slice,
-                        &mut n_vars,
-                        val,
-                        pushed_argc,
-                        false
-                    ))
+                        sp: &mut sp,
+                        fp: &mut fp,
+                        pc: &mut pc,
+                        func_ptr: &mut func_ptr,
+                        byte_slice: &mut byte_slice,
+                        n_vars: &mut n_vars,
+                    };
+                    if is_exception(val) {
+                        try_or_break!(return_from_frame(
+                            ctx,
+                            &mut frame_state,
+                            JS_EXCEPTION,
+                            pushed_argc,
+                            false
+                        ))
+                    } else {
+                        try_or_break!(return_from_frame(
+                            ctx,
+                            &mut frame_state,
+                            val,
+                            pushed_argc,
+                            false
+                        ))
+                    }
                 };
                 match flow {
                     ReturnFlow::Done(val) => break Ok(val),
@@ -1590,18 +1586,19 @@ pub fn call_with_this(
                     ReturnFlow::Continue { exception: true } => {
                         let thrown = ctx.take_current_exception();
                         let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
-                        let flow = try_or_break!(unwind_exception(
-                            ctx,
-                            stack_top,
-                            initial_fp,
-                            &mut sp,
-                            &mut fp,
-                            &mut pc,
-                            &mut func_ptr,
-                            &mut byte_slice,
-                            &mut n_vars,
-                            thrown
-                        ));
+                        let flow = {
+                            let mut frame_state = FrameState {
+                                stack_top,
+                                initial_fp,
+                                sp: &mut sp,
+                                fp: &mut fp,
+                                pc: &mut pc,
+                                func_ptr: &mut func_ptr,
+                                byte_slice: &mut byte_slice,
+                                n_vars: &mut n_vars,
+                            };
+                            try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                        };
                         if let ReturnFlow::Done(val) = flow {
                             break Ok(val);
                         }
@@ -1689,20 +1686,25 @@ pub fn call_with_this(
                 }
                 let argc = call_argc(value_get_int(call_flags_val));
                 let frame_argc = argc.max(b.arg_count() as usize);
-                let flow = try_or_break!(return_from_frame(
-                    ctx,
-                    stack_top,
-                    initial_fp,
-                    &mut sp,
-                    &mut fp,
-                    &mut pc,
-                    &mut func_ptr,
-                    &mut byte_slice,
-                    &mut n_vars,
-                    val,
-                    frame_argc,
-                    true
-                ));
+                let flow = {
+                    let mut frame_state = FrameState {
+                        stack_top,
+                        initial_fp,
+                        sp: &mut sp,
+                        fp: &mut fp,
+                        pc: &mut pc,
+                        func_ptr: &mut func_ptr,
+                        byte_slice: &mut byte_slice,
+                        n_vars: &mut n_vars,
+                    };
+                    try_or_break!(return_from_frame(
+                        ctx,
+                        &mut frame_state,
+                        val,
+                        frame_argc,
+                        true
+                    ))
+                };
                 match flow {
                     ReturnFlow::Done(val) => break Ok(val),
                     ReturnFlow::Continue { exception: false } => {
@@ -1711,18 +1713,19 @@ pub fn call_with_this(
                     ReturnFlow::Continue { exception: true } => {
                         let thrown = ctx.take_current_exception();
                         let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
-                        let flow = try_or_break!(unwind_exception(
-                            ctx,
-                            stack_top,
-                            initial_fp,
-                            &mut sp,
-                            &mut fp,
-                            &mut pc,
-                            &mut func_ptr,
-                            &mut byte_slice,
-                            &mut n_vars,
-                            thrown
-                        ));
+                        let flow = {
+                            let mut frame_state = FrameState {
+                                stack_top,
+                                initial_fp,
+                                sp: &mut sp,
+                                fp: &mut fp,
+                                pc: &mut pc,
+                                func_ptr: &mut func_ptr,
+                                byte_slice: &mut byte_slice,
+                                n_vars: &mut n_vars,
+                            };
+                            try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                        };
                         if let ReturnFlow::Done(val) = flow {
                             break Ok(val);
                         }
@@ -1737,20 +1740,25 @@ pub fn call_with_this(
                 }
                 let argc = call_argc(value_get_int(call_flags_val));
                 let frame_argc = argc.max(b.arg_count() as usize);
-                let flow = try_or_break!(return_from_frame(
-                    ctx,
-                    stack_top,
-                    initial_fp,
-                    &mut sp,
-                    &mut fp,
-                    &mut pc,
-                    &mut func_ptr,
-                    &mut byte_slice,
-                    &mut n_vars,
-                    JS_UNDEFINED,
-                    frame_argc,
-                    true
-                ));
+                let flow = {
+                    let mut frame_state = FrameState {
+                        stack_top,
+                        initial_fp,
+                        sp: &mut sp,
+                        fp: &mut fp,
+                        pc: &mut pc,
+                        func_ptr: &mut func_ptr,
+                        byte_slice: &mut byte_slice,
+                        n_vars: &mut n_vars,
+                    };
+                    try_or_break!(return_from_frame(
+                        ctx,
+                        &mut frame_state,
+                        JS_UNDEFINED,
+                        frame_argc,
+                        true
+                    ))
+                };
                 match flow {
                     ReturnFlow::Done(val) => break Ok(val),
                     ReturnFlow::Continue { exception: false } => {
@@ -1759,18 +1767,19 @@ pub fn call_with_this(
                     ReturnFlow::Continue { exception: true } => {
                         let thrown = ctx.take_current_exception();
                         let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
-                        let flow = try_or_break!(unwind_exception(
-                            ctx,
-                            stack_top,
-                            initial_fp,
-                            &mut sp,
-                            &mut fp,
-                            &mut pc,
-                            &mut func_ptr,
-                            &mut byte_slice,
-                            &mut n_vars,
-                            thrown
-                        ));
+                        let flow = {
+                            let mut frame_state = FrameState {
+                                stack_top,
+                                initial_fp,
+                                sp: &mut sp,
+                                fp: &mut fp,
+                                pc: &mut pc,
+                                func_ptr: &mut func_ptr,
+                                byte_slice: &mut byte_slice,
+                                n_vars: &mut n_vars,
+                            };
+                            try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                        };
                         if let ReturnFlow::Done(val) = flow {
                             break Ok(val);
                         }
@@ -1780,18 +1789,19 @@ pub fn call_with_this(
             },
             op if op == crate::opcode::OP_THROW.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
-                let flow = try_or_break!(unwind_exception(
-                    ctx,
-                    stack_top,
-                    initial_fp,
-                    &mut sp,
-                    &mut fp,
-                    &mut pc,
-                    &mut func_ptr,
-                    &mut byte_slice,
-                    &mut n_vars,
-                    val
-                ));
+                let flow = {
+                    let mut frame_state = FrameState {
+                        stack_top,
+                        initial_fp,
+                        sp: &mut sp,
+                        fp: &mut fp,
+                        pc: &mut pc,
+                        func_ptr: &mut func_ptr,
+                        byte_slice: &mut byte_slice,
+                        n_vars: &mut n_vars,
+                    };
+                    try_or_break!(unwind_exception(ctx, &mut frame_state, val))
+                };
                 if let ReturnFlow::Done(val) = flow {
                     break Ok(val);
                 }
