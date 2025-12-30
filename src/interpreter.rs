@@ -1205,11 +1205,10 @@ fn return_from_frame(
         return Err(InterpreterError::InvalidValue("call flags"));
     }
     let call_flags = value_get_int(call_flags_val);
-    if (call_flags & FRAME_CF_CTOR) != 0 && !is_exception(val) {
-        if !conversion::is_object(val) {
+    if (call_flags & FRAME_CF_CTOR) != 0 && !is_exception(val)
+        && !conversion::is_object(val) {
             val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_THIS_OBJ)) };
         }
-    }
     *sp = unsafe { (*fp).add(FRAME_OFFSET_ARG0 as usize + frame_argc) };
     let saved_fp_val = unsafe { ptr::read_unaligned((*fp).offset(FRAME_OFFSET_SAVED_FP)) };
     let caller_fp = decode_stack_ptr(stack_top, saved_fp_val)?;

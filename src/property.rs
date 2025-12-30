@@ -1418,15 +1418,13 @@ pub fn find_own_property_exposed(
         }
     } else if (JSObjectClass::Uint8CArray as u8..=JSObjectClass::Float64Array as u8)
         .contains(&class_id)
-    {
-        if let Some(idx) = prop_index_from_value(prop) {
+        && let Some(idx) = prop_index_from_value(prop) {
             let data = unsafe {
                 // SAFETY: typed_array_ptr returns a valid TypedArray pointer.
                 ptr::read_unaligned(typed_array_ptr(obj_ptr))
             };
             return Ok(idx < data.len());
         }
-    }
 
     let list = PropertyList::from_value(object_props(obj_ptr))?;
     if ctx.is_rom_ptr(list.array.base) {

@@ -1510,12 +1510,12 @@ pub fn js_string_toLowerCase(
     for i in 0..len {
         let c = ctx.string_getc(s, i) as u32;
         let converted = if to_lower {
-            if (b'A'..=b'Z').contains(&(c as u8)) && c < 128 {
+            if (c as u8).is_ascii_uppercase() && c < 128 {
                 c + (b'a' - b'A') as u32
             } else {
                 c
             }
-        } else if (b'a'..=b'z').contains(&(c as u8)) && c < 128 {
+        } else if (c as u8).is_ascii_lowercase() && c < 128 {
             c - (b'a' - b'A') as u32
         } else {
             c
@@ -1585,7 +1585,7 @@ pub fn js_string_fromCharCode(
             Err(_) => return JS_EXCEPTION,
         };
         let codepoint = if is_from_codepoint {
-            if c < 0 || c > 0x10ffff {
+            if !(0..=0x10ffff).contains(&c) {
                 return JS_EXCEPTION; // RangeError
             }
             c as u32
@@ -2138,23 +2138,21 @@ fn append_replacement(
                 let mut second_digit = None;
                 if j < replace_len {
                     let c3 = ctx.string_getc(replace, j as u32);
-                    if (b'0'..=b'9').contains(&(c3 as u8)) {
+                    if (c3 as u8).is_ascii_digit() {
                         k = k * 10 + (c3 as u8 - b'0') as u32;
                         second_digit = Some(c3 as u8);
                         j += 1;
                     }
                 }
                 let mut replaced = false;
-                if let Some((captures_val, captures_len)) = captures {
-                    if k >= 1 && k < captures_len {
-                        if let Ok(cap) = get_property(ctx, captures_val, new_short_int(k as i32)) {
-                            if !is_undefined(cap) {
+                if let Some((captures_val, captures_len)) = captures
+                    && k >= 1 && k < captures_len {
+                        if let Ok(cap) = get_property(ctx, captures_val, new_short_int(k as i32))
+                            && !is_undefined(cap) {
                                 let _ = append_string_bytes(result, cap);
                             }
-                        }
                         replaced = true;
                     }
-                }
                 if replaced {
                     i = j;
                 } else {
