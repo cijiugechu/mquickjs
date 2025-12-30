@@ -6,10 +6,7 @@ use crate::context::JSContext;
 use crate::cutils::{get_u16, put_u16};
 use crate::enums::JSVarRefKind;
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
-use crate::jsvalue::{
-    value_get_int, value_get_special_tag, value_get_special_value, value_from_ptr, value_to_ptr,
-    JSValue, JSWord, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT, JS_TAG_SPECIAL_BITS,
-};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::opcode::{
     OpCode, OP_ADD, OP_AND, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR,
     OP_CALL_METHOD, OP_CATCH, OP_DEC, OP_DEFINE_FIELD, OP_DEFINE_GETTER, OP_DEFINE_SETTER,
@@ -134,16 +131,16 @@ fn is_negative_zero(value: f64) -> bool {
 }
 
 fn encode_short_int(val: i32) -> u32 {
-    ((val as u32) << 1) | (JS_TAG_INT as u32)
+    ((val as u32) << 1) | (JSValue::JS_TAG_INT as u32)
 }
 
 fn encode_jsvalue(val: JSValue) -> u32 {
     if val.is_int() {
-        return encode_short_int(value_get_int(val));
+        return encode_short_int(val.get_int());
     }
-    let tag = value_get_special_tag(val) as u32;
-    let payload = value_get_special_value(val) as u32;
-    tag | (payload << JS_TAG_SPECIAL_BITS)
+    let tag = val.get_special_tag() as u32;
+    let payload = val.get_special_value() as u32;
+    tag | (payload << JSValue::JS_TAG_SPECIAL_BITS)
 }
 
 fn value_bytes(val: JSValue) -> Result<Vec<u8>, ParserError> {
@@ -185,7 +182,7 @@ impl OwnedFunctionBytecode {
     }
 
     fn value(&self) -> JSValue {
-        value_from_ptr(self.ptr)
+        JSValue::from_ptr(self.ptr)
     }
 
     fn ptr(&self) -> NonNull<FunctionBytecode> {
@@ -230,15 +227,15 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     pub fn new(ctx: &'ctx mut JSContext, source: &'a [u8]) -> Self {
         let header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let fields = FunctionBytecodeFields {
-            func_name: JS_NULL,
-            byte_code: JS_NULL,
-            cpool: JS_NULL,
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            func_name: JSValue::JS_NULL,
+            byte_code: JSValue::JS_NULL,
+            cpool: JSValue::JS_NULL,
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 0,
             ext_vars_len: 0,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         let func = OwnedFunctionBytecode::new(header, fields);
@@ -311,7 +308,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     pub fn parse_statement(&mut self) -> Result<(), ParserError> {
         self.attach_parse_state();
         self.lexer.next_token().map_err(ParserError::from)?;
-        let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
+        let mut storage = vec![JSValue::JS_NULL; DEFAULT_STACK_SIZE];
         let mut stack = ParseStack::new(&mut storage);
         self.parse_call(&mut stack, ParseExprFunc::JsParseStatement, 0)
     }
@@ -405,14 +402,14 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             };
             let fields = FunctionBytecodeFields {
                 func_name,
-                byte_code: JS_NULL,
-                cpool: JS_NULL,
-                vars: JS_NULL,
-                ext_vars: JS_NULL,
+                byte_code: JSValue::JS_NULL,
+                cpool: JSValue::JS_NULL,
+                vars: JSValue::JS_NULL,
+                ext_vars: JSValue::JS_NULL,
                 stack_size,
                 ext_vars_len,
                 filename,
-                pc2line: JS_NULL,
+                pc2line: JSValue::JS_NULL,
                 source_pos,
             };
             let new_val = self
@@ -436,7 +433,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 )
             };
             let new_val = map_func_value(&func_map, *func_val);
-            let mut func_ptr = value_to_ptr::<FunctionBytecode>(new_val).ok_or_else(|| {
+            let mut func_ptr = new_val.to_ptr::<FunctionBytecode>().ok_or_else(|| {
                 ParserError::new(ParserErrorKind::Static(ERR_INVALID_FUNCTION_PTR), 0)
             })?;
             // SAFETY: new_val points at a live function bytecode allocation.
@@ -517,7 +514,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn value_array_ref(&self, value: JSValue) -> Result<&ValueArray, ParserError> {
-        let ptr = value_to_ptr::<ValueArray>(value).ok_or_else(|| {
+        let ptr = value.to_ptr::<ValueArray>().ok_or_else(|| {
             ParserError::new(ParserErrorKind::Static(ERR_INVALID_VALUE_ARRAY_PTR), 0)
         })?;
         // SAFETY: value points to a ValueArray allocated by VarAllocator.
@@ -525,7 +522,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn value_array_mut(&mut self, value: JSValue) -> Result<&mut ValueArray, ParserError> {
-        let mut ptr = value_to_ptr::<ValueArray>(value).ok_or_else(|| {
+        let mut ptr = value.to_ptr::<ValueArray>().ok_or_else(|| {
             ParserError::new(ParserErrorKind::Static(ERR_INVALID_VALUE_ARRAY_PTR), 0)
         })?;
         // SAFETY: value points to a ValueArray allocated by VarAllocator.
@@ -533,7 +530,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn byte_array_ref(&self, value: JSValue) -> Result<&ByteArray, ParserError> {
-        let ptr = value_to_ptr::<ByteArray>(value).ok_or_else(|| {
+        let ptr = value.to_ptr::<ByteArray>().ok_or_else(|| {
             ParserError::new(ParserErrorKind::Static(ERR_INVALID_BYTE_ARRAY_PTR), 0)
         })?;
         // SAFETY: value points to a ByteArray allocated by VarAllocator.
@@ -541,7 +538,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn byte_array_mut(&mut self, value: JSValue) -> Result<&mut ByteArray, ParserError> {
-        let mut ptr = value_to_ptr::<ByteArray>(value).ok_or_else(|| {
+        let mut ptr = value.to_ptr::<ByteArray>().ok_or_else(|| {
             ParserError::new(ParserErrorKind::Static(ERR_INVALID_BYTE_ARRAY_PTR), 0)
         })?;
         // SAFETY: value points to a ByteArray allocated by VarAllocator.
@@ -566,7 +563,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             let ptr = ctx
                 .alloc_value_array(items.len())
                 .map_err(|_| ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0))?;
-            let new_val = value_from_ptr(ptr);
+            let new_val = JSValue::from_ptr(ptr);
             array_map.push((value, new_val));
             let base = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
             for (idx, item) in items.iter().enumerate() {
@@ -591,13 +588,13 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn parse_expr2(&mut self, parse_flags: i32) -> Result<(), ParserError> {
-        let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
+        let mut storage = vec![JSValue::JS_NULL; DEFAULT_STACK_SIZE];
         let mut stack = ParseStack::new(&mut storage);
         self.parse_call(&mut stack, ParseExprFunc::JsParseExprComma, parse_flags)
     }
 
     fn parse_assign_expr2(&mut self, parse_flags: i32) -> Result<(), ParserError> {
-        let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
+        let mut storage = vec![JSValue::JS_NULL; DEFAULT_STACK_SIZE];
         let mut stack = ParseStack::new(&mut storage);
         self.parse_call(&mut stack, ParseExprFunc::JsParseAssignExpr, parse_flags)
     }
@@ -635,10 +632,10 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_source_element(&mut self) -> Result<(), ParserError> {
         if self.lexer.token().val() == TOK_FUNCTION {
-            self.parse_function_decl(JSParseFunction::Statement, JS_NULL)?;
+            self.parse_function_decl(JSParseFunction::Statement, JSValue::JS_NULL)?;
             return Ok(());
         }
-        let mut storage = vec![JS_NULL; DEFAULT_STACK_SIZE];
+        let mut storage = vec![JSValue::JS_NULL; DEFAULT_STACK_SIZE];
         let mut stack = ParseStack::new(&mut storage);
         self.parse_call(&mut stack, ParseExprFunc::JsParseStatement, 0)?;
         Ok(())
@@ -687,14 +684,14 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         );
         let fields = FunctionBytecodeFields {
             func_name,
-            byte_code: JS_NULL,
-            cpool: JS_NULL,
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            byte_code: JSValue::JS_NULL,
+            cpool: JSValue::JS_NULL,
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 0,
             ext_vars_len: 0,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos,
         };
         let mut func = OwnedFunctionBytecode::new(header, fields);
@@ -852,7 +849,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         let func = self.current_func_ref()?;
         let arg_count = func.arg_count() as i32;
         let cpool_val = func.cpool();
-        if cpool_val != JS_NULL {
+        if cpool_val != JSValue::JS_NULL {
             let cpool = self.value_array_ref(cpool_val)?;
             let cpool_len = self.parse_state_ref().cpool_len() as usize;
             for (idx, value) in cpool.values().iter().take(cpool_len).enumerate() {
@@ -898,16 +895,16 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         let local_len = self.parse_state_ref().local_vars_len() as usize;
         let byte_code_len = self.parse_state_ref().byte_code_len() as usize;
 
-        if cpool_val != JS_NULL {
+        if cpool_val != JSValue::JS_NULL {
             let cpool = self.value_array_mut(cpool_val)?;
             cpool.shrink_to(cpool_len);
         }
-        if vars_val != JS_NULL {
+        if vars_val != JSValue::JS_NULL {
             let vars = self.value_array_mut(vars_val)?;
             vars.shrink_to(local_len);
         }
 
-        if byte_code_val != JS_NULL {
+        if byte_code_val != JSValue::JS_NULL {
             let byte_code = self.byte_array_mut(byte_code_val)?;
             byte_code.shrink_to(byte_code_len);
         }
@@ -928,7 +925,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
         let mut stack = vec![Frame {
             func: top_func,
-            parent: JS_NULL,
+            parent: JSValue::JS_NULL,
             cpool_pos: 0,
         }];
 
@@ -940,7 +937,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             let cpool_values = {
                 let func = self.function_ref(frame.func)?;
                 let cpool_val = func.cpool();
-                if cpool_val == JS_NULL {
+                if cpool_val == JSValue::JS_NULL {
                     Vec::new()
                 } else {
                     self.value_array_ref(cpool_val)?.values().to_vec()
@@ -972,7 +969,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 continue;
             }
 
-            if frame.parent != JS_NULL {
+            if frame.parent != JSValue::JS_NULL {
                 resolve_var_refs(&mut self.alloc, frame.func, frame.parent)
                     .map_err(|err| Self::var_error(err, 0))?;
             }
@@ -981,7 +978,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 let func = self.function_ref(frame.func)?;
                 (func.ext_vars(), func.ext_vars_len())
             };
-            if ext_vars_val != JS_NULL {
+            if ext_vars_val != JSValue::JS_NULL {
                 let ext_vars = self.value_array_mut(ext_vars_val)?;
                 ext_vars.shrink_to(ext_vars_len as usize * 2);
             }
@@ -1149,7 +1146,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     ) -> Result<i32, ParserError> {
         match state {
             PARSE_STATE_INIT => {
-                let mut label_name = JS_NULL;
+                let mut label_name = JSValue::JS_NULL;
                 if self.lexer.is_label() {
                     label_name = self.lexer.token().value();
                     self.next_token()?;
@@ -1380,7 +1377,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                         {
                             self.lexer.token().value()
                         } else {
-                            JS_NULL
+                            JSValue::JS_NULL
                         };
                         emit_break(
                             &mut self.emitter,
@@ -1390,7 +1387,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                             source_pos,
                         )
                         .map_err(Self::control_flow_error)?;
-                        if label_name != JS_NULL {
+                        if label_name != JSValue::JS_NULL {
                             self.next_token()?;
                         }
                         parse_expect_semi(&mut self.lexer)?;
@@ -1416,7 +1413,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
                         let idx = self
                             .break_stack
-                            .push(JS_NULL, Label::none(), Label::none(), 1);
+                            .push(JSValue::JS_NULL, Label::none(), Label::none(), 1);
                         if let Some(entry) = self.break_stack.entry_mut(idx) {
                             *entry.label_finally_mut() = label_finally;
                         }
@@ -1579,7 +1576,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
                     let idx = self
                         .break_stack
-                        .push(JS_NULL, Label::none(), Label::none(), 1);
+                        .push(JSValue::JS_NULL, Label::none(), Label::none(), 1);
                     if let Some(entry) = self.break_stack.entry_mut(idx) {
                         *entry.label_finally_mut() = label_finally;
                     }
@@ -1601,7 +1598,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 if self.lexer.token().val() == TOK_FINALLY {
                     self.next_token()?;
                     self.break_stack
-                        .push(JS_NULL, Label::none(), Label::none(), 2);
+                        .push(JSValue::JS_NULL, Label::none(), Label::none(), 2);
                     stack.push_int(label_end.raw()).map_err(Self::stack_error)?;
                     return Ok(encode_call(10, ParseExprFunc::JsParseBlock, 0));
                 }
@@ -1635,7 +1632,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 if self.lexer.token().val() == TOK_FINALLY {
                     self.next_token()?;
                     self.break_stack
-                        .push(JS_NULL, Label::none(), Label::none(), 2);
+                        .push(JSValue::JS_NULL, Label::none(), Label::none(), 2);
                     stack.push_int(label_end.raw()).map_err(Self::stack_error)?;
                     return Ok(encode_call(10, ParseExprFunc::JsParseBlock, 0));
                 }
@@ -1794,8 +1791,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     fn cpool_add(&mut self, val: JSValue) -> Result<u16, ParserError> {
         let len = self.parse_state_ref().cpool_len() as usize;
         let mut cpool_val = self.func.as_ref().cpool();
-        if cpool_val != JS_NULL {
-            let ptr = value_to_ptr::<ValueArray>(cpool_val).ok_or_else(|| {
+        if cpool_val != JSValue::JS_NULL {
+            let ptr = cpool_val.to_ptr::<ValueArray>().ok_or_else(|| {
                 ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0)
             })?;
             // SAFETY: cpool array is owned by the allocator and stable here.
@@ -1812,11 +1809,11 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         }
 
         let new_size = (len + 1).max(4);
-        if cpool_val == JS_NULL {
+        if cpool_val == JSValue::JS_NULL {
             cpool_val = self.alloc.alloc_value_array(new_size);
             self.func.as_mut().set_cpool(cpool_val);
         } else {
-            let mut ptr = value_to_ptr::<ValueArray>(cpool_val).ok_or_else(|| {
+            let mut ptr = cpool_val.to_ptr::<ValueArray>().ok_or_else(|| {
                 ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0)
             })?;
             // SAFETY: cpool array is owned by the allocator and mutated here.
@@ -1824,7 +1821,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             arr.ensure_size(new_size);
         }
 
-        let mut ptr = value_to_ptr::<ValueArray>(cpool_val).ok_or_else(|| {
+        let mut ptr = cpool_val.to_ptr::<ValueArray>().ok_or_else(|| {
             ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0)
         })?;
         // SAFETY: cpool array is owned by the allocator and mutated here.
@@ -1871,8 +1868,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     fn emit_push_number(&mut self, value: f64) -> Result<(), ParserError> {
         if value.is_finite()
             && !is_negative_zero(value)
-            && value >= JS_SHORTINT_MIN as f64
-            && value <= JS_SHORTINT_MAX as f64
+            && value >= JSValue::JS_SHORTINT_MIN as f64
+            && value <= JSValue::JS_SHORTINT_MAX as f64
             && value == (value as i32) as f64
         {
             self.emitter.emit_push_short_int(value as i32);
@@ -2035,7 +2032,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                             ));
                         }
                         TOK_FUNCTION => {
-                            self.parse_function_decl(JSParseFunction::Expr, JS_NULL)?;
+                            self.parse_function_decl(JSParseFunction::Expr, JSValue::JS_NULL)?;
                             phase = Phase::Suffix;
                         }
                         TOK_NULL => {
@@ -2239,7 +2236,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                         phase = Phase::Suffix;
                         continue;
                     }
-                    if idx >= JS_SHORTINT_MAX as u32 {
+                    if idx >= JSValue::JS_SHORTINT_MAX as u32 {
                         return Err(self.parser_error(ERR_TOO_MANY_ELEMENTS));
                     }
                     self.emitter.emit_op(OP_DUP);
@@ -3227,7 +3224,7 @@ mod tests {
         name: &[u8],
     ) -> Option<&'a FunctionBytecode> {
         let cpool_val = root.cpool();
-        if cpool_val != JS_NULL {
+        if cpool_val != JSValue::JS_NULL {
             let cpool = parser.value_array_ref(cpool_val).ok()?;
             for &entry in cpool.values() {
                 let Some(ptr) = parser.func_ptr(entry) else {

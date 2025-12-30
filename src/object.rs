@@ -4,7 +4,7 @@ use crate::cfunction_data::CFunctionData;
 use crate::closure_data::ClosureData;
 use crate::error_data::ErrorData;
 use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
-use crate::jsvalue::{JSValue, JSWord, JSW};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::typed_array::TypedArray;
 use core::ffi::c_void;
 
@@ -18,7 +18,7 @@ impl ObjectHeader {
     pub const EXTRA_SIZE_SHIFT: u32 = JS_MTAG_BITS + Self::CLASS_ID_BITS;
 
     pub const fn word_bits() -> u32 {
-        (JSW as u32) * 8
+        (JSValue::JSW as u32) * 8
     }
 
     pub const EXTRA_SIZE_BITS: u32 = Self::word_bits() - Self::EXTRA_SIZE_SHIFT;

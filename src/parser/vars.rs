@@ -4,9 +4,7 @@ use core::ptr::NonNull;
 use crate::cutils::{get_u16, put_u16};
 use crate::enums::JSVarRefKind;
 use crate::function_bytecode::FunctionBytecode;
-use crate::jsvalue::{
-    new_short_int, value_from_ptr, value_to_ptr, JSValue, JS_NULL, JS_UNDEFINED,
-};
+use crate::jsvalue::JSValue;
 use crate::opcode::{
     OpCode, OPCODES, OP_GET_LOC, OP_GET_VAR_REF, OP_GET_VAR_REF_NOCHECK, OP_PUT_ARG, OP_PUT_LOC,
     OP_PUT_VAR_REF_NOCHECK, OP_PUT_VAR_REF,
@@ -148,7 +146,7 @@ pub struct ValueArray {
 impl ValueArray {
     pub fn new(size: usize) -> Self {
         Self {
-            values: vec![JS_UNDEFINED; size],
+            values: vec![JSValue::JS_UNDEFINED; size],
         }
     }
 
@@ -171,7 +169,7 @@ impl ValueArray {
         }
         let grow = old_size + old_size / 2;
         let target = new_size.max(grow);
-        self.values.resize(target, JS_UNDEFINED);
+        self.values.resize(target, JSValue::JS_UNDEFINED);
     }
 
     pub(crate) fn shrink_to(&mut self, new_size: usize) {
@@ -226,7 +224,7 @@ impl VarAllocator {
         // SAFETY: Box never yields a null pointer.
         let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
         self.value_arrays.push(ptr);
-        value_from_ptr(ptr)
+        JSValue::from_ptr(ptr)
     }
 
     pub fn alloc_byte_array(&mut self, buf: Vec<u8>) -> JSValue {
@@ -234,11 +232,11 @@ impl VarAllocator {
         // SAFETY: Box never yields a null pointer.
         let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
         self.byte_arrays.push(ptr);
-        value_from_ptr(ptr)
+        JSValue::from_ptr(ptr)
     }
 
     pub fn value_array_ref(&self, val: JSValue) -> Option<&ValueArray> {
-        let ptr = value_to_ptr::<ValueArray>(val)?;
+        let ptr = val.to_ptr::<ValueArray>()?;
         let stored = self
             .value_arrays
             .iter()
@@ -248,7 +246,7 @@ impl VarAllocator {
     }
 
     pub fn byte_array_ref(&self, val: JSValue) -> Option<&ByteArray> {
-        let ptr = value_to_ptr::<ByteArray>(val)?;
+        let ptr = val.to_ptr::<ByteArray>()?;
         let stored = self
             .byte_arrays
             .iter()
@@ -272,15 +270,15 @@ impl Drop for VarAllocator {
 }
 
 fn value_array_ptr(val: JSValue) -> Result<NonNull<ValueArray>, VarError> {
-    value_to_ptr::<ValueArray>(val).ok_or_else(|| VarError::new(ERR_INVALID_ARRAY_PTR))
+    val.to_ptr::<ValueArray>().ok_or_else(|| VarError::new(ERR_INVALID_ARRAY_PTR))
 }
 
 fn byte_array_ptr(val: JSValue) -> Result<NonNull<ByteArray>, VarError> {
-    value_to_ptr::<ByteArray>(val).ok_or_else(|| VarError::new(ERR_INVALID_BYTECODE_PTR))
+    val.to_ptr::<ByteArray>().ok_or_else(|| VarError::new(ERR_INVALID_BYTECODE_PTR))
 }
 
 fn func_from_value(val: JSValue) -> Result<NonNull<FunctionBytecode>, VarError> {
-    value_to_ptr::<FunctionBytecode>(val).ok_or_else(|| VarError::new(ERR_INVALID_FUNC_PTR))
+    val.to_ptr::<FunctionBytecode>().ok_or_else(|| VarError::new(ERR_INVALID_FUNC_PTR))
 }
 
 fn resize_value_array(
@@ -288,7 +286,7 @@ fn resize_value_array(
     val: JSValue,
     new_size: usize,
 ) -> Result<JSValue, VarError> {
-    if val == JS_NULL {
+    if val == JSValue::JS_NULL {
         return Ok(alloc.alloc_value_array(new_size));
     }
     let mut array_ptr = value_array_ptr(val)?;
@@ -306,13 +304,13 @@ fn pack_decl(kind: JSVarRefKind, idx: i32) -> i32 {
 
 /* return the local variable index; None means "not found" (replaces -1 sentinel) */
 pub fn find_func_var(func: JSValue, name: JSValue) -> Option<LocalVarIndex> {
-    let func_ptr = value_to_ptr::<FunctionBytecode>(func)?;
+    let func_ptr = func.to_ptr::<FunctionBytecode>()?;
     // SAFETY: caller provides a valid function bytecode pointer.
     let func_ref = unsafe { func_ptr.as_ref() };
-    if func_ref.vars() == JS_NULL {
+    if func_ref.vars() == JSValue::JS_NULL {
         return None;
     }
-    let arr_ptr = value_to_ptr::<ValueArray>(func_ref.vars())?;
+    let arr_ptr = func_ref.vars().to_ptr::<ValueArray>()?;
     // SAFETY: vars points to a live ValueArray.
     let arr = unsafe { arr_ptr.as_ref() };
     for (idx, value) in arr.values().iter().enumerate() {
@@ -329,11 +327,11 @@ pub fn find_var(state: &JSParseState, name: JSValue) -> Option<LocalVarIndex> {
     if local_len == 0 {
         return None;
     }
-    let func_ptr = value_to_ptr::<FunctionBytecode>(state.cur_func())?;
+    let func_ptr = state.cur_func().to_ptr::<FunctionBytecode>()?;
     // SAFETY: state.cur_func points to a live FunctionBytecode.
     let func_ref = unsafe { func_ptr.as_ref() };
     let vars_val = func_ref.vars();
-    let Some(arr_ptr) = value_to_ptr::<ValueArray>(vars_val) else {
+    let Some(arr_ptr) = vars_val.to_ptr::<ValueArray>() else {
         debug_assert!(local_len == 0);
         return None;
     };
@@ -349,11 +347,11 @@ pub fn find_var(state: &JSParseState, name: JSValue) -> Option<LocalVarIndex> {
 }
 
 pub fn get_ext_var_name(state: &JSParseState, var_idx: ExtVarIndex) -> Option<JSValue> {
-    let func_ptr = value_to_ptr::<FunctionBytecode>(state.cur_func())?;
+    let func_ptr = state.cur_func().to_ptr::<FunctionBytecode>()?;
     // SAFETY: state.cur_func points to a live FunctionBytecode.
     let func_ref = unsafe { func_ptr.as_ref() };
     let ext_vars_val = func_ref.ext_vars();
-    let arr_ptr = value_to_ptr::<ValueArray>(ext_vars_val)?;
+    let arr_ptr = ext_vars_val.to_ptr::<ValueArray>()?;
     // SAFETY: ext_vars points to a live ValueArray.
     let arr = unsafe { arr_ptr.as_ref() };
     arr.values().get(2 * usize::from(var_idx)).copied()
@@ -361,14 +359,14 @@ pub fn get_ext_var_name(state: &JSParseState, var_idx: ExtVarIndex) -> Option<JS
 
 /* return the external variable index; None means "not found" (replaces -1 sentinel) */
 pub fn find_func_ext_var(func: JSValue, name: JSValue) -> Option<ExtVarIndex> {
-    let func_ptr = value_to_ptr::<FunctionBytecode>(func)?;
+    let func_ptr = func.to_ptr::<FunctionBytecode>()?;
     // SAFETY: caller provides a valid function bytecode pointer.
     let func_ref = unsafe { func_ptr.as_ref() };
     let ext_len = func_ref.ext_vars_len() as usize;
     if ext_len == 0 {
         return None;
     }
-    let Some(arr_ptr) = value_to_ptr::<ValueArray>(func_ref.ext_vars()) else {
+    let Some(arr_ptr) = func_ref.ext_vars().to_ptr::<ValueArray>() else {
         debug_assert!(ext_len == 0);
         return None;
     };
@@ -411,7 +409,7 @@ pub fn add_func_ext_var(
     let idx = ext_len as usize;
     debug_assert!(arr.size() >= (idx + 1) * 2);
     arr.values_mut()[2 * idx] = name;
-    arr.values_mut()[2 * idx + 1] = new_short_int(decl);
+    arr.values_mut()[2 * idx + 1] = JSValue::new_short_int(decl);
     let ext_idx = ExtVarIndex::try_from(ext_len).expect("ext var index");
     let new_len = ext_len + 1;
     func_ref.set_ext_vars_len(new_len as u16);
@@ -471,7 +469,7 @@ pub fn define_var(
             let arr = unsafe { arr_ptr.as_mut() };
             let idx = usize::from(var_idx);
             debug_assert!(arr.size() > idx * 2 + 1);
-            arr.values_mut()[2 * idx + 1] = new_short_int(decl);
+            arr.values_mut()[2 * idx + 1] = JSValue::new_short_int(decl);
             var_idx
         } else {
             add_ext_var(state, alloc, name, decl)?
@@ -677,7 +675,7 @@ pub fn resolve_var_refs(
             };
             pack_decl(JSVarRefKind::VarRef, i32::from(ext_idx))
         };
-        ext_vars.values_mut()[2 * i + 1] = new_short_int(decl);
+        ext_vars.values_mut()[2 * i + 1] = JSValue::new_short_int(decl);
     }
     Ok(())
 }
@@ -686,7 +684,6 @@ pub fn resolve_var_refs(
 mod tests {
     use super::*;
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
-    use crate::jsvalue::{new_short_int, value_get_int};
 
     struct OwnedFunc {
         ptr: NonNull<FunctionBytecode>,
@@ -701,7 +698,7 @@ mod tests {
         }
 
         fn value(&self) -> JSValue {
-            value_from_ptr(self.ptr)
+            JSValue::from_ptr(self.ptr)
         }
 
         fn as_ref(&self) -> &FunctionBytecode {
@@ -732,15 +729,15 @@ mod tests {
         fn new(arg_count: u16) -> Self {
             let header = FunctionBytecodeHeader::new(false, false, false, arg_count, false);
             let fields = FunctionBytecodeFields {
-                func_name: JS_NULL,
-                byte_code: JS_NULL,
-                cpool: JS_NULL,
-                vars: JS_NULL,
-                ext_vars: JS_NULL,
+                func_name: JSValue::JS_NULL,
+                byte_code: JSValue::JS_NULL,
+                cpool: JSValue::JS_NULL,
+                vars: JSValue::JS_NULL,
+                ext_vars: JSValue::JS_NULL,
                 stack_size: 0,
                 ext_vars_len: 0,
-                filename: JS_NULL,
-                pc2line: JS_NULL,
+                filename: JSValue::JS_NULL,
+                pc2line: JSValue::JS_NULL,
                 source_pos: 0,
             };
             let func = OwnedFunc::new(header, fields);
@@ -757,7 +754,7 @@ mod tests {
     }
 
     fn value_array_ref(val: JSValue) -> &'static ValueArray {
-        let ptr = value_to_ptr::<ValueArray>(val).expect("value array pointer");
+        let ptr = val.to_ptr::<ValueArray>().expect("value array pointer");
         // SAFETY: the ValueArray is kept alive by the allocator in the test harness.
         unsafe { ptr.as_ref() }
     }
@@ -765,7 +762,7 @@ mod tests {
     #[test]
     fn add_var_appends_and_grows_array() {
         let mut harness = Harness::new(0);
-        let name = new_short_int(7);
+        let name = JSValue::new_short_int(7);
         let idx = add_var(&mut harness.state, &mut harness.alloc, name).unwrap();
         assert_eq!(i32::from(idx), 0);
         assert_eq!(harness.state.local_vars_len(), 1);
@@ -773,13 +770,13 @@ mod tests {
         let arr = value_array_ref(vars_val);
         assert_eq!(arr.size(), 4);
         assert_eq!(arr.values()[0], name);
-        assert_eq!(arr.values()[1], JS_UNDEFINED);
+        assert_eq!(arr.values()[1], JSValue::JS_UNDEFINED);
     }
 
     #[test]
     fn add_ext_var_stores_pairs() {
         let mut harness = Harness::new(0);
-        let name = new_short_int(11);
+        let name = JSValue::new_short_int(11);
         let decl = (JSVarRefKind::Global as i32) << 16;
         let idx = add_ext_var(&harness.state, &mut harness.alloc, name, decl).unwrap();
         assert_eq!(i32::from(idx), 0);
@@ -788,7 +785,7 @@ mod tests {
         let arr = value_array_ref(func_ref.ext_vars());
         assert_eq!(arr.size(), 4);
         assert_eq!(arr.values()[0], name);
-        assert_eq!(value_get_int(arr.values()[1]), decl);
+        assert_eq!(arr.values()[1].get_int(), decl);
     }
 
     #[test]
@@ -799,24 +796,24 @@ mod tests {
             let mut arr_ptr = value_array_ptr(vars_val).unwrap();
             // SAFETY: vars_val is owned by the allocator in this test.
             let arr = unsafe { arr_ptr.as_mut() };
-            arr.values_mut()[0] = new_short_int(1);
-            arr.values_mut()[1] = new_short_int(2);
-            arr.values_mut()[2] = new_short_int(3);
+            arr.values_mut()[0] = JSValue::new_short_int(1);
+            arr.values_mut()[1] = JSValue::new_short_int(2);
+            arr.values_mut()[2] = JSValue::new_short_int(3);
         }
         harness.func.as_mut().set_vars(vars_val);
         harness.state.set_local_vars_len(3);
 
-        let (kind, idx) = define_var(&mut harness.state, &mut harness.alloc, new_short_int(2))
+        let (kind, idx) = define_var(&mut harness.state, &mut harness.alloc, JSValue::new_short_int(2))
             .unwrap();
         assert_eq!(kind, JSVarRefKind::Arg);
         assert_eq!(idx, 1);
 
-        let (kind, idx) = define_var(&mut harness.state, &mut harness.alloc, new_short_int(3))
+        let (kind, idx) = define_var(&mut harness.state, &mut harness.alloc, JSValue::new_short_int(3))
             .unwrap();
         assert_eq!(kind, JSVarRefKind::Var);
         assert_eq!(idx, 0);
 
-        let (kind, idx) = define_var(&mut harness.state, &mut harness.alloc, new_short_int(4))
+        let (kind, idx) = define_var(&mut harness.state, &mut harness.alloc, JSValue::new_short_int(4))
             .unwrap();
         assert_eq!(kind, JSVarRefKind::Var);
         assert_eq!(idx, 1);
@@ -827,20 +824,20 @@ mod tests {
     fn define_var_eval_updates_ext_var_decl() {
         let mut harness = Harness::new(0);
         harness.state.set_is_eval(true);
-        let name = new_short_int(9);
+        let name = JSValue::new_short_int(9);
         let (kind, idx) = define_var(&mut harness.state, &mut harness.alloc, name).unwrap();
         assert_eq!(kind, JSVarRefKind::VarRef);
         assert_eq!(idx, 0);
         let func_ref = harness.func.as_ref();
         let arr = value_array_ref(func_ref.ext_vars());
         let decl = ((JSVarRefKind::Global as i32) << 16) | 1;
-        assert_eq!(value_get_int(arr.values()[1]), decl);
+        assert_eq!(arr.values()[1].get_int(), decl);
 
         let (kind, idx) = define_var(&mut harness.state, &mut harness.alloc, name).unwrap();
         assert_eq!(kind, JSVarRefKind::VarRef);
         assert_eq!(idx, 0);
         let arr = value_array_ref(func_ref.ext_vars());
-        assert_eq!(value_get_int(arr.values()[1]), decl);
+        assert_eq!(arr.values()[1].get_int(), decl);
     }
 
     #[test]
@@ -848,15 +845,15 @@ mod tests {
         let mut alloc = VarAllocator::new();
         let header_parent = FunctionBytecodeHeader::new(false, false, false, 1, false);
         let fields_parent = FunctionBytecodeFields {
-            func_name: JS_NULL,
-            byte_code: JS_NULL,
-            cpool: JS_NULL,
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            func_name: JSValue::JS_NULL,
+            byte_code: JSValue::JS_NULL,
+            cpool: JSValue::JS_NULL,
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 0,
             ext_vars_len: 0,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         let mut parent = OwnedFunc::new(header_parent, fields_parent);
@@ -866,22 +863,22 @@ mod tests {
             let mut arr_ptr = value_array_ptr(vars_val).unwrap();
             // SAFETY: vars_val is owned by the allocator in this test.
             let arr = unsafe { arr_ptr.as_mut() };
-            arr.values_mut()[0] = new_short_int(1);
-            arr.values_mut()[1] = new_short_int(2);
+            arr.values_mut()[0] = JSValue::new_short_int(1);
+            arr.values_mut()[1] = JSValue::new_short_int(2);
         }
         parent.as_mut().set_vars(vars_val);
 
         let header_child = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let fields_child = FunctionBytecodeFields {
-            func_name: JS_NULL,
-            byte_code: JS_NULL,
-            cpool: JS_NULL,
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            func_name: JSValue::JS_NULL,
+            byte_code: JSValue::JS_NULL,
+            cpool: JSValue::JS_NULL,
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 0,
             ext_vars_len: 2,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         let mut child = OwnedFunc::new(header_child, fields_child);
@@ -891,23 +888,23 @@ mod tests {
             let mut arr_ptr = value_array_ptr(ext_vars_val).unwrap();
             // SAFETY: ext_vars_val is owned by the allocator in this test.
             let arr = unsafe { arr_ptr.as_mut() };
-            arr.values_mut()[0] = new_short_int(2);
-            arr.values_mut()[1] = new_short_int(0);
-            arr.values_mut()[2] = new_short_int(3);
-            arr.values_mut()[3] = new_short_int(0);
+            arr.values_mut()[0] = JSValue::new_short_int(2);
+            arr.values_mut()[1] = JSValue::new_short_int(0);
+            arr.values_mut()[2] = JSValue::new_short_int(3);
+            arr.values_mut()[3] = JSValue::new_short_int(0);
         }
         child.as_mut().set_ext_vars(ext_vars_val);
 
         resolve_var_refs(&mut alloc, child_val, parent_val).unwrap();
         let arr = value_array_ref(child.as_ref().ext_vars());
         let decl_local = (JSVarRefKind::Var as i32) << 16;
-        assert_eq!(value_get_int(arr.values()[1]), decl_local);
+        assert_eq!(arr.values()[1].get_int(), decl_local);
         let decl_ref = (JSVarRefKind::VarRef as i32) << 16;
-        assert_eq!(value_get_int(arr.values()[3]), decl_ref);
+        assert_eq!(arr.values()[3].get_int(), decl_ref);
 
         let parent_arr = value_array_ref(parent.as_ref().ext_vars());
         assert_eq!(parent.as_ref().ext_vars_len(), 1);
-        assert_eq!(parent_arr.values()[0], new_short_int(3));
+        assert_eq!(parent_arr.values()[0], JSValue::new_short_int(3));
     }
 
     #[test]
@@ -918,8 +915,8 @@ mod tests {
             let mut arr_ptr = value_array_ptr(vars_val).unwrap();
             // SAFETY: vars_val is owned by the allocator in this test.
             let arr = unsafe { arr_ptr.as_mut() };
-            arr.values_mut()[0] = new_short_int(1);
-            arr.values_mut()[1] = new_short_int(2);
+            arr.values_mut()[0] = JSValue::new_short_int(1);
+            arr.values_mut()[1] = JSValue::new_short_int(2);
         }
         harness.func.as_mut().set_vars(vars_val);
         harness.state.set_local_vars_len(2);
@@ -929,8 +926,8 @@ mod tests {
             let mut arr_ptr = value_array_ptr(ext_vars_val).unwrap();
             // SAFETY: ext_vars_val is owned by the allocator in this test.
             let arr = unsafe { arr_ptr.as_mut() };
-            arr.values_mut()[0] = new_short_int(2);
-            arr.values_mut()[1] = new_short_int(0);
+            arr.values_mut()[0] = JSValue::new_short_int(2);
+            arr.values_mut()[1] = JSValue::new_short_int(0);
         }
         harness.func.as_mut().set_ext_vars(ext_vars_val);
         harness.func.as_mut().set_ext_vars_len(1);

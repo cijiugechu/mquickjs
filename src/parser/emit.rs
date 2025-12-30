@@ -1,5 +1,5 @@
 use crate::cutils::{get_u32, put_u16, put_u32};
-use crate::jsvalue::{JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT};
+use crate::jsvalue::JSValue;
 use crate::opcode::{
     OpCode, OpCodeFormat, OPCODES, OP_GOSUB, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE, OP_INVALID,
     OP_PUSH_0, OP_PUSH_I16, OP_PUSH_I8, OP_PUSH_MINUS1, OP_PUSH_VALUE, OP_RET, OP_RETURN,
@@ -302,8 +302,8 @@ impl<'a> BytecodeEmitter<'a> {
 }
 
 fn encode_short_int(val: i32) -> u32 {
-    debug_assert!((JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&val));
-    ((val as u32) << 1) | (JS_TAG_INT as u32)
+    debug_assert!((JSValue::JS_SHORTINT_MIN..=JSValue::JS_SHORTINT_MAX).contains(&val));
+    ((val as u32) << 1) | (JSValue::JS_TAG_INT as u32)
 }
 
 #[cfg(test)]

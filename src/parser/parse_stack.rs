@@ -1,4 +1,4 @@
-use crate::jsvalue::{new_short_int, value_get_int, JSValue};
+use crate::jsvalue::JSValue;
 use super::parse_state::{PARSE_STATE_INIT, PARSE_STATE_RET};
 
 pub const JS_STACK_SLACK: usize = 16;
@@ -72,7 +72,7 @@ impl<'a> ParseStack<'a> {
     }
 
     pub fn push_int(&mut self, val: i32) -> Result<(), ParseStackError> {
-        self.push(new_short_int(val))
+        self.push(JSValue::new_short_int(val))
     }
 
     pub fn pop(&mut self) -> JSValue {
@@ -91,7 +91,7 @@ impl<'a> ParseStack<'a> {
     pub fn pop_int(&mut self) -> i32 {
         let val = self.pop();
         debug_assert!(val.is_int());
-        value_get_int(val)
+        val.get_int()
     }
 }
 
@@ -132,16 +132,15 @@ pub fn parse_call<S>(
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
-    use crate::jsvalue::{JS_NULL, JS_UNDEFINED};
 
     #[test]
     fn parse_stack_grows_and_shrinks_bottom() {
-        let mut storage = [JS_UNDEFINED; 64];
+        let mut storage = [JSValue::JS_UNDEFINED; 64];
         let mut stack = ParseStack::new(&mut storage);
         assert_eq!(stack.sp(), 64);
         assert_eq!(stack.stack_bottom(), 64);
 
-        stack.push(JS_NULL).unwrap();
+        stack.push(JSValue::JS_NULL).unwrap();
         assert_eq!(stack.sp(), 63);
         assert_eq!(stack.stack_bottom(), 64 - (1 + JS_STACK_SLACK));
 
@@ -152,9 +151,9 @@ mod tests {
 
     #[test]
     fn parse_stack_reports_overflow() {
-        let mut storage = [JS_UNDEFINED; 8];
+        let mut storage = [JSValue::JS_UNDEFINED; 8];
         let mut stack = ParseStack::new(&mut storage);
-        let err = stack.push(JS_NULL).unwrap_err();
+        let err = stack.push(JSValue::JS_NULL).unwrap_err();
         assert_eq!(err.message(), ERR_STACK_OVERFLOW);
     }
 
@@ -195,7 +194,7 @@ mod tests {
 
     #[test]
     fn parse_call_returns_to_caller() {
-        let mut storage = [JS_UNDEFINED; 64];
+        let mut storage = [JSValue::JS_UNDEFINED; 64];
         let mut stack = ParseStack::new(&mut storage);
         let mut state = DummyState::default();
         let funcs: [ParseFunc<DummyState>; 2] = [parse_func_a, parse_func_b];

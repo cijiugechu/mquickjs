@@ -1,4 +1,4 @@
-use crate::jsvalue::{JSValue, JSWord, JSW};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
 
 const JS_STRING_FLAG_UNIQUE_SHIFT: u32 = JS_MTAG_BITS;
@@ -6,7 +6,7 @@ const JS_STRING_FLAG_ASCII_SHIFT: u32 = JS_MTAG_BITS + 1;
 const JS_STRING_FLAG_NUMERIC_SHIFT: u32 = JS_MTAG_BITS + 2;
 const JS_STRING_LEN_SHIFT: u32 = JS_MTAG_BITS + 3;
 
-pub const JS_STRING_LEN_MAX: JSWord = if JSW == 8 {
+pub const JS_STRING_LEN_MAX: JSWord = if JSValue::JSW == 8 {
     0x7ffffffe
 } else {
     (1 << (32 - JS_MTAG_BITS - 3)) - 1
@@ -70,7 +70,7 @@ impl From<MbHeader> for StringHeader {
 pub fn string_alloc_size(len: JSWord) -> usize {
     debug_assert!(len <= JS_STRING_LEN_MAX);
     let len_plus_nul = (len as usize).saturating_add(1);
-    let aligned = len_plus_nul.next_multiple_of(JSW as usize);
+    let aligned = len_plus_nul.next_multiple_of(JSValue::JSW as usize);
     aligned + core::mem::size_of::<JSWord>()
 }
 
@@ -189,9 +189,9 @@ mod tests {
     #[test]
     fn string_size_matches_alignment() {
         let size = string_alloc_size(0);
-        assert_eq!(size, core::mem::size_of::<JSWord>() + JSW as usize);
-        let size = string_alloc_size(JSW);
-        assert_eq!(size, core::mem::size_of::<JSWord>() + (JSW as usize) * 2);
+        assert_eq!(size, core::mem::size_of::<JSWord>() + JSValue::JSW as usize);
+        let size = string_alloc_size(JSValue::JSW);
+        assert_eq!(size, core::mem::size_of::<JSWord>() + (JSValue::JSW as usize) * 2);
     }
 
 }

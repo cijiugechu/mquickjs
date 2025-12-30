@@ -7,10 +7,7 @@ use crate::context::JSContext;
 use crate::conversion;
 use crate::enums::{JSObjectClass, JSPropType};
 use crate::interpreter::{call_with_this, InterpreterError};
-use crate::jsvalue::{
-    from_bits, new_short_int, raw_bits, value_from_ptr, value_get_int, value_to_ptr, JSValue,
-    JSWord, JSW, JS_NULL, JS_UNDEFINED, JS_UNINITIALIZED,
-};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
 use crate::string::runtime::string_view;
@@ -111,8 +108,8 @@ pub enum PropertyError {
 // - arr[1]: hash_mask = hash_size - 1 (short int).
 // - arr[2..=2+hash_mask]: hash table heads (encoded indices, 0 = end).
 // - arr[prop_base..]: JSProperty entries packed into 3 JSValue slots each.
-//   Deleted entries have key == JS_UNINITIALIZED.
-//   If last entry key == JS_UNINITIALIZED, its hash_next encodes first_free << 1.
+//   Deleted entries have key == JSValue::JS_UNINITIALIZED.
+//   If last entry key == JSValue::JS_UNINITIALIZED, its hash_next encodes first_free << 1.
 struct ValueArrayRaw {
     base: NonNull<u8>,
     arr: NonNull<JSValue>,
@@ -121,7 +118,7 @@ struct ValueArrayRaw {
 
 impl ValueArrayRaw {
     unsafe fn from_value(value: JSValue) -> Result<Self, PropertyError> {
-        let ptr = value_to_ptr::<u8>(value).ok_or(PropertyError::InvalidValueArray)?;
+        let ptr = value.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
         unsafe { Self::from_ptr(ptr) }
     }
 
@@ -188,28 +185,28 @@ impl PropertyList {
     fn prop_count(&self) -> usize {
         let val = self.array.read(0);
         debug_assert!(val.is_int());
-        let count = value_get_int(val);
+        let count = val.get_int();
         debug_assert!(count >= 0);
         count as usize
     }
 
     fn set_prop_count(&self, count: usize) {
         debug_assert!(count <= JS_VALUE_ARRAY_SIZE_MAX as usize);
-        let value = new_short_int(count as i32);
+        let value = JSValue::new_short_int(count as i32);
         self.array.write(0, value);
     }
 
     fn hash_mask(&self) -> usize {
         let val = self.array.read(1);
         debug_assert!(val.is_int());
-        let mask = value_get_int(val);
+        let mask = val.get_int();
         debug_assert!(mask >= 0);
         mask as usize
     }
 
     fn set_hash_mask(&self, mask: usize) {
         debug_assert!(mask <= JS_VALUE_ARRAY_SIZE_MAX as usize);
-        let value = new_short_int(mask as i32);
+        let value = JSValue::new_short_int(mask as i32);
         self.array.write(1, value);
     }
 
@@ -222,11 +219,11 @@ impl PropertyList {
     }
 
     fn hash_head_raw(&self, h: usize) -> u32 {
-        raw_bits(self.array.read(2 + h)) as u32
+        self.array.read(2 + h).raw_bits() as u32
     }
 
     fn set_hash_head_raw(&self, h: usize, raw: u32) {
-        self.array.write(2 + h, from_bits(raw as JSWord));
+        self.array.write(2 + h, JSValue::from_bits(raw as JSWord));
     }
 
     fn property_ref(&self, index: usize) -> PropertyRef {
@@ -304,8 +301,8 @@ fn decode_prop_index(raw: u32) -> Option<usize> {
 }
 
 fn hash_prop(prop: JSValue) -> u32 {
-    let raw = raw_bits(prop);
-    let word = JSW as JSWord;
+    let raw = prop.raw_bits();
+    let word = JSValue::JSW as JSWord;
     ((raw / word) ^ (raw % word)) as u32
 }
 
@@ -318,7 +315,7 @@ fn get_prop_hash_size_log2(prop_count: usize) -> usize {
 }
 
 fn object_ptr(value: JSValue) -> Result<NonNull<Object>, PropertyError> {
-    let ptr = value_to_ptr::<u8>(value).ok_or(PropertyError::NotObject)?;
+    let ptr = value.to_ptr::<u8>().ok_or(PropertyError::NotObject)?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -388,7 +385,7 @@ fn array_buffer_ptr(ptr: NonNull<Object>) -> *mut ArrayBuffer {
 
 // Get pointer to byte array data from ArrayBuffer's byte_buffer field
 fn get_byte_array_ptr(byte_buffer: JSValue) -> Option<NonNull<u8>> {
-    let ptr = value_to_ptr::<u8>(byte_buffer)?;
+    let ptr = byte_buffer.to_ptr::<u8>()?;
     let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
     let header = MbHeader::from_word(header_word);
     if header.tag() != MTag::ByteArray {
@@ -400,7 +397,7 @@ fn get_byte_array_ptr(byte_buffer: JSValue) -> Option<NonNull<u8>> {
 }
 
 fn get_byte_array_size(byte_buffer: JSValue) -> Option<u32> {
-    let ptr = value_to_ptr::<u8>(byte_buffer)?;
+    let ptr = byte_buffer.to_ptr::<u8>()?;
     let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
     let header = MbHeader::from_word(header_word);
     if header.tag() != MTag::ByteArray {
@@ -419,7 +416,7 @@ fn prop_is_bytes(prop: JSValue, bytes: &[u8]) -> bool {
 
 fn number_from_u64(ctx: &mut JSContext, value: u64) -> Result<JSValue, PropertyError> {
     if value <= i32::MAX as u64 {
-        return Ok(new_short_int(value as i32));
+        return Ok(JSValue::new_short_int(value as i32));
     }
     ctx.new_float64(value as f64)
         .map_err(|_| PropertyError::OutOfMemory)
@@ -433,11 +430,14 @@ fn typed_array_get_element_ctx(
     class_id: u8,
 ) -> Result<JSValue, PropertyError> {
     if idx >= ta.len() {
-        return Ok(JS_UNDEFINED);
+        return Ok(JSValue::JS_UNDEFINED);
     }
     
     // Get ArrayBuffer object
-    let ab_ptr = value_to_ptr::<Object>(ta.buffer()).ok_or(PropertyError::InvalidValueArray)?;
+    let ab_ptr = ta
+        .buffer()
+        .to_ptr::<Object>()
+        .ok_or(PropertyError::InvalidValueArray)?;
     let ab_data = unsafe {
         ptr::read_unaligned(array_buffer_ptr(ab_ptr))
     };
@@ -453,24 +453,24 @@ fn typed_array_get_element_ctx(
         let ptr = data_ptr.as_ptr().add(byte_idx);
         match class_id {
             c if c == JSObjectClass::Uint8CArray as u8 => {
-                new_short_int(*ptr as i32)
+                JSValue::new_short_int(*ptr as i32)
             }
             c if c == JSObjectClass::Uint8Array as u8 => {
-                new_short_int(*ptr as i32)
+                JSValue::new_short_int(*ptr as i32)
             }
             c if c == JSObjectClass::Int8Array as u8 => {
-                new_short_int(*(ptr as *const i8) as i32)
+                JSValue::new_short_int(*(ptr as *const i8) as i32)
             }
             c if c == JSObjectClass::Uint16Array as u8 => {
-                new_short_int(ptr::read_unaligned(ptr as *const u16) as i32)
+                JSValue::new_short_int(ptr::read_unaligned(ptr as *const u16) as i32)
             }
             c if c == JSObjectClass::Int16Array as u8 => {
-                new_short_int(ptr::read_unaligned(ptr as *const i16) as i32)
+                JSValue::new_short_int(ptr::read_unaligned(ptr as *const i16) as i32)
             }
             c if c == JSObjectClass::Uint32Array as u8 => {
                 let v = ptr::read_unaligned(ptr as *const u32);
                 if v <= i32::MAX as u32 {
-                    new_short_int(v as i32)
+                    JSValue::new_short_int(v as i32)
                 } else {
                     // Need to allocate as float for large values
                     // This requires mutable context, so we handle it specially
@@ -478,7 +478,7 @@ fn typed_array_get_element_ctx(
                 }
             }
             c if c == JSObjectClass::Int32Array as u8 => {
-                new_short_int(ptr::read_unaligned(ptr as *const i32))
+                JSValue::new_short_int(ptr::read_unaligned(ptr as *const i32))
             }
             c if c == JSObjectClass::Float32Array as u8 => {
                 let f = ptr::read_unaligned(ptr as *const f32);
@@ -486,7 +486,7 @@ fn typed_array_get_element_ctx(
                 // Full float support requires mutable context for allocation
                 let f64_val = f as f64;
                 if f64_val.fract() == 0.0 && f64_val >= i32::MIN as f64 && f64_val <= i32::MAX as f64 {
-                    new_short_int(f64_val as i32)
+                    JSValue::new_short_int(f64_val as i32)
                 } else {
                     return Err(PropertyError::Unsupported("float value"));
                 }
@@ -494,7 +494,7 @@ fn typed_array_get_element_ctx(
             c if c == JSObjectClass::Float64Array as u8 => {
                 let f = ptr::read_unaligned(ptr as *const f64);
                 if f.fract() == 0.0 && f >= i32::MIN as f64 && f <= i32::MAX as f64 {
-                    new_short_int(f as i32)
+                    JSValue::new_short_int(f as i32)
                 } else {
                     return Err(PropertyError::Unsupported("float value"));
                 }
@@ -519,7 +519,10 @@ fn typed_array_set_element(
     }
     
     // Get ArrayBuffer object
-    let ab_ptr = value_to_ptr::<Object>(ta.buffer()).ok_or(PropertyError::InvalidValueArray)?;
+    let ab_ptr = ta
+        .buffer()
+        .to_ptr::<Object>()
+        .ok_or(PropertyError::InvalidValueArray)?;
     let ab_data = unsafe {
         ptr::read_unaligned(array_buffer_ptr(ab_ptr))
     };
@@ -581,7 +584,7 @@ fn typed_array_set_element(
 
 fn key_to_string(ctx: &mut JSContext, key: JSValue) -> Result<JSValue, PropertyError> {
     if key.is_int() {
-        let text = value_get_int(key).to_string();
+        let text = key.get_int().to_string();
         return ctx.new_string(&text).map_err(|_| PropertyError::OutOfMemory);
     }
     let mut scratch = [0u8; 5];
@@ -592,7 +595,7 @@ fn key_to_string(ctx: &mut JSContext, key: JSValue) -> Result<JSValue, PropertyE
 }
 
 fn is_numeric_property(prop: JSValue) -> bool {
-    let Some(ptr) = value_to_ptr::<u8>(prop) else {
+    let Some(ptr) = prop.to_ptr::<u8>() else {
         return false;
     };
     let header_word = unsafe {
@@ -610,7 +613,7 @@ fn prop_index_from_value(prop: JSValue) -> Option<u32> {
     if !prop.is_int() {
         return None;
     }
-    let idx = value_get_int(prop);
+    let idx = prop.get_int();
     if idx < 0 {
         None
     } else {
@@ -631,10 +634,10 @@ fn resize_value_array(
     new_size: usize,
     prop_base: Option<usize>,
 ) -> Result<JSValue, PropertyError> {
-    let (old_size, old_ptr) = if val == JS_NULL {
+    let (old_size, old_ptr) = if val == JSValue::JS_NULL {
         (0usize, None)
     } else {
-        let ptr = value_to_ptr::<u8>(val).ok_or(PropertyError::InvalidValueArray)?;
+        let ptr = val.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
         let array = unsafe { ValueArrayRaw::from_ptr(ptr)? };
         (array.size(), Some(ptr))
     };
@@ -665,15 +668,15 @@ fn resize_value_array(
             ptr::copy_nonoverlapping(old_arr.arr.as_ptr(), new_arr.arr.as_ptr(), old_size);
         }
     }
-    val = value_from_ptr(new_ptr);
+    val = JSValue::from_ptr(new_ptr);
     Ok(val)
 }
 
 fn shrink_value_array(ctx: &mut JSContext, val: &mut JSValue, new_size: usize) -> Result<(), PropertyError> {
-    if *val == JS_NULL {
+    if *val == JSValue::JS_NULL {
         return Ok(());
     }
-    let ptr = value_to_ptr::<u8>(*val).ok_or(PropertyError::InvalidValueArray)?;
+    let ptr = val.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
     let mut array = unsafe { ValueArrayRaw::from_ptr(ptr)? };
     debug_assert!(new_size <= array.size());
     if new_size == 0 {
@@ -681,7 +684,7 @@ fn shrink_value_array(ctx: &mut JSContext, val: &mut JSValue, new_size: usize) -
             // SAFETY: ptr points to a heap allocation returned by HeapLayout::malloc.
             ctx.heap_mut().free_last(ptr);
         }
-        *val = JS_NULL;
+        *val = JSValue::JS_NULL;
         return Ok(());
     }
     let new_bytes = size_of::<JSWord>() + new_size * size_of::<JSValue>();
@@ -700,7 +703,7 @@ fn alloc_props(ctx: &mut JSContext, n: usize) -> Result<JSValue, PropertyError> 
     let first_free = 2 + hash_mask + 1;
     let size = first_free + 3 * n;
     let ptr = alloc_value_array(ctx, size)?;
-    let list = PropertyList::from_value(value_from_ptr(ptr))?;
+    let list = PropertyList::from_value(JSValue::from_ptr(ptr))?;
     list.set_prop_count(0);
     list.set_hash_mask(hash_mask);
     for i in 0..=hash_mask {
@@ -709,12 +712,12 @@ fn alloc_props(ctx: &mut JSContext, n: usize) -> Result<JSValue, PropertyError> 
     for i in 0..n {
         let index = first_free + 3 * i;
         let prop = list.property_ref(index);
-        prop.set_key(JS_UNINITIALIZED);
+        prop.set_key(JSValue::JS_UNINITIALIZED);
     }
     let last_prop = list.property_ref(size - 3);
     let meta = last_prop.meta().with_hash_next(encode_prop_index(first_free));
     last_prop.set_meta(meta);
-    Ok(value_from_ptr(ptr))
+    Ok(JSValue::from_ptr(ptr))
 }
 
 fn rehash_props(ctx: &JSContext, obj_ptr: NonNull<Object>, gc_rehash: bool) -> Result<(), PropertyError> {
@@ -737,7 +740,7 @@ fn rehash_props(ctx: &JSContext, obj_ptr: NonNull<Object>, gc_rehash: bool) -> R
     while j < prop_count {
         let index = prop_base + 3 * i;
         let prop = list.property_ref(index);
-        if prop.key() != JS_UNINITIALIZED {
+        if prop.key() != JSValue::JS_UNINITIALIZED {
             let h = (hash_prop(prop.key()) as usize) & hash_mask;
             let head = list.hash_head_raw(h);
             prop.set_meta(prop.meta().with_hash_next(head));
@@ -771,7 +774,7 @@ fn compact_props(ctx: &mut JSContext, obj_ptr: NonNull<Object>) -> Result<(), Pr
     let mut j = 0usize;
     while j < prop_count {
         let src = list.property_ref(2 + (hash_mask + 1) + 3 * i);
-        if src.key() != JS_UNINITIALIZED {
+        if src.key() != JSValue::JS_UNINITIALIZED {
             let dst = list.property_ref(2 + (new_hash_mask + 1) + 3 * j);
             let value = Property::new(src.key(), src.value(), src.meta());
             dst.set_key(value.key());
@@ -789,7 +792,7 @@ fn compact_props(ctx: &mut JSContext, obj_ptr: NonNull<Object>) -> Result<(), Pr
 
 fn get_first_free(list: &PropertyList) -> usize {
     let last = list.property_ref(list.last_prop_index());
-    if last.key() == JS_UNINITIALIZED {
+    if last.key() == JSValue::JS_UNINITIALIZED {
         let raw = last.meta().hash_next();
         raw as usize >> 1
     } else {
@@ -798,7 +801,7 @@ fn get_first_free(list: &PropertyList) -> usize {
 }
 
 fn get_special_prop(ctx: &JSContext, val: JSValue) -> Result<JSValue, PropertyError> {
-    let idx = value_get_int(val);
+    let idx = val.get_int();
     if idx >= 0 {
         let idx = idx as usize;
         ctx.class_proto()
@@ -823,7 +826,7 @@ fn update_props(ctx: &mut JSContext, obj: JSValue) -> Result<(), PropertyError> 
     }
     let size = list.array.size();
     let new_ptr = alloc_value_array(ctx, size)?;
-    let new_list = PropertyList::from_value(value_from_ptr(new_ptr))?;
+    let new_list = PropertyList::from_value(JSValue::from_ptr(new_ptr))?;
     unsafe {
         // SAFETY: both arrays are valid and non-overlapping.
         ptr::copy_nonoverlapping(list.array.arr.as_ptr(), new_list.array.arr.as_ptr(), size);
@@ -837,7 +840,7 @@ fn update_props(ctx: &mut JSContext, obj: JSValue) -> Result<(), PropertyError> 
     while j < prop_count {
         let index = 2 + (hash_mask + 1) + 3 * i;
         let prop = new_list.property_ref(index);
-        if prop.key() != JS_UNINITIALIZED {
+        if prop.key() != JSValue::JS_UNINITIALIZED {
             if prop.meta().prop_type() == JSPropType::Special {
                 let resolved = get_special_prop(ctx, prop.value())?;
                 prop.set_value(resolved);
@@ -854,7 +857,7 @@ fn update_props(ctx: &mut JSContext, obj: JSValue) -> Result<(), PropertyError> 
         }
         i += 1;
     }
-    set_object_props(obj_ptr, value_from_ptr(new_ptr));
+    set_object_props(obj_ptr, JSValue::from_ptr(new_ptr));
     if rehash_needed {
         rehash_props(ctx, obj_ptr, false)?;
     }
@@ -869,7 +872,7 @@ fn create_property(ctx: &mut JSContext, obj: JSValue, prop: JSValue) -> Result<P
     let mut hash_mask = list.hash_mask();
     let mut first_free;
     let last_prop = list.property_ref(list.array.size() - 3);
-    if last_prop.key() != JS_UNINITIALIZED {
+    if last_prop.key() != JSValue::JS_UNINITIALIZED {
         if props == ctx.empty_props() {
             let new_props = alloc_props(ctx, 1)?;
             set_object_props(obj_ptr, new_props);
@@ -912,7 +915,7 @@ fn create_property(ctx: &mut JSContext, obj: JSValue, prop: JSValue) -> Result<P
         }
         let list = PropertyList::from_value(props)?;
         let last_prop = list.property_ref(list.array.size() - 3);
-        last_prop.set_key(JS_UNINITIALIZED);
+        last_prop.set_key(JSValue::JS_UNINITIALIZED);
     } else {
         first_free = last_prop.meta().hash_next() as usize >> 1;
     }
@@ -920,7 +923,7 @@ fn create_property(ctx: &mut JSContext, obj: JSValue, prop: JSValue) -> Result<P
     let list = PropertyList::from_value(props)?;
     let entry = list.property_ref(first_free);
     entry.set_key(prop);
-    entry.set_value(JS_UNDEFINED);
+    entry.set_value(JSValue::JS_UNDEFINED);
     let h = (hash_prop(prop) as usize) & hash_mask;
     let head = list.hash_head_raw(h);
     entry.set_meta(PropertyMeta::new(head, JSPropType::Normal));
@@ -948,7 +951,7 @@ fn alloc_getset_array(
     let array = unsafe { ValueArrayRaw::from_ptr(ptr)? };
     array.write(0, getter);
     array.write(1, setter);
-    Ok(value_from_ptr(ptr))
+    Ok(JSValue::from_ptr(ptr))
 }
 
 fn alloc_var_ref(ctx: &mut JSContext, value: JSValue) -> Result<JSValue, PropertyError> {
@@ -964,11 +967,11 @@ fn alloc_var_ref(ctx: &mut JSContext, value: JSValue) -> Result<JSValue, Propert
         let val_ptr = ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
         ptr::write_unaligned(val_ptr, value);
     }
-    Ok(value_from_ptr(ptr))
+    Ok(JSValue::from_ptr(ptr))
 }
 
 fn read_var_ref_value(val: JSValue) -> Result<JSValue, PropertyError> {
-    let ptr = value_to_ptr::<u8>(val).ok_or(PropertyError::InvalidValueArray)?;
+    let ptr = val.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -985,7 +988,7 @@ fn read_var_ref_value(val: JSValue) -> Result<JSValue, PropertyError> {
 }
 
 fn write_var_ref_value(val: JSValue, new_value: JSValue) -> Result<(), PropertyError> {
-    let ptr = value_to_ptr::<u8>(val).ok_or(PropertyError::InvalidValueArray)?;
+    let ptr = val.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -1008,8 +1011,8 @@ fn call_getset_getter(
 ) -> Result<JSValue, PropertyError> {
     let array = unsafe { ValueArrayRaw::from_value(getset)? };
     let getter = array.read(0);
-    if getter == JS_UNDEFINED {
-        return Ok(JS_UNDEFINED);
+    if getter == JSValue::JS_UNDEFINED {
+        return Ok(JSValue::JS_UNDEFINED);
     }
     let value = call_with_this(ctx, getter, receiver, &[])
         .map_err(PropertyError::Interpreter)?;
@@ -1061,12 +1064,12 @@ fn find_own_property_linear_rom(
     let mut idx = 0usize;
     while seen < prop_count {
         let base = prop_base + 3 * idx;
-        let key_word = raw_bits(list.array.read(base));
+        let key_word = list.array.read(base).raw_bits();
         let key = ctx.rom_value_from_word(key_word);
-        if key != JS_UNINITIALIZED {
+        if key != JSValue::JS_UNINITIALIZED {
             if prop_key_matches(prop, key) {
-                let value_word = raw_bits(list.array.read(base + 1));
-                let meta_word = raw_bits(list.array.read(base + 2));
+                let value_word = list.array.read(base + 1).raw_bits();
+                let meta_word = list.array.read(base + 2).raw_bits();
                 let value = ctx.rom_value_from_word(value_word);
                 let meta = PropertyMeta::from_raw(meta_word as u32);
                 return Some((value, meta));
@@ -1115,10 +1118,10 @@ fn define_property_internal(
             }
             JSPropType::GetSet => {
                 let arr = unsafe { ValueArrayRaw::from_value(entry.value())? };
-                if val != JS_UNDEFINED {
+                if val != JSValue::JS_UNDEFINED {
                     arr.write(0, val);
                 }
-                if setter != JS_UNDEFINED {
+                if setter != JSValue::JS_UNDEFINED {
                     arr.write(1, setter);
                 }
             }
@@ -1141,7 +1144,7 @@ fn define_property_internal(
     if (flags & DEF_PROP_RET_VAL) != 0 {
         Ok(val)
     } else {
-        Ok(JS_UNDEFINED)
+        Ok(JSValue::JS_UNDEFINED)
     }
 }
 
@@ -1156,7 +1159,7 @@ pub fn define_property_value(
         obj,
         prop,
         val,
-        JS_NULL,
+        JSValue::JS_NULL,
         JSPropType::Normal,
         DEF_PROP_LOOKUP,
     )
@@ -1191,7 +1194,7 @@ pub fn define_property_varref(
         obj,
         prop,
         val,
-        JS_NULL,
+        JSValue::JS_NULL,
         JSPropType::VarRef,
         DEF_PROP_RET_VAL,
     )
@@ -1233,13 +1236,13 @@ pub fn get_property(
                 };
                 if idx < data.len() {
                     let tab = data.tab();
-                    if tab != JS_NULL {
+                    if tab != JSValue::JS_NULL {
                         let array = unsafe { ValueArrayRaw::from_value(tab)? };
                         return Ok(array.read(idx as usize));
                     }
                 }
             } else if is_numeric_property(prop) {
-                return Ok(JS_UNDEFINED);
+                return Ok(JSValue::JS_UNDEFINED);
             }
         } else if class_id == JSObjectClass::ArrayBuffer as u8 {
             if prop_is_bytes(prop, b"byteLength") {
@@ -1259,7 +1262,7 @@ pub fn get_property(
             if let Some(idx) = prop_index_from_value(prop) {
                 return typed_array_get_element_ctx(ctx, ta, idx, class_id);
             } else if is_numeric_property(prop) {
-                return Ok(JS_UNDEFINED);
+                return Ok(JSValue::JS_UNDEFINED);
             }
             if prop_is_bytes(prop, b"length") {
                 return number_from_u64(ctx, ta.len() as u64);
@@ -1297,12 +1300,12 @@ pub fn get_property(
             };
         }
         let proto = object_proto(obj_ptr);
-        if proto == JS_NULL {
+        if proto == JSValue::JS_NULL {
             break;
         }
         current = proto;
     }
-    Ok(JS_UNDEFINED)
+    Ok(JSValue::JS_UNDEFINED)
 }
 
 pub fn object_keys(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, PropertyError> {
@@ -1333,8 +1336,8 @@ pub fn object_keys(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, Propert
 
     let mut pos = 0usize;
     for idx in 0..array_len {
-        let key = key_to_string(ctx, new_short_int(idx as i32))?;
-        set_property(ctx, ret, new_short_int(pos as i32), key)?;
+        let key = key_to_string(ctx, JSValue::new_short_int(idx as i32))?;
+        set_property(ctx, ret, JSValue::new_short_int(pos as i32), key)?;
         pos += 1;
     }
 
@@ -1345,11 +1348,11 @@ pub fn object_keys(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, Propert
         let base = prop_base + 3 * idx;
         let mut key = list.array.read(base);
         if ctx.is_rom_ptr(list.array.base) {
-            key = ctx.rom_value_from_word(raw_bits(key));
+            key = ctx.rom_value_from_word(key.raw_bits());
         }
-        if key != JS_UNINITIALIZED {
+        if key != JSValue::JS_UNINITIALIZED {
             let key = key_to_string(ctx, key)?;
-            set_property(ctx, ret, new_short_int(pos as i32), key)?;
+            set_property(ctx, ret, JSValue::new_short_int(pos as i32), key)?;
             pos += 1;
             seen += 1;
         }
@@ -1389,7 +1392,7 @@ pub fn has_property(ctx: &JSContext, obj: JSValue, prop: JSValue) -> Result<bool
             return Ok(true);
         }
         let proto = object_proto(obj_ptr);
-        if proto == JS_NULL {
+        if proto == JSValue::JS_NULL {
             break;
         }
         current = proto;
@@ -1506,7 +1509,7 @@ pub fn set_property(
         }
     }
     let mut current = object_proto(obj_ptr);
-    while current != JS_NULL {
+    while current != JSValue::JS_NULL {
         let proto_ptr = object_ptr(current)?;
         let proto_props = PropertyList::from_value(object_props(proto_ptr))?;
         if ctx.is_rom_ptr(proto_props.array.base) {
@@ -1531,7 +1534,7 @@ pub fn set_property(
         obj,
         prop,
         val,
-        JS_UNDEFINED,
+        JSValue::JS_UNDEFINED,
         JSPropType::Normal,
         0,
     )?;
@@ -1563,11 +1566,11 @@ pub fn delete_property(ctx: &mut JSContext, obj: JSValue, prop: JSValue) -> Resu
             let prop_count = list.prop_count();
             list.set_prop_count(prop_count - 1);
             entry.set_meta(entry.meta().with_prop_type(JSPropType::Normal));
-            entry.set_key(JS_UNINITIALIZED);
-            entry.set_value(JS_UNDEFINED);
+            entry.set_key(JSValue::JS_UNINITIALIZED);
+            entry.set_value(JSValue::JS_UNDEFINED);
             while first_free > list.prop_base() {
                 let prev = list.property_ref(first_free - 3);
-                if prev.key() != JS_UNINITIALIZED {
+                if prev.key() != JSValue::JS_UNINITIALIZED {
                     break;
                 }
                 first_free -= 3;
@@ -1640,7 +1643,6 @@ pub(crate) fn debug_property(
 mod tests {
     use super::*;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
-    use crate::jsvalue::{value_get_special_value, value_make_special, JS_TAG_SHORT_FUNC};
     use core::mem::{align_of, size_of};
 
     fn new_ctx() -> JSContext {
@@ -1659,8 +1661,8 @@ mod tests {
             .iter()
             .position(|def| def.func_name == func_name)
             .expect("cfunc index");
-        value_make_special(
-            JS_TAG_SHORT_FUNC,
+        JSValue::value_make_special(
+            JSValue::JS_TAG_SHORT_FUNC,
             u32::try_from(idx).expect("cfunc index fits"),
         )
     }
@@ -1685,7 +1687,7 @@ mod tests {
         let list = PropertyList::from_value(props).expect("props list");
         let prop_base = list.prop_base();
         let last = list.property_ref(list.last_prop_index());
-        assert_eq!(last.key(), JS_UNINITIALIZED);
+        assert_eq!(last.key(), JSValue::JS_UNINITIALIZED);
         assert_eq!(last.meta().hash_next() as usize >> 1, prop_base);
         assert_eq!(list.prop_count(), 0);
     }
@@ -1694,10 +1696,10 @@ mod tests {
     fn define_and_lookup_property() {
         let mut ctx = new_ctx();
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
-        let key = new_short_int(1);
-        let value = new_short_int(123);
+        let key = JSValue::new_short_int(1);
+        let value = JSValue::new_short_int(123);
         define_property_value(&mut ctx, obj, key, value).expect("define");
         let got = get_property(&mut ctx, obj, key).expect("get");
         assert_eq!(got, value);
@@ -1708,11 +1710,11 @@ mod tests {
     fn define_getset_stores_value_array() {
         let mut ctx = new_ctx();
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
-        let key = new_short_int(7);
-        let getter = new_short_int(1);
-        let setter = new_short_int(2);
+        let key = JSValue::new_short_int(7);
+        let getter = JSValue::new_short_int(1);
+        let setter = JSValue::new_short_int(2);
         define_property_getset(&mut ctx, obj, key, getter, setter).expect("define getset");
         let obj_ptr = object_ptr(obj).expect("object ptr");
         let list = PropertyList::from_value(object_props(obj_ptr)).expect("props");
@@ -1727,10 +1729,10 @@ mod tests {
     fn define_varref_allocates_detached_ref() {
         let mut ctx = new_ctx();
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
-        let key = new_short_int(5);
-        let value = new_short_int(9);
+        let key = JSValue::new_short_int(5);
+        let value = JSValue::new_short_int(9);
         let varref = define_property_varref(&mut ctx, obj, key, value).expect("varref");
         assert_eq!(read_var_ref_value(varref).expect("varref value"), value);
     }
@@ -1739,12 +1741,12 @@ mod tests {
     fn delete_property_removes_entry() {
         let mut ctx = new_ctx();
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
-        let key1 = new_short_int(1);
-        let key2 = new_short_int(2);
-        define_property_value(&mut ctx, obj, key1, new_short_int(10)).expect("define");
-        define_property_value(&mut ctx, obj, key2, new_short_int(20)).expect("define");
+        let key1 = JSValue::new_short_int(1);
+        let key2 = JSValue::new_short_int(2);
+        define_property_value(&mut ctx, obj, key1, JSValue::new_short_int(10)).expect("define");
+        define_property_value(&mut ctx, obj, key2, JSValue::new_short_int(20)).expect("define");
         delete_property(&mut ctx, obj, key1).expect("delete");
         assert!(!has_property(&ctx, obj, key1).expect("has"));
         assert!(has_property(&ctx, obj, key2).expect("has"));
@@ -1754,32 +1756,32 @@ mod tests {
     fn update_props_copies_rom_and_converts_special() {
         let mut ctx = new_ctx();
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
-        let key = new_short_int(3);
-        let class_index = new_short_int(JSObjectClass::Object as i32);
+        let key = JSValue::new_short_int(3);
+        let class_index = JSValue::new_short_int(JSObjectClass::Object as i32);
 
         let hash_mask = 0usize;
         let size = 2 + hash_mask + 1 + 3;
         let mut words = vec![0 as JSWord; 1 + size].into_boxed_slice();
         words[0] = MbHeader::from(ValueArrayHeader::new(size as JSWord, false)).word();
         let arr = &mut words[1..];
-        arr[0] = raw_bits(new_short_int(1));
-        arr[1] = raw_bits(new_short_int(hash_mask as i32));
-        arr[2] = raw_bits(new_short_int(3));
-        arr[3] = raw_bits(key);
-        arr[4] = raw_bits(class_index);
+        arr[0] = JSValue::new_short_int(1).raw_bits();
+        arr[1] = JSValue::new_short_int(hash_mask as i32).raw_bits();
+        arr[2] = JSValue::new_short_int(3).raw_bits();
+        arr[3] = key.raw_bits();
+        arr[4] = class_index.raw_bits();
         let meta = PropertyMeta::new(0, JSPropType::Special);
         arr[5] = meta.raw() as JSWord;
 
         let rom_ptr = NonNull::new(words.as_mut_ptr() as *mut u8).expect("rom ptr");
-        let rom_props = value_from_ptr(rom_ptr);
+        let rom_props = JSValue::from_ptr(rom_ptr);
         let obj_ptr = object_ptr(obj).expect("object ptr");
         set_object_props(obj_ptr, rom_props);
 
         update_props(&mut ctx, obj).expect("update props");
         let props = object_props(obj_ptr);
-        let props_ptr = value_to_ptr::<u8>(props).expect("props ptr");
+        let props_ptr = props.to_ptr::<u8>().expect("props ptr");
         assert!(!ctx.is_rom_ptr(props_ptr));
 
         let list = PropertyList::from_value(props).expect("props list");
@@ -1793,15 +1795,15 @@ mod tests {
     fn get_property_calls_getter() {
         let mut ctx = new_ctx();
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"value").expect("key");
         let getter = short_func_by_name(&ctx, "js_global_isNaN");
-        define_property_getset(&mut ctx, obj, key, getter, JS_UNDEFINED).expect("define");
+        define_property_getset(&mut ctx, obj, key, getter, JSValue::JS_UNDEFINED).expect("define");
 
         let got = get_property(&mut ctx, obj, key).expect("get");
         assert!(got.is_bool());
-        assert_eq!(value_get_special_value(got), 1);
+        assert_eq!(got.get_special_value(), 1);
     }
 
     #[test]
@@ -1810,10 +1812,10 @@ mod tests {
         let array = ctx.alloc_array(0).expect("array");
         let key = ctx.intern_string(b"x").expect("key");
         let setter = short_func_by_name(&ctx, "js_array_push");
-        define_property_getset(&mut ctx, array, key, JS_UNDEFINED, setter).expect("define");
+        define_property_getset(&mut ctx, array, key, JSValue::JS_UNDEFINED, setter).expect("define");
 
-        set_property(&mut ctx, array, key, new_short_int(7)).expect("set");
-        let got = get_property(&mut ctx, array, new_short_int(0)).expect("get");
-        assert_eq!(value_get_int(got), 7);
+        set_property(&mut ctx, array, key, JSValue::new_short_int(7)).expect("set");
+        let got = get_property(&mut ctx, array, JSValue::new_short_int(0)).expect("get");
+        assert_eq!(got.get_int(), 7);
     }
 }

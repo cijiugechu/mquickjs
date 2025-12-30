@@ -1,4 +1,4 @@
-use crate::jsvalue::{JSValue, JS_UNDEFINED};
+use crate::jsvalue::JSValue;
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use crate::list::{LinkedList, LinkedListLink, UnsafeRef, intrusive_adapter};
@@ -58,7 +58,7 @@ impl GcRefState {
 
     /// C: `JS_PushGCRef`. Caller must keep `reference` pinned while linked.
     pub fn push_gc_ref(&mut self, reference: &mut GcRef) -> *mut JSValue {
-        reference.set_val(JS_UNDEFINED);
+        reference.set_val(JSValue::JS_UNDEFINED);
         let val_ptr = reference.val_ptr();
         // SAFETY: caller guarantees `reference` is pinned for the duration of the list membership.
         let node = unsafe { UnsafeRef::from_raw(reference) };
@@ -82,7 +82,7 @@ impl GcRefState {
 
     /// C: `JS_AddGCRef`. Caller must keep `reference` pinned while linked.
     pub fn add_gc_ref(&mut self, reference: &mut GcRef) -> *mut JSValue {
-        reference.set_val(JS_UNDEFINED);
+        reference.set_val(JSValue::JS_UNDEFINED);
         let val_ptr = reference.val_ptr();
         // SAFETY: caller guarantees `reference` is pinned for the duration of the list membership.
         let node = unsafe { UnsafeRef::from_raw(reference) };
@@ -224,31 +224,30 @@ impl Default for GcRefState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jsvalue::{JS_FALSE, JS_TRUE};
 
     #[test]
     fn push_pop_gc_ref_roundtrips_value() {
         let mut state = GcRefState::new();
-        let mut reference = GcRef::new(JS_FALSE);
+        let mut reference = GcRef::new(JSValue::JS_FALSE);
         let slot = state.push_gc_ref(&mut reference);
         // SAFETY: slot points to the ref value while the ref is linked.
         unsafe {
-            assert_eq!(*slot, JS_UNDEFINED);
-            *slot = JS_TRUE;
+            assert_eq!(*slot, JSValue::JS_UNDEFINED);
+            *slot = JSValue::JS_TRUE;
         }
         let val = state.pop_gc_ref(&reference);
-        assert_eq!(val, JS_TRUE);
+        assert_eq!(val, JSValue::JS_TRUE);
         assert!(state.is_stack_empty());
     }
 
     #[test]
     fn add_delete_gc_ref_updates_list() {
         let mut state = GcRefState::new();
-        let mut reference = GcRef::new(JS_FALSE);
+        let mut reference = GcRef::new(JSValue::JS_FALSE);
         let slot = state.add_gc_ref(&mut reference);
         // SAFETY: slot points to the ref value while the ref is linked.
         unsafe {
-            *slot = JS_TRUE;
+            *slot = JSValue::JS_TRUE;
         }
         assert!(!state.is_list_empty());
         state.delete_gc_ref(&reference);
@@ -258,40 +257,40 @@ mod tests {
     #[test]
     fn stack_guard_pops_on_drop() {
         let mut state = GcRefState::new();
-        let mut reference = GcRef::new(JS_FALSE);
+        let mut reference = GcRef::new(JSValue::JS_FALSE);
         {
             let guard = GcRefStackGuard::new(&mut state, &mut reference);
             // SAFETY: slot points to the ref value while the ref is linked.
             unsafe {
-                *guard.slot() = JS_TRUE;
+                *guard.slot() = JSValue::JS_TRUE;
             }
             assert!(!state.is_stack_empty());
         }
         assert!(state.is_stack_empty());
-        assert_eq!(reference.val(), JS_TRUE);
+        assert_eq!(reference.val(), JSValue::JS_TRUE);
     }
 
     #[test]
     fn list_guard_removes_on_drop() {
         let mut state = GcRefState::new();
-        let mut reference = GcRef::new(JS_FALSE);
+        let mut reference = GcRef::new(JSValue::JS_FALSE);
         {
             let guard = GcRefListGuard::new(&mut state, &mut reference);
             // SAFETY: slot points to the ref value while the ref is linked.
             unsafe {
-                *guard.slot() = JS_TRUE;
+                *guard.slot() = JSValue::JS_TRUE;
             }
             assert!(!state.is_list_empty());
         }
         assert!(state.is_list_empty());
-        assert_eq!(reference.val(), JS_TRUE);
+        assert_eq!(reference.val(), JSValue::JS_TRUE);
     }
 
     #[test]
     #[should_panic(expected = "GC ref not found in list")]
     fn delete_missing_ref_panics() {
         let mut state = GcRefState::new();
-        let reference = GcRef::new(JS_FALSE);
+        let reference = GcRef::new(JSValue::JS_FALSE);
         state.delete_gc_ref(&reference);
     }
 }

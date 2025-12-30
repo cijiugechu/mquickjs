@@ -1,7 +1,4 @@
-use crate::jsvalue::{
-    value_get_int, value_get_special_tag, value_get_special_value, JSValue, JS_TAG_BOOL,
-    JS_TAG_NULL, JS_TAG_UNDEFINED, JS_TAG_UNINITIALIZED,
-};
+use crate::jsvalue::JSValue;
 use crate::string::runtime::string_view;
 
 #[derive(Copy, Clone, Debug)]
@@ -284,7 +281,7 @@ fn arg_as_usize(arg: JsFormatArg<'_>) -> usize {
 fn arg_as_value(arg: JsFormatArg<'_>) -> JSValue {
     match arg {
         JsFormatArg::Value(val) => val,
-        _ => crate::jsvalue::JS_UNDEFINED,
+        _ => JSValue::JS_UNDEFINED,
     }
 }
 
@@ -294,20 +291,20 @@ fn format_js_value(val: JSValue) -> Vec<u8> {
         return view.bytes().to_vec();
     }
     if val.is_int() {
-        return value_get_int(val).to_string().into_bytes();
+        return val.get_int().to_string().into_bytes();
     }
     #[cfg(target_pointer_width = "64")]
     if val.is_short_float() {
         return b"[short_float]".to_vec();
     }
     if !val.is_ptr() {
-        let tag = value_get_special_tag(val);
+        let tag = val.get_special_tag();
         return match tag {
-            JS_TAG_NULL => b"null".to_vec(),
-            JS_TAG_UNDEFINED => b"undefined".to_vec(),
-            JS_TAG_UNINITIALIZED => b"uninitialized".to_vec(),
-            JS_TAG_BOOL => {
-                if value_get_special_value(val) != 0 {
+            JSValue::JS_TAG_NULL => b"null".to_vec(),
+            JSValue::JS_TAG_UNDEFINED => b"undefined".to_vec(),
+            JSValue::JS_TAG_UNINITIALIZED => b"uninitialized".to_vec(),
+            JSValue::JS_TAG_BOOL => {
+                if val.get_special_value() != 0 {
                     b"true".to_vec()
                 } else {
                     b"false".to_vec()

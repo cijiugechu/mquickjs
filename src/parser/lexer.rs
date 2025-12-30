@@ -1,7 +1,7 @@
 use crate::context::JSContext;
 use crate::cutils::{from_hex, unicode_from_utf8, unicode_to_utf8, utf8_get, UTF8_CHAR_LEN_MAX};
 use crate::dtoa::{js_atod, JS_ATOD_ACCEPT_BIN_OCT, JS_ATOD_ACCEPT_UNDERSCORES};
-use crate::jsvalue::{JSValue, JS_NULL};
+use crate::jsvalue::JSValue;
 use crate::string::js_string::is_ascii_bytes;
 use crate::string::runtime::string_view;
 use std::ptr::NonNull;
@@ -186,7 +186,7 @@ impl<'a> ParseState<'a> {
             buf_len,
             buf_pos: 0,
             got_lf: false,
-            token: Token::new(b' ' as i32, 0, TokenExtra::None, JS_NULL),
+            token: Token::new(b' ' as i32, 0, TokenExtra::None, JSValue::JS_NULL),
             parse_state: None,
         }
     }
@@ -246,7 +246,7 @@ impl<'a> ParseState<'a> {
             b' ' as i32,
             self.buf_pos as SourcePos,
             TokenExtra::None,
-            JS_NULL,
+            JSValue::JS_NULL,
         ));
     }
 
@@ -270,7 +270,7 @@ impl<'a> ParseState<'a> {
             prev_val,
             pos.source_pos(),
             TokenExtra::None,
-            JS_NULL,
+            JSValue::JS_NULL,
         ));
         self.next_token()
     }
@@ -372,7 +372,7 @@ impl<'a> ParseState<'a> {
             let c = self.byte_at(pos);
             match c {
                 0 => {
-                    self.set_token(Token::new(TOK_EOF, source_pos, TokenExtra::None, JS_NULL));
+                    self.set_token(Token::new(TOK_EOF, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     self.buf_pos = pos;
                     return Ok(());
                 }
@@ -424,12 +424,12 @@ impl<'a> ParseState<'a> {
                         return Ok(());
                     } else if next == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_DIV_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_DIV_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         self.buf_pos = pos;
                         return Ok(());
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'/' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'/' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         self.buf_pos = pos;
                         return Ok(());
                     }
@@ -446,11 +446,11 @@ impl<'a> ParseState<'a> {
                     if is_num(self.byte_at(pos + 1)) {
                         let (value, new_pos) = self.parse_number(pos, source_pos as usize)?;
                         pos = new_pos;
-                        self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL));
+                        self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JSValue::JS_NULL));
                         self.buf_pos = pos;
                         return Ok(());
                     }
-                    self.set_token(Token::new(b'.' as i32, source_pos, TokenExtra::None, JS_NULL));
+                    self.set_token(Token::new(b'.' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     self.buf_pos = pos + 1;
                     return Ok(());
                 }
@@ -460,32 +460,32 @@ impl<'a> ParseState<'a> {
                     }
                     let (value, new_pos) = self.parse_number(pos, source_pos as usize)?;
                     pos = new_pos;
-                    self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL));
+                    self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JSValue::JS_NULL));
                     self.buf_pos = pos;
                     return Ok(());
                 }
                 b'1'..=b'9' => {
                     let (value, new_pos) = self.parse_number(pos, source_pos as usize)?;
                     pos = new_pos;
-                    self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JS_NULL));
+                    self.set_token(Token::new(TOK_NUMBER, source_pos, TokenExtra::Number(value), JSValue::JS_NULL));
                     self.buf_pos = pos;
                     return Ok(());
                 }
                 b'*' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_MUL_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_MUL_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else if self.byte_at(pos + 1) == b'*' {
                         if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.set_token(Token::new(TOK_POW_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_POW_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         } else {
                             pos += 2;
-                            self.set_token(Token::new(TOK_POW, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_POW, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'*' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'*' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -493,10 +493,10 @@ impl<'a> ParseState<'a> {
                 b'%' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_MOD_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_MOD_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'%' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'%' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -504,13 +504,13 @@ impl<'a> ParseState<'a> {
                 b'+' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_PLUS_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_PLUS_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else if self.byte_at(pos + 1) == b'+' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_INC, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_INC, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'+' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'+' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -518,13 +518,13 @@ impl<'a> ParseState<'a> {
                 b'-' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_MINUS_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_MINUS_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else if self.byte_at(pos + 1) == b'-' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_DEC, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_DEC, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'-' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'-' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -532,18 +532,18 @@ impl<'a> ParseState<'a> {
                 b'<' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_LTE, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_LTE, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else if self.byte_at(pos + 1) == b'<' {
                         if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.set_token(Token::new(TOK_SHL_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_SHL_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         } else {
                             pos += 2;
-                            self.set_token(Token::new(TOK_SHL, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_SHL, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'<' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'<' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -551,26 +551,26 @@ impl<'a> ParseState<'a> {
                 b'>' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_GTE, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_GTE, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else if self.byte_at(pos + 1) == b'>' {
                         if self.byte_at(pos + 2) == b'>' {
                             if self.byte_at(pos + 3) == b'=' {
                                 pos += 4;
-                                self.set_token(Token::new(TOK_SHR_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                                self.set_token(Token::new(TOK_SHR_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                             } else {
                                 pos += 3;
-                                self.set_token(Token::new(TOK_SHR, source_pos, TokenExtra::None, JS_NULL));
+                                self.set_token(Token::new(TOK_SHR, source_pos, TokenExtra::None, JSValue::JS_NULL));
                             }
                         } else if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.set_token(Token::new(TOK_SAR_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_SAR_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         } else {
                             pos += 2;
-                            self.set_token(Token::new(TOK_SAR, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_SAR, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'>' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'>' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -579,14 +579,14 @@ impl<'a> ParseState<'a> {
                     if self.byte_at(pos + 1) == b'=' {
                         if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.set_token(Token::new(TOK_STRICT_EQ, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_STRICT_EQ, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         } else {
                             pos += 2;
-                            self.set_token(Token::new(TOK_EQ, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_EQ, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'=' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'=' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -595,14 +595,14 @@ impl<'a> ParseState<'a> {
                     if self.byte_at(pos + 1) == b'=' {
                         if self.byte_at(pos + 2) == b'=' {
                             pos += 3;
-                            self.set_token(Token::new(TOK_STRICT_NEQ, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_STRICT_NEQ, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         } else {
                             pos += 2;
-                            self.set_token(Token::new(TOK_NEQ, source_pos, TokenExtra::None, JS_NULL));
+                            self.set_token(Token::new(TOK_NEQ, source_pos, TokenExtra::None, JSValue::JS_NULL));
                         }
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'!' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'!' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -610,13 +610,13 @@ impl<'a> ParseState<'a> {
                 b'&' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_AND_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_AND_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else if self.byte_at(pos + 1) == b'&' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_LAND, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_LAND, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'&' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'&' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -624,10 +624,10 @@ impl<'a> ParseState<'a> {
                 b'^' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_XOR_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_XOR_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'^' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'^' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -635,13 +635,13 @@ impl<'a> ParseState<'a> {
                 b'|' => {
                     if self.byte_at(pos + 1) == b'=' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_OR_ASSIGN, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_OR_ASSIGN, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else if self.byte_at(pos + 1) == b'|' {
                         pos += 2;
-                        self.set_token(Token::new(TOK_LOR, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(TOK_LOR, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     } else {
                         pos += 1;
-                        self.set_token(Token::new(b'|' as i32, source_pos, TokenExtra::None, JS_NULL));
+                        self.set_token(Token::new(b'|' as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     }
                     self.buf_pos = pos;
                     return Ok(());
@@ -651,7 +651,7 @@ impl<'a> ParseState<'a> {
                         return Err(ParseError::new(ERR_UNEXPECTED_CHARACTER, source_pos as usize));
                     }
                     pos += 1;
-                    self.set_token(Token::new(c as i32, source_pos, TokenExtra::None, JS_NULL));
+                    self.set_token(Token::new(c as i32, source_pos, TokenExtra::None, JSValue::JS_NULL));
                     self.buf_pos = pos;
                     return Ok(());
                 }
@@ -1015,7 +1015,6 @@ pub(crate) fn value_matches_bytes(value: JSValue, bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
-    use crate::jsvalue::{value_get_special_tag, value_get_special_value, JS_TAG_STRING_CHAR};
     use crate::parser::regexp_flags::{LRE_FLAG_GLOBAL, LRE_FLAG_IGNORECASE};
     use crate::parser::types::ParsePos;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
@@ -1134,8 +1133,8 @@ mod tests {
         state.next_token().unwrap();
         let token = state.token();
         assert_eq!(token.val(), TOK_STRING);
-        assert_eq!(value_get_special_tag(token.value()), JS_TAG_STRING_CHAR);
-        assert_eq!(value_get_special_value(token.value()), 0x1f600);
+        assert_eq!(token.value().get_special_tag(), JSValue::JS_TAG_STRING_CHAR);
+        assert_eq!(token.value().get_special_value(), 0x1f600);
     }
 
     #[test]

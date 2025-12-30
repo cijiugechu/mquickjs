@@ -145,7 +145,7 @@ mod tests {
     use crate::containers::ByteArrayHeader;
     use crate::gc_ref::GcRef;
     use crate::heap::mblock_size;
-    use crate::jsvalue::{value_from_ptr, value_to_ptr, JSValue, JSWord, JSW, JS_NULL};
+    use crate::jsvalue::JSWord;
     use crate::memblock::{MbHeader, MTag};
     use core::ptr::{self, NonNull};
 
@@ -159,12 +159,12 @@ mod tests {
             let mut storage = vec![0 as JSWord; words];
             let base = NonNull::new(storage.as_mut_ptr() as *mut u8).unwrap();
             let stack_top =
-                unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSW as usize)) };
+                unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSValue::JSW as usize)) };
             let stack_bottom = unsafe {
                 NonNull::new_unchecked(
                     stack_top
                         .as_ptr()
-                        .sub(stack_words * JSW as usize) as *mut JSValue,
+                        .sub(stack_words * JSValue::JSW as usize) as *mut JSValue,
                 )
             };
             let layout = HeapLayout::new(base, base, stack_top, stack_bottom, 0);
@@ -201,8 +201,8 @@ mod tests {
         let dead_ptr = alloc_byte_array(&mut arena, 5);
         let live2_ptr = alloc_byte_array(&mut arena, 4);
 
-        let live1_val = value_from_ptr(live1_ptr);
-        let live2_val = value_from_ptr(live2_ptr);
+        let live1_val = JSValue::from_ptr(live1_ptr);
+        let live2_val = JSValue::from_ptr(live2_ptr);
 
         let live1_size = unsafe { mblock_size(live1_ptr) };
         let live2_size = unsafe { mblock_size(live2_ptr) };
@@ -211,7 +211,7 @@ mod tests {
         let mut class_roots: [JSValue; 0] = [];
 
         let mut refs = GcRefState::new();
-        let mut reference = Box::new(GcRef::new(JS_NULL));
+        let mut reference = Box::new(GcRef::new(JSValue::JS_NULL));
         let slot = refs.add_gc_ref(reference.as_mut());
         unsafe {
             *slot = live2_val;
@@ -226,7 +226,7 @@ mod tests {
 
         assert_eq!(stack_roots[0], live1_val);
         let updated = reference.val();
-        let updated_ptr = value_to_ptr::<u8>(updated).expect("gc ref updated");
+        let updated_ptr = updated.to_ptr::<u8>().expect("gc ref updated");
         assert_eq!(updated_ptr.as_ptr(), dead_addr);
 
         let expected_free = unsafe {

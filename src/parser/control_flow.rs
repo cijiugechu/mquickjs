@@ -216,7 +216,6 @@ pub fn emit_break(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jsvalue::{new_short_int, JS_NULL};
     use crate::opcode::{
         OP_DROP, OP_GOSUB, OP_GOTO, OP_NIP, OP_RETURN, OP_RETURN_UNDEF, OP_UNDEFINED,
     };
@@ -224,7 +223,7 @@ mod tests {
     #[test]
     fn emit_return_without_finally_uses_return_undef() {
         let mut stack = BreakStack::new();
-        stack.push(JS_NULL, Label::new(), Label::new(), 2);
+        stack.push(JSValue::JS_NULL, Label::new(), Label::new(), 2);
         let source = b"ret";
         let mut emitter = BytecodeEmitter::new(source, 0, false);
         emit_return(&mut emitter, &mut stack, false, 3);
@@ -234,9 +233,9 @@ mod tests {
     #[test]
     fn emit_return_with_finally_inserts_undefined_and_nip() {
         let mut stack = BreakStack::new();
-        let outer = stack.push(JS_NULL, Label::new(), Label::new(), 2);
+        let outer = stack.push(JSValue::JS_NULL, Label::new(), Label::new(), 2);
         *stack.entry_mut(outer).unwrap().label_finally_mut() = Label::new();
-        stack.push(JS_NULL, Label::new(), Label::new(), 1);
+        stack.push(JSValue::JS_NULL, Label::new(), Label::new(), 1);
 
         let mut emitter = BytecodeEmitter::new(b"0123456789", 0, false);
         emit_return(&mut emitter, &mut stack, false, 5);
@@ -253,11 +252,11 @@ mod tests {
     #[test]
     fn emit_break_continues_after_drop() {
         let mut stack = BreakStack::new();
-        stack.push(JS_NULL, Label::new(), Label::new(), 0);
-        stack.push(new_short_int(7), Label::new(), Label::none(), 1);
+        stack.push(JSValue::JS_NULL, Label::new(), Label::new(), 0);
+        stack.push(JSValue::new_short_int(7), Label::new(), Label::none(), 1);
 
         let mut emitter = BytecodeEmitter::new(b"x", 0, false);
-        emit_break(&mut emitter, &mut stack, JS_NULL, true, 0).unwrap();
+        emit_break(&mut emitter, &mut stack, JSValue::JS_NULL, true, 0).unwrap();
         let code = emitter.byte_code();
         assert_eq!(code.len(), 6);
         assert_eq!(code[0], OP_DROP.as_u8());
@@ -267,12 +266,12 @@ mod tests {
     #[test]
     fn emit_break_runs_finally_before_goto() {
         let mut stack = BreakStack::new();
-        stack.push(JS_NULL, Label::new(), Label::new(), 0);
-        let top = stack.push(JS_NULL, Label::new(), Label::none(), 0);
+        stack.push(JSValue::JS_NULL, Label::new(), Label::new(), 0);
+        let top = stack.push(JSValue::JS_NULL, Label::new(), Label::none(), 0);
         *stack.entry_mut(top).unwrap().label_finally_mut() = Label::new();
 
         let mut emitter = BytecodeEmitter::new(b"x", 0, false);
-        emit_break(&mut emitter, &mut stack, JS_NULL, true, 0).unwrap();
+        emit_break(&mut emitter, &mut stack, JSValue::JS_NULL, true, 0).unwrap();
         let code = emitter.byte_code();
         assert_eq!(code.len(), 12);
         assert_eq!(code[0], OP_UNDEFINED.as_u8());
@@ -285,7 +284,7 @@ mod tests {
     fn emit_break_errors_without_target() {
         let mut stack = BreakStack::new();
         let mut emitter = BytecodeEmitter::new(b"x", 0, false);
-        let err = emit_break(&mut emitter, &mut stack, JS_NULL, false, 9).unwrap_err();
+        let err = emit_break(&mut emitter, &mut stack, JSValue::JS_NULL, false, 9).unwrap_err();
         assert_eq!(err.message(), ERR_BREAK_OUTSIDE_LOOP);
         assert_eq!(err.position(), 9);
     }
@@ -293,9 +292,9 @@ mod tests {
     #[test]
     fn emit_break_errors_for_missing_label() {
         let mut stack = BreakStack::new();
-        stack.push(new_short_int(1), Label::new(), Label::new(), 0);
+        stack.push(JSValue::new_short_int(1), Label::new(), Label::new(), 0);
         let mut emitter = BytecodeEmitter::new(b"x", 0, false);
-        let err = emit_break(&mut emitter, &mut stack, new_short_int(2), false, 4).unwrap_err();
+        let err = emit_break(&mut emitter, &mut stack, JSValue::new_short_int(2), false, 4).unwrap_err();
         assert_eq!(err.message(), ERR_LABEL_NOT_FOUND);
         assert_eq!(err.position(), 4);
     }

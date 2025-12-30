@@ -10,13 +10,7 @@ use crate::dtoa::{
 };
 use crate::enums::JSObjectClass;
 use crate::js_libm;
-use crate::jsvalue::{
-    new_bool, new_short_int, value_get_int, value_get_special_tag, value_get_special_value,
-    value_to_ptr, JSValue, JSWord, JS_EXCEPTION, JS_NULL, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR,
-    JS_UNDEFINED,
-};
-#[cfg(target_pointer_width = "64")]
-use crate::jsvalue::short_float_to_f64;
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader, PrimitiveValue, RegExp};
 use crate::parser::regexp_flags::{LRE_FLAG_GLOBAL, LRE_FLAG_STICKY};
@@ -32,15 +26,15 @@ use core::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn alloc_number(ctx: &mut JSContext, value: f64) -> JSValue {
-    ctx.new_float64(value).unwrap_or(JS_EXCEPTION)
+    ctx.new_float64(value).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 fn alloc_string(ctx: &mut JSContext, value: &str) -> JSValue {
-    ctx.new_string(value).unwrap_or(JS_EXCEPTION)
+    ctx.new_string(value).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 fn read_float64(val: JSValue) -> Option<f64> {
-    let ptr = value_to_ptr::<u8>(val)?;
+    let ptr = val.to_ptr::<u8>()?;
     let header_word = unsafe {
         // SAFETY: ptr points at a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -81,20 +75,20 @@ fn parse_number_bytes(bytes: &[u8], radix: u32, flags: AtodFlags, to_string: boo
 
 fn js_to_bool(val: JSValue) -> bool {
     if val.is_int() {
-        return value_get_int(val) != 0;
+        return val.get_int() != 0;
     }
     #[cfg(target_pointer_width = "64")]
     if val.is_short_float() {
-        let num = short_float_to_f64(val);
+        let num = val.short_float_to_f64();
         return !num.is_nan() && num != 0.0;
     }
     if val.is_bool() {
-        return value_get_special_value(val) != 0;
+        return val.get_special_value() != 0;
     }
     if val.is_null() || val.is_undefined() {
         return false;
     }
-    if value_get_special_tag(val) == JS_TAG_SHORT_FUNC {
+    if val.get_special_tag() == JSValue::JS_TAG_SHORT_FUNC {
         return true;
     }
     let mut scratch = [0u8; 5];
@@ -120,13 +114,13 @@ fn to_number_from_string(val: JSValue, flags: AtodFlags, to_string: bool) -> f64
 
 fn to_number(val: JSValue) -> f64 {
     if val.is_int() {
-        return f64::from(value_get_int(val));
+        return f64::from(val.get_int());
     }
     #[cfg(target_pointer_width = "64")]
     if val.is_short_float() {
-        return short_float_to_f64(val);
+        return val.short_float_to_f64();
     }
-    if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
+    if val.get_special_tag() == JSValue::JS_TAG_STRING_CHAR {
         return to_number_from_string(val, JS_ATOD_ACCEPT_BIN_OCT, true);
     }
     if val.is_ptr() {
@@ -139,7 +133,7 @@ fn to_number(val: JSValue) -> f64 {
         }
     }
     if val.is_bool() || val.is_null() {
-        return f64::from(value_get_special_value(val));
+        return f64::from(val.get_special_value());
     }
     if val.is_undefined() {
         return f64::NAN;
@@ -202,12 +196,12 @@ fn to_string_value(ctx: &mut JSContext, val: JSValue) -> JSValue {
         let d = to_number(val);
         let out = match js_dtoa(d, 10, 0, JS_DTOA_FORMAT_FREE) {
             Ok(out) => out,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
         return alloc_string(ctx, &out);
     }
     if val.is_bool() {
-        if value_get_special_value(val) != 0 {
+        if val.get_special_value() != 0 {
             return alloc_string(ctx, "true");
         }
         return alloc_string(ctx, "false");
@@ -218,13 +212,13 @@ fn to_string_value(ctx: &mut JSContext, val: JSValue) -> JSValue {
     if val.is_undefined() {
         return alloc_string(ctx, "undefined");
     }
-    JS_EXCEPTION
+    JSValue::JS_EXCEPTION
 }
 
 fn dtoa_to_string(ctx: &mut JSContext, d: f64, radix: u32, n_digits: usize, flags: DtoaFlags) -> JSValue {
     let out = match js_dtoa(d, radix, n_digits, flags) {
         Ok(out) => out,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     alloc_string(ctx, &out)
 }
@@ -255,7 +249,7 @@ fn js_fmax(a: f64, b: f64) -> f64 {
 
 pub fn js_number_constructor(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
     if args.is_empty() {
-        return new_short_int(0);
+        return JSValue::new_short_int(0);
     }
     let d = to_number(args[0]);
     alloc_number(ctx, d)
@@ -263,7 +257,7 @@ pub fn js_number_constructor(ctx: &mut JSContext, _this_val: JSValue, args: &[JS
 
 pub fn js_number_toString(ctx: &mut JSContext, this_val: JSValue, args: &[JSValue]) -> JSValue {
     if !is_number_value(this_val) {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     let d = to_number(this_val);
     let radix = if args.is_empty() || args[0].is_undefined() {
@@ -272,7 +266,7 @@ pub fn js_number_toString(ctx: &mut JSContext, this_val: JSValue, args: &[JSValu
         to_int32_sat(args[0])
     };
     if !(2..=36).contains(&radix) {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     let mut flags = JS_DTOA_FORMAT_FREE;
     if radix != 10 {
@@ -283,12 +277,12 @@ pub fn js_number_toString(ctx: &mut JSContext, this_val: JSValue, args: &[JSValu
 
 pub fn js_number_toFixed(ctx: &mut JSContext, this_val: JSValue, args: &[JSValue]) -> JSValue {
     if !is_number_value(this_val) {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     let d = to_number(this_val);
     let f = if args.is_empty() { 0 } else { to_int32_sat(args[0]) };
     if !(0..=100).contains(&f) {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     let flags = if d.abs() >= 1e21 {
         JS_DTOA_FORMAT_FREE
@@ -304,7 +298,7 @@ pub fn js_number_toExponential(
     args: &[JSValue],
 ) -> JSValue {
     if !is_number_value(this_val) {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     let d = to_number(this_val);
     let mut f = if args.is_empty() { 0 } else { to_int32_sat(args[0]) };
@@ -313,7 +307,7 @@ pub fn js_number_toExponential(
         JS_DTOA_FORMAT_FREE
     } else {
         if !(0..=100).contains(&f) {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         }
         f += 1;
         JS_DTOA_FORMAT_FIXED
@@ -327,7 +321,7 @@ pub fn js_number_toPrecision(
     args: &[JSValue],
 ) -> JSValue {
     if !is_number_value(this_val) {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     let d = to_number(this_val);
     let (p, flags) = if args.is_empty() || args[0].is_undefined() {
@@ -338,7 +332,7 @@ pub fn js_number_toPrecision(
             (p, JS_DTOA_FORMAT_FREE)
         } else {
             if !(1..=100).contains(&p) {
-                return JS_EXCEPTION;
+                return JSValue::JS_EXCEPTION;
             }
             (p, JS_DTOA_FORMAT_FIXED)
         }
@@ -347,11 +341,11 @@ pub fn js_number_toPrecision(
 }
 
 pub fn js_number_parseInt(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let input = args.first().copied().unwrap_or(JS_UNDEFINED);
-    let radix_val = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+    let input = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let radix_val = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
     let str_val = to_string_value(ctx, input);
-    if str_val == JS_EXCEPTION {
-        return JS_EXCEPTION;
+    if str_val == JSValue::JS_EXCEPTION {
+        return JSValue::JS_EXCEPTION;
     }
     let radix = to_int32(radix_val);
     let value = if radix != 0 && !(2..=36).contains(&radix) {
@@ -359,7 +353,7 @@ pub fn js_number_parseInt(ctx: &mut JSContext, _this_val: JSValue, args: &[JSVal
     } else {
         let mut scratch = [0u8; 5];
         let Some(view) = string_view(str_val, &mut scratch) else {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         };
         parse_number_bytes(view.bytes(), radix as u32, JS_ATOD_INT_ONLY, false)
     };
@@ -367,14 +361,14 @@ pub fn js_number_parseInt(ctx: &mut JSContext, _this_val: JSValue, args: &[JSVal
 }
 
 pub fn js_number_parseFloat(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let input = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let input = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let str_val = to_string_value(ctx, input);
-    if str_val == JS_EXCEPTION {
-        return JS_EXCEPTION;
+    if str_val == JSValue::JS_EXCEPTION {
+        return JSValue::JS_EXCEPTION;
     }
     let mut scratch = [0u8; 5];
     let Some(view) = string_view(str_val, &mut scratch) else {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     };
     let value = parse_number_bytes(view.bytes(), 10, AtodFlags::empty(), false);
     alloc_number(ctx, value)
@@ -385,8 +379,8 @@ pub fn js_boolean_constructor(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
-    new_bool(js_to_bool(val) as i32)
+    let val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    JSValue::new_bool(js_to_bool(val) as i32)
 }
 
 pub fn js_math_min_max(
@@ -400,16 +394,16 @@ pub fn js_math_min_max(
         return alloc_number(ctx, if is_max { f64::NEG_INFINITY } else { f64::INFINITY });
     }
     if args.iter().all(|val| val.is_int()) {
-        let mut r = value_get_int(args[0]);
+        let mut r = args[0].get_int();
         for val in &args[1..] {
-            let a = value_get_int(*val);
+            let a = val.get_int();
             if is_max {
                 r = r.max(a);
             } else {
                 r = r.min(a);
             }
         }
-        return new_short_int(r);
+        return JSValue::new_short_int(r);
     }
     let mut r = to_number(args[0]);
     for val in &args[1..] {
@@ -443,27 +437,27 @@ pub fn js_math_fround(a: f64) -> f64 {
 }
 
 pub fn js_math_imul(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let a = to_int32(args.first().copied().unwrap_or(JS_UNDEFINED));
-    let b = to_int32(args.get(1).copied().unwrap_or(JS_UNDEFINED));
+    let a = to_int32(args.first().copied().unwrap_or(JSValue::JS_UNDEFINED));
+    let b = to_int32(args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED));
     let out = (a as u32).wrapping_mul(b as u32) as i32;
     alloc_number(ctx, out as f64)
 }
 
 pub fn js_math_clz32(_ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let a = to_uint32(args.first().copied().unwrap_or(JS_UNDEFINED));
+    let a = to_uint32(args.first().copied().unwrap_or(JSValue::JS_UNDEFINED));
     let out = if a == 0 { 32 } else { a.leading_zeros() as i32 };
-    new_short_int(out)
+    JSValue::new_short_int(out)
 }
 
 pub fn js_math_atan2(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let y = to_number(args.first().copied().unwrap_or(JS_UNDEFINED));
-    let x = to_number(args.get(1).copied().unwrap_or(JS_UNDEFINED));
+    let y = to_number(args.first().copied().unwrap_or(JSValue::JS_UNDEFINED));
+    let x = to_number(args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED));
     alloc_number(ctx, js_libm::js_atan2(y, x))
 }
 
 pub fn js_math_pow(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let x = to_number(args.first().copied().unwrap_or(JS_UNDEFINED));
-    let y = to_number(args.get(1).copied().unwrap_or(JS_UNDEFINED));
+    let x = to_number(args.first().copied().unwrap_or(JSValue::JS_UNDEFINED));
+    let y = to_number(args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED));
     alloc_number(ctx, js_libm::js_pow(x, y))
 }
 
@@ -476,7 +470,7 @@ pub fn js_math_random(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]
 pub fn js_date_now(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]) -> JSValue {
     let now = SystemTime::now();
     let Ok(duration) = now.duration_since(UNIX_EPOCH) else {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     };
     let ms = duration.as_secs() as f64 * 1000.0 + f64::from(duration.subsec_millis());
     alloc_number(ctx, ms)
@@ -487,27 +481,27 @@ pub fn js_date_constructor(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSV
 }
 
 pub fn js_global_eval(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     if !val.is_string() {
         return val;
     }
     let mut scratch = [0u8; 5];
     let Some(view) = string_view(val, &mut scratch) else {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     };
     crate::api::js_eval(ctx, view.bytes(), crate::capi_defs::JS_EVAL_RETVAL)
 }
 
 pub fn js_global_isNaN(_ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let num = to_number(val);
-    new_bool(num.is_nan() as i32)
+    JSValue::new_bool(num.is_nan() as i32)
 }
 
 pub fn js_global_isFinite(_ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
-    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let num = to_number(val);
-    new_bool(num.is_finite() as i32)
+    JSValue::new_bool(num.is_finite() as i32)
 }
 
 fn is_number_value(val: JSValue) -> bool {
@@ -519,7 +513,7 @@ fn is_number_value(val: JSValue) -> bool {
         return true;
     }
     if val.is_ptr() {
-        let ptr = match value_to_ptr::<u8>(val) {
+        let ptr = match val.to_ptr::<u8>() {
             Some(ptr) => ptr,
             None => return false,
         };
@@ -562,7 +556,7 @@ pub fn js_object_constructor(
     args: &[JSValue],
 ) -> JSValue {
     if args.is_empty() {
-        ctx.alloc_object_default().unwrap_or(JS_EXCEPTION)
+        ctx.alloc_object_default().unwrap_or(JSValue::JS_EXCEPTION)
     } else {
         args[0]
     }
@@ -574,16 +568,16 @@ pub fn js_object_hasOwnProperty(
     args: &[JSValue],
 ) -> JSValue {
     if !this_val.is_object() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    let prop = match conversion::to_property_key(ctx, args.first().copied().unwrap_or(JS_UNDEFINED))
+    let prop = match conversion::to_property_key(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED))
     {
         Ok(p) => p,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     match find_own_property_exposed(ctx, this_val, prop) {
-        Ok(found) => new_bool(found as i32),
-        Err(_) => JS_EXCEPTION,
+        Ok(found) => JSValue::new_bool(found as i32),
+        Err(_) => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -604,16 +598,16 @@ fn object_to_string_internal(ctx: &mut JSContext, val: JSValue) -> JSValue {
             return alloc_string(ctx, "[object Number]");
         }
         if !val.is_ptr() {
-            match value_get_special_tag(val) {
-                tag if tag == crate::jsvalue::JS_TAG_NULL => "Null",
-                tag if tag == crate::jsvalue::JS_TAG_UNDEFINED => "Undefined",
-                tag if tag == JS_TAG_SHORT_FUNC => "Function",
-                tag if tag == crate::jsvalue::JS_TAG_BOOL => "Boolean",
-                tag if tag == JS_TAG_STRING_CHAR => "String",
+            match val.get_special_tag() {
+                tag if tag == JSValue::JS_TAG_NULL => "Null",
+                tag if tag == JSValue::JS_TAG_UNDEFINED => "Undefined",
+                tag if tag == JSValue::JS_TAG_SHORT_FUNC => "Function",
+                tag if tag == JSValue::JS_TAG_BOOL => "Boolean",
+                tag if tag == JSValue::JS_TAG_STRING_CHAR => "String",
                 _ => "Object",
             }
         } else {
-            let ptr = match value_to_ptr::<u8>(val) {
+            let ptr = match val.to_ptr::<u8>() {
                 Some(p) => p,
                 None => return alloc_string(ctx, "[object Object]"),
             };
@@ -650,30 +644,30 @@ pub fn js_object_defineProperty(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let obj = args.first().copied().unwrap_or(JS_UNDEFINED);
-    let prop_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
-    let desc = args.get(2).copied().unwrap_or(JS_UNDEFINED);
+    let obj = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let prop_arg = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let desc = args.get(2).copied().unwrap_or(JSValue::JS_UNDEFINED);
 
     if !obj.is_object() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     let prop = match conversion::to_property_key(ctx, prop_arg) {
         Ok(p) => p,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     // Check for value, get, set properties in descriptor.
     let value_key = match ctx.intern_string(b"value") {
         Ok(k) => k,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let get_key = match ctx.intern_string(b"get") {
         Ok(k) => k,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let set_key = match ctx.intern_string(b"set") {
         Ok(k) => k,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     let has_value = has_property(ctx, desc, value_key).unwrap_or(false);
@@ -681,36 +675,36 @@ pub fn js_object_defineProperty(
     let has_set = has_property(ctx, desc, set_key).unwrap_or(false);
 
     if !has_value && !has_get && !has_set {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     if has_value {
         let val = match get_property(ctx, desc, value_key) {
             Ok(v) => v,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
         if define_property_value(ctx, obj, prop, val).is_err() {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         }
     } else {
         let getter = if has_get {
             match get_property(ctx, desc, get_key) {
                 Ok(v) => v,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             }
         } else {
-            JS_UNDEFINED
+            JSValue::JS_UNDEFINED
         };
         let setter = if has_set {
             match get_property(ctx, desc, set_key) {
                 Ok(v) => v,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             }
         } else {
-            JS_UNDEFINED
+            JSValue::JS_UNDEFINED
         };
         if define_property_getset(ctx, obj, prop, getter, setter).is_err() {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         }
     }
     obj
@@ -721,13 +715,13 @@ pub fn js_object_getPrototypeOf(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let obj = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let obj = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     if !obj.is_object() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    let obj_ptr = match value_to_ptr::<Object>(obj) {
+    let obj_ptr = match obj.to_ptr::<Object>() {
         Some(p) => p,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
     unsafe { ptr::read_unaligned(Object::proto_ptr(obj_ptr.as_ptr())) }
 }
@@ -737,18 +731,18 @@ pub fn js_object_setPrototypeOf(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let obj = args.first().copied().unwrap_or(JS_UNDEFINED);
-    let proto = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+    let obj = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let proto = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
 
     if !obj.is_object() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    if proto != JS_NULL && !proto.is_object() {
-        return JS_EXCEPTION;
+    if proto != JSValue::JS_NULL && !proto.is_object() {
+        return JSValue::JS_EXCEPTION;
     }
 
     if set_prototype_internal(ctx, obj, proto).is_err() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     obj
 }
@@ -758,7 +752,7 @@ fn set_prototype_internal(
     obj: JSValue,
     proto: JSValue,
 ) -> Result<(), ()> {
-    let obj_ptr = value_to_ptr::<Object>(obj).ok_or(())?;
+    let obj_ptr = obj.to_ptr::<Object>().ok_or(())?;
     let current_proto = unsafe { ptr::read_unaligned(Object::proto_ptr(obj_ptr.as_ptr())) };
 
     if current_proto == proto {
@@ -766,15 +760,15 @@ fn set_prototype_internal(
     }
 
     // Check for circular prototype chain.
-    if proto != JS_NULL {
+    if proto != JSValue::JS_NULL {
         let mut check = proto;
         loop {
-            let check_ptr = value_to_ptr::<Object>(check).ok_or(())?;
+            let check_ptr = check.to_ptr::<Object>().ok_or(())?;
             if check_ptr == obj_ptr {
                 return Err(());
             }
             let next = unsafe { ptr::read_unaligned(Object::proto_ptr(check_ptr.as_ptr())) };
-            if next == JS_NULL {
+            if next == JSValue::JS_NULL {
                 break;
             }
             check = next;
@@ -792,15 +786,15 @@ pub fn js_object_create(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let proto = args.first().copied().unwrap_or(JS_UNDEFINED);
-    if proto != JS_NULL && !proto.is_object() {
-        return JS_EXCEPTION;
+    let proto = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    if proto != JSValue::JS_NULL && !proto.is_object() {
+        return JSValue::JS_EXCEPTION;
     }
     if args.len() >= 2 && !args[1].is_undefined() {
         // Additional properties not supported.
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    ctx.alloc_object_with_proto(proto).unwrap_or(JS_EXCEPTION)
+    ctx.alloc_object_with_proto(proto).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_object_keys(
@@ -808,13 +802,13 @@ pub fn js_object_keys(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let obj = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let obj = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     if !obj.is_object() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     match object_keys(ctx, obj) {
         Ok(arr) => arr,
-        Err(_) => JS_EXCEPTION,
+        Err(_) => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -830,13 +824,13 @@ pub fn js_function_call(
     // Function.prototype.call(thisArg, ...args)
     // this_val is the function to call
     if !this_val.is_function() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    let this_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let this_arg = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let call_args = if args.len() > 1 { &args[1..] } else { &[] };
     match crate::interpreter::call_with_this(ctx, this_val, this_arg, call_args) {
         Ok(result) => result,
-        Err(_) => JS_EXCEPTION,
+        Err(_) => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -847,16 +841,16 @@ pub fn js_function_apply(
 ) -> JSValue {
     // Function.prototype.apply(thisArg, argsArray)
     if !this_val.is_function() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    let this_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
-    let args_array = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+    let this_arg = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let args_array = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
 
     // Extract arguments from the array
     let call_args = if args_array.is_object() {
         match extract_array_elements(ctx, args_array) {
             Ok(elements) => elements,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     } else {
         Vec::new()
@@ -864,12 +858,12 @@ pub fn js_function_apply(
 
     match crate::interpreter::call_with_this(ctx, this_val, this_arg, &call_args) {
         Ok(result) => result,
-        Err(_) => JS_EXCEPTION,
+        Err(_) => JSValue::JS_EXCEPTION,
     }
 }
 
 fn extract_array_elements(ctx: &JSContext, arr: JSValue) -> Result<Vec<JSValue>, ()> {
-    let obj_ptr = value_to_ptr::<Object>(arr).ok_or(())?;
+    let obj_ptr = arr.to_ptr::<Object>().ok_or(())?;
     let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
     let header = ObjectHeader::from_word(header_word);
     if header.tag() != MTag::Object || header.class_id() != JSObjectClass::Array as u8 {
@@ -881,12 +875,12 @@ fn extract_array_elements(ctx: &JSContext, arr: JSValue) -> Result<Vec<JSValue>,
     };
     let len = data.len() as usize;
     let tab = data.tab();
-    if tab == JS_NULL || len == 0 {
+    if tab == JSValue::JS_NULL || len == 0 {
         return Ok(Vec::new());
     }
 
     // Read elements from the value array
-    let tab_ptr = value_to_ptr::<u8>(tab).ok_or(())?;
+    let tab_ptr = tab.to_ptr::<u8>().ok_or(())?;
     let header_word = unsafe { ptr::read_unaligned(tab_ptr.as_ptr().cast::<JSWord>()) };
     let header = crate::containers::ValueArrayHeader::from(MbHeader::from_word(header_word));
     let arr_ptr = unsafe { tab_ptr.as_ptr().add(size_of::<JSWord>()) as *const JSValue };
@@ -895,7 +889,7 @@ fn extract_array_elements(ctx: &JSContext, arr: JSValue) -> Result<Vec<JSValue>,
         let val = unsafe { ptr::read_unaligned(arr_ptr.add(i)) };
         // Resolve ROM pointers if needed
         let resolved = if ctx.is_rom_ptr(NonNull::new(arr_ptr as *mut u8).unwrap()) {
-            ctx.rom_value_from_word(crate::jsvalue::raw_bits(val))
+            ctx.rom_value_from_word(val.raw_bits())
         } else {
             val
         };
@@ -912,7 +906,7 @@ pub fn js_function_bind(
     // Function.prototype.bind(thisArg, ...args)
     // Creates a bound function
     if !this_val.is_function() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     // Allocate a value array to store: [func, thisArg, ...boundArgs]
@@ -920,22 +914,22 @@ pub fn js_function_bind(
     let total_size = 2 + bound_args_count;
     let arr_ptr = match ctx.alloc_value_array(total_size) {
         Ok(ptr) => ptr,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     // Store func and thisArg and bound args
     unsafe {
         let arr = arr_ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
         ptr::write_unaligned(arr, this_val);
-        ptr::write_unaligned(arr.add(1), args.first().copied().unwrap_or(JS_UNDEFINED));
+        ptr::write_unaligned(arr.add(1), args.first().copied().unwrap_or(JSValue::JS_UNDEFINED));
         for (i, arg) in args.iter().skip(1).enumerate() {
             ptr::write_unaligned(arr.add(2 + i), *arg);
         }
     }
 
-    let params = crate::jsvalue::value_from_ptr(arr_ptr);
+    let params = JSValue::from_ptr(arr_ptr);
     // JS_CFUNCTION_bound = 0
-    ctx.new_cfunction_params(0, params).unwrap_or(JS_EXCEPTION)
+    ctx.new_cfunction_params(0, params).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_function_bound(
@@ -945,9 +939,9 @@ pub fn js_function_bound(
     params: JSValue,
 ) -> JSValue {
     // This is called when a bound function is invoked
-    let params_ptr = match value_to_ptr::<u8>(params) {
+    let params_ptr = match params.to_ptr::<u8>() {
         Some(p) => p,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     // Read bound parameters: [func, thisArg, ...boundArgs]
@@ -955,7 +949,7 @@ pub fn js_function_bound(
     let header = crate::containers::ValueArrayHeader::from(MbHeader::from_word(header_word));
     let size = header.size() as usize;
     if size < 2 {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     let arr = unsafe { params_ptr.as_ptr().add(size_of::<JSWord>()) as *const JSValue };
@@ -972,7 +966,7 @@ pub fn js_function_bound(
 
     match crate::interpreter::call_with_this(ctx, func, this_arg, &call_args) {
         Ok(result) => result,
-        Err(_) => JS_EXCEPTION,
+        Err(_) => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -984,7 +978,7 @@ pub fn js_function_toString(
     // Get function name
     let name = match get_function_name(ctx, this_val) {
         Ok(n) => n,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let name_str = {
         let mut scratch = [0u8; 5];
@@ -1002,17 +996,17 @@ pub fn js_function_toString(
 
 fn get_function_name(ctx: &mut JSContext, func: JSValue) -> Result<JSValue, ()> {
     if !func.is_ptr() {
-        if value_get_special_tag(func) != JS_TAG_SHORT_FUNC {
+        if func.get_special_tag() != JSValue::JS_TAG_SHORT_FUNC {
             return Err(());
         }
-        let idx = value_get_special_value(func);
+        let idx = func.get_special_value();
         if idx < 0 {
             return Err(());
         }
         let def = ctx.c_function(idx as usize).ok_or(())?;
         return ctx.intern_string(def.name_str.as_bytes()).map_err(|_| ());
     }
-    let obj_ptr = value_to_ptr::<Object>(func).ok_or(())?;
+    let obj_ptr = func.to_ptr::<Object>().ok_or(())?;
     let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
     let header = ObjectHeader::from_word(header_word);
     if header.tag() != MTag::Object {
@@ -1028,11 +1022,11 @@ fn get_function_name(ctx: &mut JSContext, func: JSValue) -> Result<JSValue, ()> 
                 ))
             };
             let bytecode_ptr =
-                value_to_ptr::<crate::function_bytecode::FunctionBytecode>(func_bytecode)
+                func_bytecode.to_ptr::<crate::function_bytecode::FunctionBytecode>()
                     .ok_or(())?;
             let bytecode = unsafe { bytecode_ptr.as_ref() };
             let name = bytecode.func_name();
-            if name == JS_NULL {
+            if name == JSValue::JS_NULL {
                 Ok(ctx.intern_string(b"").map_err(|_| ())?)
             } else {
                 Ok(name)
@@ -1057,44 +1051,44 @@ pub fn js_function_get_prototype(
     _args: &[JSValue],
 ) -> JSValue {
     if !this_val.is_ptr() {
-        if value_get_special_tag(this_val) != JS_TAG_SHORT_FUNC {
-            return JS_EXCEPTION;
+        if this_val.get_special_tag() != JSValue::JS_TAG_SHORT_FUNC {
+            return JSValue::JS_EXCEPTION;
         }
-        return JS_UNDEFINED;
+        return JSValue::JS_UNDEFINED;
     }
-    let obj_ptr = match value_to_ptr::<Object>(this_val) {
+    let obj_ptr = match this_val.to_ptr::<Object>() {
         Some(p) => p,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
     let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
     let header = ObjectHeader::from_word(header_word);
     if header.tag() != MTag::Object {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     match header.class_id() {
         c if c == JSObjectClass::Closure as u8 => {
             let obj = match ctx.alloc_object_default() {
                 Ok(o) => o,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
             let ctor_key = match ctx.intern_string(b"constructor") {
                 Ok(k) => k,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
             if define_property_value(ctx, obj, ctor_key, this_val).is_err() {
-                return JS_EXCEPTION;
+                return JSValue::JS_EXCEPTION;
             }
             let proto_key = match ctx.intern_string(b"prototype") {
                 Ok(k) => k,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
             if define_property_value(ctx, this_val, proto_key, obj).is_err() {
-                return JS_EXCEPTION;
+                return JSValue::JS_EXCEPTION;
             }
             obj
         }
-        c if c == JSObjectClass::CFunction as u8 => JS_UNDEFINED,
-        _ => JS_EXCEPTION,
+        c if c == JSObjectClass::CFunction as u8 => JSValue::JS_UNDEFINED,
+        _ => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -1104,17 +1098,17 @@ pub fn js_function_set_prototype(
     args: &[JSValue],
 ) -> JSValue {
     if !this_val.is_function() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
     let proto_key = match ctx.intern_string(b"prototype") {
         Ok(k) => k,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
-    let proto = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let proto = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     if define_property_value(ctx, this_val, proto_key, proto).is_err() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    JS_UNDEFINED
+    JSValue::JS_UNDEFINED
 }
 
 pub fn js_function_get_length_name(
@@ -1127,32 +1121,32 @@ pub fn js_function_get_length_name(
     let is_name = magic != 0;
 
     if !this_val.is_ptr() {
-        if value_get_special_tag(this_val) != JS_TAG_SHORT_FUNC {
-            return JS_EXCEPTION;
+        if this_val.get_special_tag() != JSValue::JS_TAG_SHORT_FUNC {
+            return JSValue::JS_EXCEPTION;
         }
-        let idx = value_get_special_value(this_val);
+        let idx = this_val.get_special_value();
         if idx < 0 {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         }
         let def = match ctx.c_function(idx as usize) {
             Some(d) => d,
-            None => return JS_EXCEPTION,
+            None => return JSValue::JS_EXCEPTION,
         };
         if is_name {
             ctx.intern_string(def.name_str.as_bytes())
-                .unwrap_or(JS_EXCEPTION)
+                .unwrap_or(JSValue::JS_EXCEPTION)
         } else {
-            new_short_int(def.arg_count as i32)
+            JSValue::new_short_int(def.arg_count as i32)
         }
     } else {
-        let obj_ptr = match value_to_ptr::<Object>(this_val) {
+        let obj_ptr = match this_val.to_ptr::<Object>() {
             Some(p) => p,
-            None => return JS_EXCEPTION,
+            None => return JSValue::JS_EXCEPTION,
         };
         let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
         let header = ObjectHeader::from_word(header_word);
         if header.tag() != MTag::Object {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         }
         match header.class_id() {
             c if c == JSObjectClass::Closure as u8 => {
@@ -1163,22 +1157,22 @@ pub fn js_function_get_length_name(
                         closure as *mut _,
                     ))
                 };
-                let bytecode_ptr = match value_to_ptr::<crate::function_bytecode::FunctionBytecode>(
-                    func_bytecode,
-                ) {
+                let bytecode_ptr = match func_bytecode
+                    .to_ptr::<crate::function_bytecode::FunctionBytecode>()
+                {
                     Some(p) => p,
-                    None => return JS_EXCEPTION,
+                    None => return JSValue::JS_EXCEPTION,
                 };
                 let bytecode = unsafe { bytecode_ptr.as_ref() };
                 if is_name {
                     let name = bytecode.func_name();
-                    if name == JS_NULL {
-                        ctx.intern_string(b"").unwrap_or(JS_EXCEPTION)
+                    if name == JSValue::JS_NULL {
+                        ctx.intern_string(b"").unwrap_or(JSValue::JS_EXCEPTION)
                     } else {
                         name
                     }
                 } else {
-                    new_short_int(bytecode.arg_count() as i32)
+                    JSValue::new_short_int(bytecode.arg_count() as i32)
                 }
             }
             c if c == JSObjectClass::CFunction as u8 => {
@@ -1189,16 +1183,16 @@ pub fn js_function_get_length_name(
                 let idx = data.idx();
                 let def = match ctx.c_function(idx as usize) {
                     Some(d) => d,
-                    None => return JS_EXCEPTION,
+                    None => return JSValue::JS_EXCEPTION,
                 };
                 if is_name {
                     ctx.intern_string(def.name_str.as_bytes())
-                        .unwrap_or(JS_EXCEPTION)
+                        .unwrap_or(JSValue::JS_EXCEPTION)
                 } else {
-                    new_short_int(def.arg_count as i32)
+                    JSValue::new_short_int(def.arg_count as i32)
                 }
             }
-            _ => JS_EXCEPTION,
+            _ => JSValue::JS_EXCEPTION,
         }
     }
 }
@@ -1212,7 +1206,7 @@ pub fn js_function_constructor(
     // For now, return an exception since dynamic function compilation
     // requires the parser and JS_Eval which will be implemented in phase 5
     let _ = (ctx, args);
-    JS_EXCEPTION
+    JSValue::JS_EXCEPTION
 }
 
 // ---------------------------------------------------------------------------
@@ -1225,11 +1219,11 @@ pub fn js_string_constructor(
     args: &[JSValue],
 ) -> JSValue {
     if args.is_empty() {
-        ctx.intern_string(b"").unwrap_or(JS_EXCEPTION)
+        ctx.intern_string(b"").unwrap_or(JSValue::JS_EXCEPTION)
     } else {
         match conversion::to_string(ctx, args[0]) {
             Ok(s) => s,
-            Err(_) => JS_EXCEPTION,
+            Err(_) => JSValue::JS_EXCEPTION,
         }
     }
 }
@@ -1241,10 +1235,10 @@ pub fn js_string_get_length(
 ) -> JSValue {
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let len = ctx.string_len(s);
-    new_short_int(len as i32)
+    JSValue::new_short_int(len as i32)
 }
 
 pub fn js_string_set_length(
@@ -1252,7 +1246,7 @@ pub fn js_string_set_length(
     _this_val: JSValue,
     _args: &[JSValue],
 ) -> JSValue {
-    JS_UNDEFINED // string length is read-only
+    JSValue::JS_UNDEFINED // string length is read-only
 }
 
 pub fn js_string_charAt(
@@ -1263,11 +1257,11 @@ pub fn js_string_charAt(
 ) -> JSValue {
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
-    let idx = match to_int32_with_ctx(ctx, args.first().copied().unwrap_or(JS_UNDEFINED)) {
+    let idx = match to_int32_with_ctx(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED)) {
         Ok(i) => i,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     if idx < 0 {
         return char_at_undefined(ctx, magic);
@@ -1277,8 +1271,8 @@ pub fn js_string_charAt(
         return char_at_undefined(ctx, magic);
     }
     match magic {
-        MAGIC_CHAR_CODE_AT | MAGIC_CODEPOINT_AT => new_short_int(c),
-        _ => ctx.new_string_char(c as u32).unwrap_or(JS_EXCEPTION),
+        MAGIC_CHAR_CODE_AT | MAGIC_CODEPOINT_AT => JSValue::new_short_int(c),
+        _ => ctx.new_string_char(c as u32).unwrap_or(JSValue::JS_EXCEPTION),
     }
 }
 
@@ -1288,9 +1282,9 @@ const MAGIC_CODEPOINT_AT: i32 = 2;
 
 fn char_at_undefined(ctx: &mut JSContext, magic: i32) -> JSValue {
     match magic {
-        MAGIC_CHAR_CODE_AT => ctx.new_float64(f64::NAN).unwrap_or(JS_EXCEPTION),
-        MAGIC_CHAR_AT => ctx.intern_string(b"").unwrap_or(JS_EXCEPTION),
-        _ => JS_UNDEFINED,
+        MAGIC_CHAR_CODE_AT => ctx.new_float64(f64::NAN).unwrap_or(JSValue::JS_EXCEPTION),
+        MAGIC_CHAR_AT => ctx.intern_string(b"").unwrap_or(JSValue::JS_EXCEPTION),
+        _ => JSValue::JS_UNDEFINED,
     }
 }
 
@@ -1301,24 +1295,24 @@ pub fn js_string_slice(
 ) -> JSValue {
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let len = ctx.string_len(s) as i32;
-    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JS_UNDEFINED), len) {
+    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED), len) {
         Ok(i) => i,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let end = if args.len() > 1 && !args[1].is_undefined() {
         match to_int32_clamp_neg(ctx, args[1], len) {
             Ok(i) => i,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     } else {
         len
     };
     let end = end.max(start);
     ctx.sub_string(s, start as u32, end as u32)
-        .unwrap_or(JS_EXCEPTION)
+        .unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_string_substring(
@@ -1328,24 +1322,24 @@ pub fn js_string_substring(
 ) -> JSValue {
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let len = ctx.string_len(s) as i32;
-    let a = match to_int32_clamp(ctx, args.first().copied().unwrap_or(JS_UNDEFINED), 0, len) {
+    let a = match to_int32_clamp(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED), 0, len) {
         Ok(i) => i,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let b = if args.len() > 1 && !args[1].is_undefined() {
         match to_int32_clamp(ctx, args[1], 0, len) {
             Ok(i) => i,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     } else {
         len
     };
     let (start, end) = if a < b { (a, b) } else { (b, a) };
     ctx.sub_string(s, start as u32, end as u32)
-        .unwrap_or(JS_EXCEPTION)
+        .unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_string_concat(
@@ -1360,19 +1354,19 @@ pub fn js_string_concat(
                 .map(|v| v.bytes().to_vec())
                 .unwrap_or_default()
         }
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     for arg in args {
         let s = match conversion::to_string(ctx, *arg) {
             Ok(s) => s,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
         let mut scratch = [0u8; 5];
         if let Some(view) = string_view(s, &mut scratch) {
             result.extend_from_slice(view.bytes());
         }
     }
-    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+    ctx.new_string_len(&result).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_string_indexOf(
@@ -1384,11 +1378,11 @@ pub fn js_string_indexOf(
     let last_index_of = magic != 0;
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
-    let needle = match conversion::to_string(ctx, args.first().copied().unwrap_or(JS_UNDEFINED)) {
+    let needle = match conversion::to_string(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED)) {
         Ok(n) => n,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let len = ctx.string_len(s) as i32;
     let v_len = ctx.string_len(needle) as i32;
@@ -1411,7 +1405,7 @@ pub fn js_string_indexOf(
         if args.len() > 1 {
             match to_int32_clamp(ctx, args[1], 0, len) {
                 Ok(p) => p,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             }
         } else {
             default_pos
@@ -1419,7 +1413,7 @@ pub fn js_string_indexOf(
     };
 
     let result = string_index_of(ctx, s, needle, pos, len, v_len, last_index_of);
-    new_short_int(result)
+    JSValue::new_short_int(result)
 }
 
 fn string_index_of(
@@ -1471,7 +1465,7 @@ fn is_regexp_object(val: JSValue) -> bool {
     if !val.is_ptr() {
         return false;
     }
-    let Some(obj_ptr) = value_to_ptr::<Object>(val) else {
+    let Some(obj_ptr) = val.to_ptr::<Object>() else {
         return false;
     };
     let header_word = unsafe {
@@ -1483,7 +1477,7 @@ fn is_regexp_object(val: JSValue) -> bool {
 }
 
 fn regexp_object_ptr(val: JSValue) -> Result<NonNull<Object>, RegExpError> {
-    let ptr = value_to_ptr::<Object>(val).ok_or(RegExpError::TypeError("not a regular expression"))?;
+    let ptr = val.to_ptr::<Object>().ok_or(RegExpError::TypeError("not a regular expression"))?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable object header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -1510,7 +1504,7 @@ fn regexp_flags(val: JSValue) -> Result<u32, RegExpError> {
         // SAFETY: re_ptr points to a valid RegExp with a byte_code slot.
         ptr::read_unaligned(RegExp::byte_code_ptr(re_ptr))
     };
-    let byte_ptr = value_to_ptr::<u8>(byte_code).ok_or(RegExpError::InvalidValue("byte array"))?;
+    let byte_ptr = byte_code.to_ptr::<u8>().ok_or(RegExpError::InvalidValue("byte array"))?;
     let header_word = unsafe {
         // SAFETY: byte_ptr points to a readable memblock header.
         ptr::read_unaligned(byte_ptr.as_ptr().cast::<JSWord>())
@@ -1565,7 +1559,7 @@ fn regexp_source(val: JSValue) -> Result<JSValue, RegExpError> {
 fn handle_regexp_error(ctx: &mut JSContext, err: RegExpError) -> JSValue {
     match err {
         RegExpError::TypeError(msg) => ctx.throw_type_error(msg),
-        _ => JS_EXCEPTION,
+        _ => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -1593,10 +1587,10 @@ pub fn js_regexp_constructor(
     use crate::parser::regexp_flags::parse_regexp_flags;
 
     // Convert pattern to string
-    let pattern_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let pattern_arg = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let pattern = match to_string(ctx, pattern_arg) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     // Get pattern bytes
@@ -1607,13 +1601,13 @@ pub fn js_regexp_constructor(
     };
 
     // Parse flags if provided
-    let flags_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+    let flags_arg = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
     let re_flags = if flags_arg.is_undefined() {
         0u32
     } else {
         let flags_str = match to_string(ctx, flags_arg) {
             Ok(s) => s,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
         let mut scratch2 = [0u8; 5];
         let flags_bytes = match string_view(flags_str, &mut scratch2) {
@@ -1637,13 +1631,13 @@ pub fn js_regexp_constructor(
     // Allocate bytecode array
     let bytecode_val = match ctx.alloc_byte_array(bytecode.bytes()) {
         Ok(val) => val,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     // Create the RegExp object
     match ctx.alloc_regexp(pattern, bytecode_val, 0) {
         Ok(obj) => obj,
-        Err(_) => JS_EXCEPTION,
+        Err(_) => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -1654,8 +1648,8 @@ pub fn js_regexp_get_lastIndex(
     _args: &[JSValue],
 ) -> JSValue {
     match regexp_last_index(this_val) {
-        Ok(idx) => new_short_int(idx),
-        Err(_) => JS_EXCEPTION,
+        Ok(idx) => JSValue::new_short_int(idx),
+        Err(_) => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -1665,7 +1659,7 @@ pub fn js_regexp_set_lastIndex(
     this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let arg = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let last_index = match to_number(arg) {
         v if v.is_nan() => 0,
         v => v as i32,
@@ -1673,7 +1667,7 @@ pub fn js_regexp_set_lastIndex(
     if let Err(err) = regexp_set_last_index(this_val, last_index) {
         return handle_regexp_error(ctx, err);
     }
-    JS_UNDEFINED
+    JSValue::JS_UNDEFINED
 }
 
 /// RegExp.prototype.source getter
@@ -1699,7 +1693,7 @@ pub fn js_regexp_get_flags(
         Err(err) => return handle_regexp_error(ctx, err),
     };
     let flags_str = regexp_flags_str(flags);
-    ctx.new_string_len(&flags_str).unwrap_or(JS_EXCEPTION)
+    ctx.new_string_len(&flags_str).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 /// RegExp.prototype.exec (magic=0) and RegExp.prototype.test (magic=1)
@@ -1709,7 +1703,7 @@ pub fn js_regexp_exec(
     args: &[JSValue],
     magic: i32,
 ) -> JSValue {
-    let arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let arg = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let mode = if magic == 1 {
         RegExpExecMode::Test
     } else {
@@ -1730,7 +1724,7 @@ pub fn js_string_toLowerCase(
     let to_lower = magic == 0;
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let len = ctx.string_len(s);
     let mut result = Vec::with_capacity(len as usize);
@@ -1751,7 +1745,7 @@ pub fn js_string_toLowerCase(
         let len = crate::cutils::unicode_to_utf8(&mut buf, converted);
         result.extend_from_slice(&buf[..len]);
     }
-    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+    ctx.new_string_len(&result).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_string_trim(
@@ -1762,7 +1756,7 @@ pub fn js_string_trim(
 ) -> JSValue {
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let len = ctx.string_len(s) as i32;
     let mut start = 0i32;
@@ -1780,7 +1774,7 @@ pub fn js_string_trim(
         }
     }
     ctx.sub_string(s, start as u32, end as u32)
-        .unwrap_or(JS_EXCEPTION)
+        .unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 fn is_unicode_space(c: u32) -> bool {
@@ -1809,11 +1803,11 @@ pub fn js_string_fromCharCode(
     for arg in args {
         let c = match conversion::to_int32(ctx, *arg) {
             Ok(c) => c,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
         let codepoint = if is_from_codepoint {
             if !(0..=0x10ffff).contains(&c) {
-                return JS_EXCEPTION; // RangeError
+                return JSValue::JS_EXCEPTION; // RangeError
             }
             c as u32
         } else {
@@ -1823,7 +1817,7 @@ pub fn js_string_fromCharCode(
         let len = crate::cutils::unicode_to_utf8(&mut buf, codepoint);
         result.extend_from_slice(&buf[..len]);
     }
-    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+    ctx.new_string_len(&result).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_string_split(
@@ -1833,38 +1827,38 @@ pub fn js_string_split(
 ) -> JSValue {
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     let limit = if args.len() > 1 && !args[1].is_undefined() {
         match conversion::to_uint32(ctx, args[1]) {
             Ok(l) => l,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     } else {
         u32::MAX
     };
 
     if limit == 0 {
-        return ctx.alloc_array(0).unwrap_or(JS_EXCEPTION);
+        return ctx.alloc_array(0).unwrap_or(JSValue::JS_EXCEPTION);
     }
 
-    let sep = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let sep = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
 
     // If separator is undefined, return array with original string
     if sep.is_undefined() {
         let arr = match ctx.alloc_array(1) {
             Ok(a) => a,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
-        let _ = crate::property::set_property(ctx, arr, new_short_int(0), s);
+        let _ = crate::property::set_property(ctx, arr, JSValue::new_short_int(0), s);
         return arr;
     }
 
     let input_len = ctx.string_len(s) as i32;
     let arr = match ctx.alloc_array(0) {
         Ok(a) => a,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     if is_regexp_object(sep) {
@@ -1874,7 +1868,7 @@ pub fn js_string_split(
         };
         let index_key = match ctx.intern_string(b"index") {
             Ok(key) => key,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
 
         let mut count = 0u32;
@@ -1888,10 +1882,10 @@ pub fn js_string_split(
                 Ok(val) => val,
                 Err(err) => return handle_regexp_error(ctx, err),
             };
-            if z != JS_NULL {
+            if z != JSValue::JS_NULL {
                 return arr;
             }
-            let _ = crate::property::set_property(ctx, arr, new_short_int(0), s);
+            let _ = crate::property::set_property(ctx, arr, JSValue::new_short_int(0), s);
             let _ = ctx.array_set_length(arr, 1);
             return arr;
         }
@@ -1905,7 +1899,7 @@ pub fn js_string_split(
                 Ok(val) => val,
                 Err(err) => return handle_regexp_error(ctx, err),
             };
-            if z == JS_NULL {
+            if z == JSValue::JS_NULL {
                 if (re_flags & LRE_FLAG_STICKY) == 0 {
                     break;
                 }
@@ -1918,11 +1912,11 @@ pub fn js_string_split(
             if (re_flags & LRE_FLAG_STICKY) == 0 {
                 let idx_val = match get_property(ctx, z, index_key) {
                     Ok(v) => v,
-                    Err(_) => return JS_EXCEPTION,
+                    Err(_) => return JSValue::JS_EXCEPTION,
                 };
                 let idx = match conversion::to_int32(ctx, idx_val) {
                     Ok(v) => v,
-                    Err(_) => return JS_EXCEPTION,
+                    Err(_) => return JSValue::JS_EXCEPTION,
                 };
                 q = idx;
             }
@@ -1944,9 +1938,9 @@ pub fn js_string_split(
 
             let sub = match ctx.sub_string(s, p as u32, q as u32) {
                 Ok(sub) => sub,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
-            let _ = crate::property::set_property(ctx, arr, new_short_int(count as i32), sub);
+            let _ = crate::property::set_property(ctx, arr, JSValue::new_short_int(count as i32), sub);
             count += 1;
             let _ = ctx.array_set_length(arr, count);
             if count >= limit {
@@ -1955,17 +1949,17 @@ pub fn js_string_split(
 
             let captures_len = match get_array_info(z) {
                 Some((_, len)) => len,
-                None => return JS_EXCEPTION,
+                None => return JSValue::JS_EXCEPTION,
             };
             for i in 1..captures_len {
-                let capture = match get_property(ctx, z, new_short_int(i as i32)) {
+                let capture = match get_property(ctx, z, JSValue::new_short_int(i as i32)) {
                     Ok(val) => val,
-                    Err(_) => return JS_EXCEPTION,
+                    Err(_) => return JSValue::JS_EXCEPTION,
                 };
                 let _ = crate::property::set_property(
                     ctx,
                     arr,
-                    new_short_int(count as i32),
+                    JSValue::new_short_int(count as i32),
                     capture,
                 );
                 count += 1;
@@ -1981,23 +1975,23 @@ pub fn js_string_split(
 
         let sub = match ctx.sub_string(s, p as u32, input_len as u32) {
             Ok(sub) => sub,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
-        let _ = crate::property::set_property(ctx, arr, new_short_int(count as i32), sub);
+        let _ = crate::property::set_property(ctx, arr, JSValue::new_short_int(count as i32), sub);
         let _ = ctx.array_set_length(arr, count + 1);
         return arr;
     }
 
     let sep_str = match conversion::to_string(ctx, sep) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let sep_len = ctx.string_len(sep_str) as i32;
 
     // Empty string with non-empty separator
     if input_len == 0 {
         if sep_len != 0 {
-            let _ = crate::property::set_property(ctx, arr, new_short_int(0), s);
+            let _ = crate::property::set_property(ctx, arr, JSValue::new_short_int(0), s);
             let _ = ctx.array_set_length(arr, 1);
         }
         return arr;
@@ -2021,9 +2015,9 @@ pub fn js_string_split(
         // Add substring from p to e
         let sub = match ctx.sub_string(s, p as u32, e as u32) {
             Ok(sub) => sub,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
-        let _ = crate::property::set_property(ctx, arr, new_short_int(count as i32), sub);
+        let _ = crate::property::set_property(ctx, arr, JSValue::new_short_int(count as i32), sub);
         count += 1;
         let _ = ctx.array_set_length(arr, count);
 
@@ -2038,9 +2032,9 @@ pub fn js_string_split(
     // Add tail
     let sub = match ctx.sub_string(s, p as u32, input_len as u32) {
         Ok(sub) => sub,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
-    let _ = crate::property::set_property(ctx, arr, new_short_int(count as i32), sub);
+    let _ = crate::property::set_property(ctx, arr, JSValue::new_short_int(count as i32), sub);
     let _ = ctx.array_set_length(arr, count + 1);
 
     arr
@@ -2056,21 +2050,21 @@ pub fn js_string_replace(
 
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
-    let search_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
-    let replace_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+    let search_arg = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let replace_arg = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
     let is_regexp = is_regexp_object(search_arg);
 
     // Functional replace not supported
     if replace_arg.is_function() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     let replace = match conversion::to_string(ctx, replace_arg) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     let input_len = ctx.string_len(s) as i32;
@@ -2084,7 +2078,7 @@ pub fn js_string_replace(
         };
         let index_key = match ctx.intern_string(b"index") {
             Ok(key) => key,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
 
         let mut last_index = if (re_flags & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) == 0 {
@@ -2110,21 +2104,21 @@ pub fn js_string_replace(
                 Ok(val) => val,
                 Err(err) => return handle_regexp_error(ctx, err),
             };
-            if exec_val == JS_NULL {
+            if exec_val == JSValue::JS_NULL {
                 break;
             }
 
             let index_val = match get_property(ctx, exec_val, index_key) {
                 Ok(val) => val,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
             let start = match conversion::to_int32(ctx, index_val) {
                 Ok(val) => val,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
-            let match_val = match get_property(ctx, exec_val, new_short_int(0)) {
+            let match_val = match get_property(ctx, exec_val, JSValue::new_short_int(0)) {
                 Ok(val) => val,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
             let match_len = ctx.string_len(match_val) as i32;
             let end = start + match_len;
@@ -2133,7 +2127,7 @@ pub fn js_string_replace(
 
             let captures_len = match get_array_info(exec_val) {
                 Some((_, len)) => len,
-                None => return JS_EXCEPTION,
+                None => return JSValue::JS_EXCEPTION,
             };
             append_replacement(
                 ctx,
@@ -2164,12 +2158,12 @@ pub fn js_string_replace(
         }
 
         append_utf16_range(ctx, &mut result, s, end_of_last_match, input_len);
-        return ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION);
+        return ctx.new_string_len(&result).unwrap_or(JSValue::JS_EXCEPTION);
     }
 
     let search = match conversion::to_string(ctx, search_arg) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let search_len = ctx.string_len(search) as i32;
 
@@ -2220,7 +2214,7 @@ pub fn js_string_replace(
     // Append tail
     append_utf16_range(ctx, &mut result, s, end_of_last_match, input_len);
 
-    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+    ctx.new_string_len(&result).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_string_match(
@@ -2228,7 +2222,7 @@ pub fn js_string_match(
     this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let regexp = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let regexp = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let flags = match regexp_flags(regexp) {
         Ok(flags) => flags,
         Err(err) => return handle_regexp_error(ctx, err),
@@ -2245,29 +2239,29 @@ pub fn js_string_match(
         return handle_regexp_error(ctx, err);
     }
 
-    let mut result = JS_NULL;
+    let mut result = JSValue::JS_NULL;
     let mut count = 0u32;
     loop {
         let exec_val = match regexp_exec(ctx, regexp, this_val, RegExpExecMode::Exec) {
             Ok(val) => val,
             Err(err) => return handle_regexp_error(ctx, err),
         };
-        if exec_val == JS_NULL {
+        if exec_val == JSValue::JS_NULL {
             break;
         }
-        if result == JS_NULL {
-            result = ctx.alloc_array(1).unwrap_or(JS_EXCEPTION);
-            if result == JS_EXCEPTION {
-                return JS_EXCEPTION;
+        if result == JSValue::JS_NULL {
+            result = ctx.alloc_array(1).unwrap_or(JSValue::JS_EXCEPTION);
+            if result == JSValue::JS_EXCEPTION {
+                return JSValue::JS_EXCEPTION;
             }
         }
-        let capture = match get_property(ctx, exec_val, new_short_int(0)) {
+        let capture = match get_property(ctx, exec_val, JSValue::new_short_int(0)) {
             Ok(val) => val,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
-        if crate::property::set_property(ctx, result, new_short_int(count as i32), capture).is_err()
+        if crate::property::set_property(ctx, result, JSValue::new_short_int(count as i32), capture).is_err()
         {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         }
         count += 1;
         let _ = ctx.array_set_length(result, count);
@@ -2281,7 +2275,7 @@ pub fn js_string_search(
     this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let regexp = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let regexp = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     match regexp_exec(ctx, regexp, this_val, RegExpExecMode::Search) {
         Ok(val) => val,
         Err(err) => handle_regexp_error(ctx, err),
@@ -2374,7 +2368,7 @@ fn append_replacement(
                 let mut replaced = false;
                 if let Some((captures_val, captures_len)) = captures
                     && k >= 1 && k < captures_len {
-                        if let Ok(cap) = get_property(ctx, captures_val, new_short_int(k as i32))
+                        if let Ok(cap) = get_property(ctx, captures_val, JSValue::new_short_int(k as i32))
                             && !cap.is_undefined() {
                                 let _ = append_string_bytes(result, cap);
                             }
@@ -2408,7 +2402,7 @@ fn to_string_check_object(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, 
 
 fn to_int32_with_ctx(ctx: &mut JSContext, val: JSValue) -> Result<i32, ()> {
     if val.is_int() {
-        return Ok(value_get_int(val));
+        return Ok(val.get_int());
     }
     let n = conversion::to_number(ctx, val).map_err(|_| ())?;
     if n.is_nan() {
@@ -2446,10 +2440,10 @@ pub fn js_array_constructor(
     let (len, has_init) = if args.len() == 1 && args[0].is_number() {
         let len = match conversion::to_int32(ctx, args[0]) {
             Ok(l) => l,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
         if len < 0 {
-            return JS_EXCEPTION; // RangeError
+            return JSValue::JS_EXCEPTION; // RangeError
         }
         (len as usize, false)
     } else {
@@ -2458,13 +2452,13 @@ pub fn js_array_constructor(
 
     let arr = match ctx.alloc_array(len) {
         Ok(a) => a,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     if has_init && !args.is_empty() {
         for (i, arg) in args.iter().enumerate() {
-            if crate::property::set_property(ctx, arr, new_short_int(i as i32), *arg).is_err() {
-                return JS_EXCEPTION;
+            if crate::property::set_property(ctx, arr, JSValue::new_short_int(i as i32), *arg).is_err() {
+                return JSValue::JS_EXCEPTION;
             }
         }
     }
@@ -2477,10 +2471,10 @@ pub fn js_array_get_length(
     _args: &[JSValue],
 ) -> JSValue {
     match get_array_info(this_val) {
-        Some((_, len)) => new_short_int(len as i32),
+        Some((_, len)) => JSValue::new_short_int(len as i32),
         None => {
             let _ = ctx;
-            JS_EXCEPTION
+            JSValue::JS_EXCEPTION
         }
     }
 }
@@ -2491,16 +2485,16 @@ pub fn js_array_set_length(
     args: &[JSValue],
 ) -> JSValue {
     if get_array_info(this_val).is_none() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    let new_len = match conversion::to_int32(ctx, args.first().copied().unwrap_or(JS_UNDEFINED)) {
+    let new_len = match conversion::to_int32(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED)) {
         Ok(l) if l >= 0 => l as u32,
-        _ => return JS_EXCEPTION,
+        _ => return JSValue::JS_EXCEPTION,
     };
     if ctx.array_set_length(this_val, new_len).is_err() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
-    JS_UNDEFINED
+    JSValue::JS_UNDEFINED
 }
 
 pub fn js_array_push(
@@ -2512,42 +2506,42 @@ pub fn js_array_push(
     let is_unshift = magic != 0;
     let (tab, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     let new_len = len as usize + args.len();
-    if new_len > crate::jsvalue::JS_SHORTINT_MAX as usize {
-        return JS_EXCEPTION;
+    if new_len > JSValue::JS_SHORTINT_MAX as usize {
+        return JSValue::JS_EXCEPTION;
     }
 
     // Resize array
     if ctx.array_resize(this_val, new_len).is_err() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     // Get updated array info
     let (_, _) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     // If unshift, move existing elements first
-    if is_unshift && !args.is_empty() && tab != JS_NULL && len > 0 {
+    if is_unshift && !args.is_empty() && tab != JSValue::JS_NULL && len > 0 {
         // Move elements to make room at the beginning
         for i in (0..len).rev() {
-            let val = match crate::property::get_property(ctx, this_val, new_short_int(i as i32)) {
+            let val = match crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32)) {
                 Ok(v) => v,
-                Err(_) => JS_UNDEFINED,
+                Err(_) => JSValue::JS_UNDEFINED,
             };
             if crate::property::set_property(
                 ctx,
                 this_val,
-                new_short_int((i + args.len() as u32) as i32),
+                JSValue::new_short_int((i + args.len() as u32) as i32),
                 val,
             )
             .is_err()
             {
-                return JS_EXCEPTION;
+                return JSValue::JS_EXCEPTION;
             }
         }
     }
@@ -2555,14 +2549,14 @@ pub fn js_array_push(
     // Insert new elements
     let start = if is_unshift { 0 } else { len as usize };
     for (i, arg) in args.iter().enumerate() {
-        if crate::property::set_property(ctx, this_val, new_short_int((start + i) as i32), *arg)
+        if crate::property::set_property(ctx, this_val, JSValue::new_short_int((start + i) as i32), *arg)
             .is_err()
         {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         }
     }
 
-    new_short_int(new_len as i32)
+    JSValue::new_short_int(new_len as i32)
 }
 
 pub fn js_array_pop(
@@ -2572,20 +2566,20 @@ pub fn js_array_pop(
 ) -> JSValue {
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     if len == 0 {
-        return JS_UNDEFINED;
+        return JSValue::JS_UNDEFINED;
     }
 
-    let ret = match crate::property::get_property(ctx, this_val, new_short_int((len - 1) as i32)) {
+    let ret = match crate::property::get_property(ctx, this_val, JSValue::new_short_int((len - 1) as i32)) {
         Ok(v) => v,
-        Err(_) => JS_UNDEFINED,
+        Err(_) => JSValue::JS_UNDEFINED,
     };
 
     if ctx.array_set_length(this_val, len - 1).is_err() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     ret
@@ -2598,33 +2592,33 @@ pub fn js_array_shift(
 ) -> JSValue {
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     if len == 0 {
-        return JS_UNDEFINED;
+        return JSValue::JS_UNDEFINED;
     }
 
     // Get first element
-    let ret = match crate::property::get_property(ctx, this_val, new_short_int(0)) {
+    let ret = match crate::property::get_property(ctx, this_val, JSValue::new_short_int(0)) {
         Ok(v) => v,
-        Err(_) => JS_UNDEFINED,
+        Err(_) => JSValue::JS_UNDEFINED,
     };
 
     // Shift elements down
     for i in 1..len {
-        let val = match crate::property::get_property(ctx, this_val, new_short_int(i as i32)) {
+        let val = match crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32)) {
             Ok(v) => v,
-            Err(_) => JS_UNDEFINED,
+            Err(_) => JSValue::JS_UNDEFINED,
         };
-        if crate::property::set_property(ctx, this_val, new_short_int((i - 1) as i32), val).is_err()
+        if crate::property::set_property(ctx, this_val, JSValue::new_short_int((i - 1) as i32), val).is_err()
         {
-            return JS_EXCEPTION;
+            return JSValue::JS_EXCEPTION;
         }
     }
 
     if ctx.array_set_length(this_val, len - 1).is_err() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     ret
@@ -2636,7 +2630,7 @@ pub fn js_array_join(
     args: &[JSValue],
 ) -> JSValue {
     if !this_val.is_object() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     let len = match get_array_info(this_val) {
@@ -2645,12 +2639,12 @@ pub fn js_array_join(
             // Try to get length property for generic objects
             let length_key = match ctx.intern_string(b"length") {
                 Ok(k) => k,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
             match crate::property::get_property(ctx, this_val, length_key) {
                 Ok(v) => match conversion::to_uint32(ctx, v) {
                     Ok(l) => l,
-                    Err(_) => return JS_EXCEPTION,
+                    Err(_) => return JSValue::JS_EXCEPTION,
                 },
                 Err(_) => 0,
             }
@@ -2660,12 +2654,12 @@ pub fn js_array_join(
     let sep = if !args.is_empty() && !args[0].is_undefined() {
         match conversion::to_string(ctx, args[0]) {
             Ok(s) => s,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     } else {
         match ctx.new_string_char(b',' as u32) {
             Ok(s) => s,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     };
 
@@ -2679,9 +2673,9 @@ pub fn js_array_join(
         if i > 0 {
             result.extend_from_slice(&sep_bytes);
         }
-        let val = match crate::property::get_property(ctx, this_val, new_short_int(i as i32)) {
+        let val = match crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32)) {
             Ok(v) => v,
-            Err(_) => JS_UNDEFINED,
+            Err(_) => JSValue::JS_UNDEFINED,
         };
         if !val.is_undefined() && !val.is_null() {
             let s = match conversion::to_string(ctx, val) {
@@ -2695,7 +2689,7 @@ pub fn js_array_join(
         }
     }
 
-    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+    ctx.new_string_len(&result).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_array_toString(
@@ -2711,9 +2705,9 @@ pub fn js_array_isArray(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let is_array = get_array_info(val).is_some();
-    new_bool(is_array as i32)
+    JSValue::new_bool(is_array as i32)
 }
 
 pub fn js_array_reverse(
@@ -2723,18 +2717,18 @@ pub fn js_array_reverse(
 ) -> JSValue {
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     let mut i = 0u32;
     let mut j = len.saturating_sub(1);
     while i < j {
-        let val_i = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
-            .unwrap_or(JS_UNDEFINED);
-        let val_j = crate::property::get_property(ctx, this_val, new_short_int(j as i32))
-            .unwrap_or(JS_UNDEFINED);
-        let _ = crate::property::set_property(ctx, this_val, new_short_int(i as i32), val_j);
-        let _ = crate::property::set_property(ctx, this_val, new_short_int(j as i32), val_i);
+        let val_i = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32))
+            .unwrap_or(JSValue::JS_UNDEFINED);
+        let val_j = crate::property::get_property(ctx, this_val, JSValue::new_short_int(j as i32))
+            .unwrap_or(JSValue::JS_UNDEFINED);
+        let _ = crate::property::set_property(ctx, this_val, JSValue::new_short_int(i as i32), val_j);
+        let _ = crate::property::set_property(ctx, this_val, JSValue::new_short_int(j as i32), val_i);
         i += 1;
         j = j.saturating_sub(1);
     }
@@ -2749,7 +2743,7 @@ pub fn js_array_concat(
 ) -> JSValue {
     let (_, this_len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     // Calculate total length
@@ -2762,22 +2756,22 @@ pub fn js_array_concat(
         }
     }
 
-    if total_len > crate::jsvalue::JS_SHORTINT_MAX as usize {
-        return JS_EXCEPTION;
+    if total_len > JSValue::JS_SHORTINT_MAX as usize {
+        return JSValue::JS_EXCEPTION;
     }
 
     let result = match ctx.alloc_array(total_len) {
         Ok(a) => a,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     let mut pos = 0usize;
 
     // Copy this array elements
     for i in 0..this_len {
-        let val = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
-            .unwrap_or(JS_UNDEFINED);
-        let _ = crate::property::set_property(ctx, result, new_short_int(pos as i32), val);
+        let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32))
+            .unwrap_or(JSValue::JS_UNDEFINED);
+        let _ = crate::property::set_property(ctx, result, JSValue::new_short_int(pos as i32), val);
         pos += 1;
     }
 
@@ -2785,13 +2779,13 @@ pub fn js_array_concat(
     for arg in args {
         if let Some((_, len)) = get_array_info(*arg) {
             for i in 0..len {
-                let val = crate::property::get_property(ctx, *arg, new_short_int(i as i32))
-                    .unwrap_or(JS_UNDEFINED);
-                let _ = crate::property::set_property(ctx, result, new_short_int(pos as i32), val);
+                let val = crate::property::get_property(ctx, *arg, JSValue::new_short_int(i as i32))
+                    .unwrap_or(JSValue::JS_UNDEFINED);
+                let _ = crate::property::set_property(ctx, result, JSValue::new_short_int(pos as i32), val);
                 pos += 1;
             }
         } else {
-            let _ = crate::property::set_property(ctx, result, new_short_int(pos as i32), *arg);
+            let _ = crate::property::set_property(ctx, result, JSValue::new_short_int(pos as i32), *arg);
             pos += 1;
         }
     }
@@ -2808,18 +2802,18 @@ pub fn js_array_indexOf(
     let is_last_index_of = magic != 0;
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     if len == 0 {
-        return new_short_int(-1);
+        return JSValue::new_short_int(-1);
     }
 
-    let search_element = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let search_element = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     let start = if args.len() > 1 {
         match to_int32_clamp(ctx, args[1], 0, len as i32) {
             Ok(n) => n,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     } else if is_last_index_of {
         len as i32 - 1
@@ -2830,28 +2824,28 @@ pub fn js_array_indexOf(
     if is_last_index_of {
         let start = start.min(len as i32 - 1);
         for i in (0..=start).rev() {
-            let val = crate::property::get_property(ctx, this_val, new_short_int(i))
-                .unwrap_or(JS_UNDEFINED);
+            let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i))
+                .unwrap_or(JSValue::JS_UNDEFINED);
             if strict_eq(val, search_element) {
-                return new_short_int(i);
+                return JSValue::new_short_int(i);
             }
         }
     } else {
         for i in start..len as i32 {
-            let val = crate::property::get_property(ctx, this_val, new_short_int(i))
-                .unwrap_or(JS_UNDEFINED);
+            let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i))
+                .unwrap_or(JSValue::JS_UNDEFINED);
             if strict_eq(val, search_element) {
-                return new_short_int(i);
+                return JSValue::new_short_int(i);
             }
         }
     }
 
-    new_short_int(-1)
+    JSValue::new_short_int(-1)
 }
 
 fn strict_eq(a: JSValue, b: JSValue) -> bool {
     // Simple strict equality check
-    crate::jsvalue::raw_bits(a) == crate::jsvalue::raw_bits(b)
+    a.raw_bits() == b.raw_bits()
 }
 
 pub fn js_array_slice(
@@ -2861,18 +2855,18 @@ pub fn js_array_slice(
 ) -> JSValue {
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
-    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JS_UNDEFINED), len as i32) {
+    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED), len as i32) {
         Ok(n) => n as u32,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     let end = if args.len() > 1 && !args[1].is_undefined() {
         match to_int32_clamp_neg(ctx, args[1], len as i32) {
             Ok(n) => n as u32,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     } else {
         len
@@ -2883,13 +2877,13 @@ pub fn js_array_slice(
 
     let result = match ctx.alloc_array(slice_len as usize) {
         Ok(a) => a,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     for i in start..end {
-        let val = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
-            .unwrap_or(JS_UNDEFINED);
-        let _ = crate::property::set_property(ctx, result, new_short_int((i - start) as i32), val);
+        let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32))
+            .unwrap_or(JSValue::JS_UNDEFINED);
+        let _ = crate::property::set_property(ctx, result, JSValue::new_short_int((i - start) as i32), val);
     }
 
     result
@@ -2902,13 +2896,13 @@ pub fn js_array_splice(
 ) -> JSValue {
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     let len_i32 = len as i32;
-    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JS_UNDEFINED), len_i32) {
+    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED), len_i32) {
         Ok(n) => n as u32,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     let (del_count, item_count) = if args.is_empty() {
@@ -2918,7 +2912,7 @@ pub fn js_array_splice(
     } else {
         let del = match to_int32_clamp(ctx, args[1], 0, (len - start) as i32) {
             Ok(n) => n as u32,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
         (del, args.len().saturating_sub(2))
     };
@@ -2928,14 +2922,14 @@ pub fn js_array_splice(
     // Create result array with deleted elements
     let result = match ctx.alloc_array(del_count as usize) {
         Ok(a) => a,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     // Copy deleted elements to result
     for i in 0..del_count {
-        let val = crate::property::get_property(ctx, this_val, new_short_int((start + i) as i32))
-            .unwrap_or(JS_UNDEFINED);
-        let _ = crate::property::set_property(ctx, result, new_short_int(i as i32), val);
+        let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int((start + i) as i32))
+            .unwrap_or(JSValue::JS_UNDEFINED);
+        let _ = crate::property::set_property(ctx, result, JSValue::new_short_int(i as i32), val);
     }
 
     // Shift elements if needed
@@ -2944,12 +2938,12 @@ pub fn js_array_splice(
             // Shift left
             let shift = del_count as usize - item_count;
             for i in (start + del_count) as usize..len as usize {
-                let val = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
-                    .unwrap_or(JS_UNDEFINED);
+                let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32))
+                    .unwrap_or(JSValue::JS_UNDEFINED);
                 let _ = crate::property::set_property(
                     ctx,
                     this_val,
-                    new_short_int((i - shift) as i32),
+                    JSValue::new_short_int((i - shift) as i32),
                     val,
                 );
             }
@@ -2957,12 +2951,12 @@ pub fn js_array_splice(
             // Shift right
             let shift = item_count - del_count as usize;
             for i in ((start + del_count) as usize..len as usize).rev() {
-                let val = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
-                    .unwrap_or(JS_UNDEFINED);
+                let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32))
+                    .unwrap_or(JSValue::JS_UNDEFINED);
                 let _ = crate::property::set_property(
                     ctx,
                     this_val,
-                    new_short_int((i + shift) as i32),
+                    JSValue::new_short_int((i + shift) as i32),
                     val,
                 );
             }
@@ -2974,14 +2968,14 @@ pub fn js_array_splice(
         let _ = crate::property::set_property(
             ctx,
             this_val,
-            new_short_int((start as usize + i) as i32),
+            JSValue::new_short_int((start as usize + i) as i32),
             *arg,
         );
     }
 
     // Update array length
     if ctx.array_set_length(this_val, new_len as u32).is_err() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     result
@@ -3002,65 +2996,65 @@ pub fn js_array_every(
 ) -> JSValue {
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
-    let func = args.first().copied().unwrap_or(JS_UNDEFINED);
-    let this_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+    let func = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let this_arg = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
 
     if !func.is_function() {
-        return JS_EXCEPTION; // TypeError: not a function
+        return JSValue::JS_EXCEPTION; // TypeError: not a function
     }
 
     // Initialize return value based on magic
     let ret = match magic {
-        JS_SPECIAL_EVERY => new_bool(1),
-        JS_SPECIAL_SOME => new_bool(0),
+        JS_SPECIAL_EVERY => JSValue::new_bool(1),
+        JS_SPECIAL_SOME => JSValue::new_bool(0),
         JS_SPECIAL_MAP => match ctx.alloc_array(len as usize) {
             Ok(a) => a,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         },
         JS_SPECIAL_FILTER => match ctx.alloc_array(0) {
             Ok(a) => a,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         },
-        _ => JS_UNDEFINED, // forEach
+        _ => JSValue::JS_UNDEFINED, // forEach
     };
 
     let mut n = 0u32; // for filter
 
     for k in 0..len {
         // Get current element
-        let val = match crate::property::get_property(ctx, this_val, new_short_int(k as i32)) {
+        let val = match crate::property::get_property(ctx, this_val, JSValue::new_short_int(k as i32)) {
             Ok(v) => v,
-            Err(_) => JS_UNDEFINED,
+            Err(_) => JSValue::JS_UNDEFINED,
         };
 
         // Call callback: func(val, k, this_val)
-        let call_args = [val, new_short_int(k as i32), this_val];
+        let call_args = [val, JSValue::new_short_int(k as i32), this_val];
         let res = match crate::interpreter::call_with_this(ctx, func, this_arg, &call_args) {
             Ok(r) => r,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
 
         // Process result based on magic
         match magic {
             JS_SPECIAL_EVERY => {
                 if !to_bool(res) {
-                    return new_bool(0);
+                    return JSValue::new_bool(0);
                 }
             }
             JS_SPECIAL_SOME => {
                 if to_bool(res) {
-                    return new_bool(1);
+                    return JSValue::new_bool(1);
                 }
             }
             JS_SPECIAL_MAP => {
-                let _ = crate::property::set_property(ctx, ret, new_short_int(k as i32), res);
+                let _ = crate::property::set_property(ctx, ret, JSValue::new_short_int(k as i32), res);
             }
             JS_SPECIAL_FILTER => {
                 if to_bool(res) {
-                    let _ = crate::property::set_property(ctx, ret, new_short_int(n as i32), val);
+                    let _ = crate::property::set_property(ctx, ret, JSValue::new_short_int(n as i32), val);
                     n += 1;
                     // Update array length for filter
                     let _ = ctx.array_set_length(ret, n);
@@ -3085,17 +3079,17 @@ pub fn js_array_reduce(
 ) -> JSValue {
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
-    let func = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let func = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
 
     if !func.is_function() {
-        return JS_EXCEPTION; // TypeError: not a function
+        return JSValue::JS_EXCEPTION; // TypeError: not a function
     }
 
     if len == 0 && args.len() <= 1 {
-        return JS_EXCEPTION; // TypeError: empty array with no initial value
+        return JSValue::JS_EXCEPTION; // TypeError: empty array with no initial value
     }
 
     let is_right = magic == JS_SPECIAL_REDUCE_RIGHT;
@@ -3104,8 +3098,8 @@ pub fn js_array_reduce(
         (args[1], 0u32)
     } else {
         let first_idx = if is_right { len - 1 } else { 0 };
-        let val = crate::property::get_property(ctx, this_val, new_short_int(first_idx as i32))
-            .unwrap_or(JS_UNDEFINED);
+        let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(first_idx as i32))
+            .unwrap_or(JSValue::JS_UNDEFINED);
         (val, 1)
     };
 
@@ -3116,16 +3110,16 @@ pub fn js_array_reduce(
             k
         };
 
-        let val = match crate::property::get_property(ctx, this_val, new_short_int(idx as i32)) {
+        let val = match crate::property::get_property(ctx, this_val, JSValue::new_short_int(idx as i32)) {
             Ok(v) => v,
-            Err(_) => JS_UNDEFINED,
+            Err(_) => JSValue::JS_UNDEFINED,
         };
 
         // Call callback: func(acc, val, idx, this_val)
-        let call_args = [acc, val, new_short_int(idx as i32), this_val];
-        acc = match crate::interpreter::call_with_this(ctx, func, JS_UNDEFINED, &call_args) {
+        let call_args = [acc, val, JSValue::new_short_int(idx as i32), this_val];
+        acc = match crate::interpreter::call_with_this(ctx, func, JSValue::JS_UNDEFINED, &call_args) {
             Ok(r) => r,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
     }
 
@@ -3139,7 +3133,7 @@ pub fn js_array_sort(
 ) -> JSValue {
     let (_, len) = match get_array_info(this_val) {
         Some(info) => info,
-        None => return JS_EXCEPTION,
+        None => return JSValue::JS_EXCEPTION,
     };
 
     if len <= 1 {
@@ -3151,8 +3145,8 @@ pub fn js_array_sort(
     // Build array of (value, original_index) pairs for stable sort
     let mut pairs: Vec<(JSValue, u32)> = Vec::with_capacity(len as usize);
     for i in 0..len {
-        let val = crate::property::get_property(ctx, this_val, new_short_int(i as i32))
-            .unwrap_or(JS_UNDEFINED);
+        let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32))
+            .unwrap_or(JSValue::JS_UNDEFINED);
         pairs.push((val, i));
     }
 
@@ -3167,7 +3161,7 @@ pub fn js_array_sort(
         let cmp: i32 = if let Some(func) = compare_fn {
             // Call custom comparator
             let call_args = [a.0, b.0];
-            match crate::interpreter::call_with_this(ctx, func, JS_UNDEFINED, &call_args) {
+            match crate::interpreter::call_with_this(ctx, func, JSValue::JS_UNDEFINED, &call_args) {
                 Ok(res) => {
                     let d = to_number(res);
                     if d.is_nan() {
@@ -3228,12 +3222,12 @@ pub fn js_array_sort(
     });
 
     if exception {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     // Write sorted values back
     for (i, (val, _)) in pairs.iter().enumerate() {
-        let _ = crate::property::set_property(ctx, this_val, new_short_int(i as i32), *val);
+        let _ = crate::property::set_property(ctx, this_val, JSValue::new_short_int(i as i32), *val);
     }
 
     this_val
@@ -3241,10 +3235,10 @@ pub fn js_array_sort(
 
 fn to_bool(val: JSValue) -> bool {
     if val.is_int() {
-        return value_get_int(val) != 0;
+        return val.get_int() != 0;
     }
     if val.is_bool() {
-        return value_get_special_value(val) != 0;
+        return val.get_special_value() != 0;
     }
     if val.is_undefined() || val.is_null() {
         return false;
@@ -3259,7 +3253,7 @@ fn get_array_info(val: JSValue) -> Option<(JSValue, u32)> {
     if !val.is_ptr() {
         return None;
     }
-    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let obj_ptr = val.to_ptr::<Object>()?;
     let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
     let header = ObjectHeader::from_word(header_word);
     if header.tag() != MTag::Object || header.class_id() != JSObjectClass::Array as u8 {
@@ -3294,24 +3288,24 @@ pub fn js_error_constructor(
     let proto = ctx.class_proto()[class_id as usize];
     let obj = match ctx.alloc_error(proto) {
         Ok(o) => o,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     // Set message
     let message = if !args.is_empty() && !args[0].is_undefined() {
         match conversion::to_string(ctx, args[0]) {
             Ok(s) => s,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     } else {
         match ctx.intern_string(b"") {
             Ok(s) => s,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     };
 
     if ctx.set_error_message(obj, message).is_err() {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     }
 
     let _ = ctx.build_backtrace(obj, None, 1);
@@ -3331,23 +3325,23 @@ pub fn js_error_toString(
     // Get name property
     let name_key = match ctx.intern_string(b"name") {
         Ok(k) => k,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     let name = match crate::property::get_property(ctx, this_val, name_key) {
         Ok(v) if !v.is_undefined() => match conversion::to_string(ctx, v) {
             Ok(s) => s,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         },
         _ => match ctx.intern_string(b"Error") {
             Ok(s) => s,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         },
     };
 
     // Get message
     let message = match ctx.get_error_message(this_val) {
         Ok(m) => m,
-        Err(_) => JS_NULL,
+        Err(_) => JSValue::JS_NULL,
     };
 
     let mut name_scratch = [0u8; 5];
@@ -3379,9 +3373,9 @@ pub fn js_error_get_message(
         return ctx.throw_type_error("not an Error object");
     }
     if magic == 0 {
-        ctx.get_error_message(this_val).unwrap_or(JS_NULL)
+        ctx.get_error_message(this_val).unwrap_or(JSValue::JS_NULL)
     } else {
-        ctx.get_error_stack(this_val).unwrap_or(JS_NULL)
+        ctx.get_error_stack(this_val).unwrap_or(JSValue::JS_NULL)
     }
 }
 
@@ -3394,18 +3388,18 @@ pub fn js_json_parse(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let input = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let input = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
 
     // Convert to string
     let str_val = match conversion::to_string(ctx, input) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     // Get string bytes
     let mut scratch = [0u8; 5];
     let Some(view) = string_view(str_val, &mut scratch) else {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     };
 
     // Use the API's JSON evaluation
@@ -3417,22 +3411,22 @@ pub fn js_json_stringify(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
-    let replacer = args.get(1).copied().unwrap_or(JS_UNDEFINED);
-    let space = args.get(2).copied().unwrap_or(JS_UNDEFINED);
+    let val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let replacer = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let space = args.get(2).copied().unwrap_or(JSValue::JS_UNDEFINED);
     let mut state = match JsonStringifyState::new(ctx, replacer, space) {
         Ok(state) => state,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     let output = match state.stringify(val) {
         Ok(output) => output,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     match output {
-        Some(bytes) => ctx.new_string_len(&bytes).unwrap_or(JS_EXCEPTION),
-        None => JS_UNDEFINED,
+        Some(bytes) => ctx.new_string_len(&bytes).unwrap_or(JSValue::JS_EXCEPTION),
+        None => JSValue::JS_UNDEFINED,
     }
 }
 
@@ -3480,7 +3474,7 @@ impl<'a> JsonStringifyState<'a> {
     fn str(&mut self, key: JSValue, holder: JSValue, out: &mut Vec<u8>) -> Result<bool, ()> {
         let prop_key = conversion::to_property_key(self.ctx, key).map_err(|_| ())?;
         let mut value = get_property(self.ctx, holder, prop_key).map_err(|_| ())?;
-        if value == JS_EXCEPTION {
+        if value == JSValue::JS_EXCEPTION {
             return Err(());
         }
 
@@ -3490,7 +3484,7 @@ impl<'a> JsonStringifyState<'a> {
             if to_json.is_function() {
                 value = crate::interpreter::call_with_this(self.ctx, to_json, value, &[key])
                     .map_err(|_| ())?;
-                if value == JS_EXCEPTION {
+                if value == JSValue::JS_EXCEPTION {
                     return Err(());
                 }
             }
@@ -3502,7 +3496,7 @@ impl<'a> JsonStringifyState<'a> {
         } {
             value = crate::interpreter::call_with_this(self.ctx, func, holder, &[key, value])
                 .map_err(|_| ())?;
-            if value == JS_EXCEPTION {
+            if value == JSValue::JS_EXCEPTION {
                 return Err(());
             }
         }
@@ -3521,7 +3515,7 @@ impl<'a> JsonStringifyState<'a> {
         }
 
         if value.is_bool() {
-            if value_get_special_value(value) != 0 {
+            if value.get_special_value() != 0 {
                 out.extend_from_slice(b"true");
             } else {
                 out.extend_from_slice(b"false");
@@ -3650,7 +3644,7 @@ impl<'a> JsonStringifyState<'a> {
 
     fn check_circular(&mut self, value: JSValue) -> Result<(), ()> {
         for &entry in &self.stack {
-            if crate::jsvalue::raw_bits(entry) == crate::jsvalue::raw_bits(value) {
+            if entry.raw_bits() == value.raw_bits() {
                 let _ = self.ctx.throw_type_error("circular reference");
                 return Err(());
             }
@@ -3705,7 +3699,7 @@ fn build_json_replacer(ctx: &mut JSContext, replacer: JSValue) -> Result<Option<
     };
     let mut property_list = Vec::new();
     for i in 0..len {
-        let elem = get_property(ctx, replacer, new_short_int(i as i32)).map_err(|_| ())?;
+        let elem = get_property(ctx, replacer, JSValue::new_short_int(i as i32)).map_err(|_| ())?;
         let mut key_val = elem;
         if let Some(primitive) = boxed_primitive_value(key_val) {
             key_val = primitive;
@@ -3716,7 +3710,7 @@ fn build_json_replacer(ctx: &mut JSContext, replacer: JSValue) -> Result<Option<
         let prop_key = conversion::to_property_key(ctx, key_val).map_err(|_| ())?;
         if !property_list
             .iter()
-            .any(|existing| crate::jsvalue::raw_bits(*existing) == crate::jsvalue::raw_bits(prop_key))
+            .any(|existing: &JSValue| existing.raw_bits() == prop_key.raw_bits())
         {
             property_list.push(prop_key);
         }
@@ -3726,10 +3720,10 @@ fn build_json_replacer(ctx: &mut JSContext, replacer: JSValue) -> Result<Option<
 
 fn collect_object_keys(ctx: &mut JSContext, obj: JSValue) -> Result<Vec<JSValue>, ()> {
     let keys = object_keys(ctx, obj).map_err(|_| ())?;
-    let (_, key_count) = get_array_info(keys).unwrap_or((JS_NULL, 0));
+    let (_, key_count) = get_array_info(keys).unwrap_or((JSValue::JS_NULL, 0));
     let mut out = Vec::with_capacity(key_count as usize);
     for i in 0..key_count {
-        let key = get_property(ctx, keys, new_short_int(i as i32)).map_err(|_| ())?;
+        let key = get_property(ctx, keys, JSValue::new_short_int(i as i32)).map_err(|_| ())?;
         out.push(key);
     }
     Ok(out)
@@ -3749,17 +3743,17 @@ fn index_key_string(ctx: &mut JSContext, index: u32) -> Result<JSValue, ()> {
 
 fn number_to_f64(val: JSValue) -> Option<f64> {
     if val.is_int() {
-        return Some(f64::from(value_get_int(val)));
+        return Some(f64::from(val.get_int()));
     }
     #[cfg(target_pointer_width = "64")]
     if val.is_short_float() {
-        return Some(short_float_to_f64(val));
+        return Some(val.short_float_to_f64());
     }
     read_float64(val)
 }
 
 fn boxed_primitive_value(val: JSValue) -> Option<JSValue> {
-    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let obj_ptr = val.to_ptr::<Object>()?;
     let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
     let header = ObjectHeader::from_word(header_word);
     if header.tag() != MTag::Object || header.extra_size() < 1 {
@@ -3846,7 +3840,7 @@ fn to_index(ctx: &mut JSContext, val: JSValue) -> Result<u64, ()> {
 }
 
 fn get_array_buffer(val: JSValue) -> Option<(NonNull<Object>, ArrayBuffer)> {
-    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let obj_ptr = val.to_ptr::<Object>()?;
     let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
     let header = ObjectHeader::from_word(header_word);
     if header.tag() != MTag::Object || header.class_id() != JSObjectClass::ArrayBuffer as u8 {
@@ -3860,7 +3854,7 @@ fn get_array_buffer(val: JSValue) -> Option<(NonNull<Object>, ArrayBuffer)> {
 }
 
 fn get_byte_array_size(byte_buffer: JSValue) -> Option<u32> {
-    let ptr = value_to_ptr::<u8>(byte_buffer)?;
+    let ptr = byte_buffer.to_ptr::<u8>()?;
     let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
     let header = MbHeader::from_word(header_word);
     if header.tag() != MTag::ByteArray {
@@ -3870,7 +3864,7 @@ fn get_byte_array_size(byte_buffer: JSValue) -> Option<u32> {
 }
 
 fn get_typed_array(val: JSValue) -> Option<(NonNull<Object>, u8, TypedArray)> {
-    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let obj_ptr = val.to_ptr::<Object>()?;
     let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
     let header = ObjectHeader::from_word(header_word);
     if header.tag() != MTag::Object {
@@ -3892,11 +3886,11 @@ pub fn js_array_buffer_constructor(
     _this_val: JSValue,
     args: &[JSValue],
 ) -> JSValue {
-    let len = match to_index(ctx, args.first().copied().unwrap_or(JS_UNDEFINED)) {
+    let len = match to_index(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED)) {
         Ok(l) => l as usize,
-        Err(_) => return JS_EXCEPTION, // RangeError: invalid array buffer length
+        Err(_) => return JSValue::JS_EXCEPTION, // RangeError: invalid array buffer length
     };
-    ctx.alloc_array_buffer(len).unwrap_or(JS_EXCEPTION)
+    ctx.alloc_array_buffer(len).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 pub fn js_array_buffer_get_byteLength(
@@ -3905,12 +3899,12 @@ pub fn js_array_buffer_get_byteLength(
     _args: &[JSValue],
 ) -> JSValue {
     let Some((_, data)) = get_array_buffer(this_val) else {
-        return JS_EXCEPTION; // TypeError: expected an ArrayBuffer
+        return JSValue::JS_EXCEPTION; // TypeError: expected an ArrayBuffer
     };
     let Some(size) = get_byte_array_size(data.byte_buffer()) else {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     };
-    new_short_int(size as i32)
+    JSValue::new_short_int(size as i32)
 }
 
 pub fn js_typed_array_base_constructor(
@@ -3919,7 +3913,7 @@ pub fn js_typed_array_base_constructor(
     _args: &[JSValue],
 ) -> JSValue {
     // TypedArray base constructor cannot be called directly
-    JS_EXCEPTION
+    JSValue::JS_EXCEPTION
 }
 
 fn typed_array_constructor_from_array(
@@ -3933,7 +3927,7 @@ fn typed_array_constructor_from_array(
     } else if let Some((_, _, ta)) = get_typed_array(source) {
         ta.len()
     } else {
-        return JS_EXCEPTION;
+        return JSValue::JS_EXCEPTION;
     };
 
     // Create new TypedArray with that length
@@ -3941,22 +3935,22 @@ fn typed_array_constructor_from_array(
     let byte_len = (len as usize) << size_log2;
     let buffer = match ctx.alloc_array_buffer(byte_len) {
         Ok(b) => b,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     let typed_array = match ctx.alloc_typed_array(class_id, buffer, 0, len) {
         Ok(ta) => ta,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
 
     // Copy elements from source
     for i in 0..len {
-        let elem = match get_property(ctx, source, new_short_int(i as i32)) {
+        let elem = match get_property(ctx, source, JSValue::new_short_int(i as i32)) {
             Ok(v) => v,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
-        if crate::property::set_property(ctx, typed_array, new_short_int(i as i32), elem).is_err() {
-            return JS_EXCEPTION;
+        if crate::property::set_property(ctx, typed_array, JSValue::new_short_int(i as i32), elem).is_err() {
+            return JSValue::JS_EXCEPTION;
         }
     }
 
@@ -3974,63 +3968,63 @@ pub fn js_typed_array_constructor(
             // Safety: we've verified the range
             unsafe { core::mem::transmute::<u8, JSObjectClass>(id) }
         }
-        _ => return JS_EXCEPTION,
+        _ => return JSValue::JS_EXCEPTION,
     };
 
     let size_log2 = TYPED_ARRAY_SIZE_LOG2[(class_id as u8 - JSObjectClass::Uint8CArray as u8) as usize];
-    let arg0 = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let arg0 = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
 
     // Case 1: Not an object - treat as length
     if !arg0.is_object() {
         let len = match to_index(ctx, arg0) {
             Ok(l) => l,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
         let byte_len = (len as usize) << size_log2;
         let buffer = match ctx.alloc_array_buffer(byte_len) {
             Ok(b) => b,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
-        return ctx.alloc_typed_array(class_id, buffer, 0, len as u32).unwrap_or(JS_EXCEPTION);
+        return ctx.alloc_typed_array(class_id, buffer, 0, len as u32).unwrap_or(JSValue::JS_EXCEPTION);
     }
 
     // Case 2: ArrayBuffer argument - create view
     if let Some((_, ab_data)) = get_array_buffer(arg0) {
         let byte_length = match get_byte_array_size(ab_data.byte_buffer()) {
             Some(s) => s as u64,
-            None => return JS_EXCEPTION,
+            None => return JSValue::JS_EXCEPTION,
         };
 
-        let offset = match to_index(ctx, args.get(1).copied().unwrap_or(JS_UNDEFINED)) {
+        let offset = match to_index(ctx, args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED)) {
             Ok(o) => o,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         };
 
         // Check offset alignment and bounds
         if (offset & ((1 << size_log2) - 1)) != 0 || offset > byte_length {
-            return JS_EXCEPTION; // RangeError: invalid offset
+            return JSValue::JS_EXCEPTION; // RangeError: invalid offset
         }
 
-        let len = if args.get(2).copied().unwrap_or(JS_UNDEFINED) == JS_UNDEFINED {
+        let len = if args.get(2).copied().unwrap_or(JSValue::JS_UNDEFINED) == JSValue::JS_UNDEFINED {
             // If length not specified, use remaining buffer
             if (byte_length & ((1 << size_log2) - 1)) != 0 {
-                return JS_EXCEPTION; // RangeError: invalid length
+                return JSValue::JS_EXCEPTION; // RangeError: invalid length
             }
             (byte_length - offset) >> size_log2
         } else {
             let l = match to_index(ctx, args[2]) {
                 Ok(l) => l,
-                Err(_) => return JS_EXCEPTION,
+                Err(_) => return JSValue::JS_EXCEPTION,
             };
             if offset + (l << size_log2) > byte_length {
-                return JS_EXCEPTION; // RangeError: invalid length
+                return JSValue::JS_EXCEPTION; // RangeError: invalid length
             }
             l
         };
 
         // Offset is in elements for TypedArray struct
         let offset_elements = (offset >> size_log2) as u32;
-        return ctx.alloc_typed_array(class_id, arg0, offset_elements, len as u32).unwrap_or(JS_EXCEPTION);
+        return ctx.alloc_typed_array(class_id, arg0, offset_elements, len as u32).unwrap_or(JSValue::JS_EXCEPTION);
     }
 
     // Case 3: Array or TypedArray argument - copy elements
@@ -4038,7 +4032,7 @@ pub fn js_typed_array_constructor(
         return typed_array_constructor_from_array(ctx, arg0, class_id);
     }
 
-    JS_EXCEPTION
+    JSValue::JS_EXCEPTION
 }
 
 pub fn js_typed_array_get_length(
@@ -4048,16 +4042,16 @@ pub fn js_typed_array_get_length(
     magic: i32,
 ) -> JSValue {
     let Some((_, class_id, ta)) = get_typed_array(this_val) else {
-        return JS_EXCEPTION; // TypeError: not a TypedArray
+        return JSValue::JS_EXCEPTION; // TypeError: not a TypedArray
     };
     let size_log2 = TYPED_ARRAY_SIZE_LOG2[(class_id - JSObjectClass::Uint8CArray as u8) as usize];
     
     match magic {
-        0 => new_short_int(ta.len() as i32),                           // length
-        1 => new_short_int((ta.len() << size_log2) as i32),            // byteLength
-        2 => new_short_int((ta.offset() << size_log2) as i32),         // byteOffset
+        0 => JSValue::new_short_int(ta.len() as i32),                           // length
+        1 => JSValue::new_short_int((ta.len() << size_log2) as i32),            // byteLength
+        2 => JSValue::new_short_int((ta.offset() << size_log2) as i32),         // byteOffset
         3 => ta.buffer(),                                               // buffer
-        _ => JS_EXCEPTION,
+        _ => JSValue::JS_EXCEPTION,
     }
 }
 
@@ -4067,24 +4061,24 @@ pub fn js_typed_array_subarray(
     args: &[JSValue],
 ) -> JSValue {
     let Some((_, class_id, ta)) = get_typed_array(this_val) else {
-        return JS_EXCEPTION; // TypeError: not a TypedArray
+        return JSValue::JS_EXCEPTION; // TypeError: not a TypedArray
     };
     
     let len = ta.len() as i32;
     
     // Get start index with negative wrapping
-    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JS_UNDEFINED), len) {
+    let start = match to_int32_clamp_neg(ctx, args.first().copied().unwrap_or(JSValue::JS_UNDEFINED), len) {
         Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
+        Err(_) => return JSValue::JS_EXCEPTION,
     };
     
     // Get end index with negative wrapping
-    let end = if args.get(1).copied().unwrap_or(JS_UNDEFINED) == JS_UNDEFINED {
+    let end = if args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED) == JSValue::JS_UNDEFINED {
         len
     } else {
         match to_int32_clamp_neg(ctx, args[1], len) {
             Ok(e) => e,
-            Err(_) => return JS_EXCEPTION,
+            Err(_) => return JSValue::JS_EXCEPTION,
         }
     };
     
@@ -4096,14 +4090,14 @@ pub fn js_typed_array_subarray(
     
     // Create new TypedArray with same buffer
     let class = unsafe { core::mem::transmute::<u8, JSObjectClass>(class_id) };
-    ctx.alloc_typed_array(class, ta.buffer(), new_offset, count).unwrap_or(JS_EXCEPTION)
+    ctx.alloc_typed_array(class, ta.buffer(), new_offset, count).unwrap_or(JSValue::JS_EXCEPTION)
 }
 
 fn is_error(val: JSValue) -> bool {
     if !val.is_ptr() {
         return false;
     }
-    let obj_ptr = match value_to_ptr::<Object>(val) {
+    let obj_ptr = match val.to_ptr::<Object>() {
         Some(p) => p,
         None => return false,
     };
@@ -4120,10 +4114,6 @@ fn is_error(val: JSValue) -> bool {
 mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
-    use crate::jsvalue::{
-        new_short_int, value_get_special_value, JSWord, JS_EXCEPTION, JS_FALSE, JS_TRUE,
-        JS_UNDEFINED,
-    };
     use crate::object::{Object, ObjectHeader};
     use crate::parser::regexp::compile_regexp;
     use crate::parser::regexp_flags::LRE_FLAG_GLOBAL;
@@ -4139,7 +4129,7 @@ mod tests {
     }
 
     fn object_class_id(val: JSValue) -> u8 {
-        let obj_ptr = value_to_ptr::<Object>(val).expect("object ptr");
+        let obj_ptr = val.to_ptr::<Object>().expect("object ptr");
         let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
         ObjectHeader::from_word(header_word).class_id()
     }
@@ -4172,23 +4162,23 @@ mod tests {
         let exp = js_number_toExponential(&mut ctx, value, &[]);
         assert_eq!(string_from_value(exp), "2.5e+1");
 
-        let exp0 = js_number_toExponential(&mut ctx, value, &[new_short_int(0)]);
+        let exp0 = js_number_toExponential(&mut ctx, value, &[JSValue::new_short_int(0)]);
         assert_eq!(string_from_value(exp0), "3e+1");
 
         let neg = ctx.new_float64(-25.0).expect("number");
-        let exp_neg = js_number_toExponential(&mut ctx, neg, &[new_short_int(0)]);
+        let exp_neg = js_number_toExponential(&mut ctx, neg, &[JSValue::new_short_int(0)]);
         assert_eq!(string_from_value(exp_neg), "-3e+1");
 
         let prec_val = ctx.new_float64(2.5).unwrap();
-        let prec = js_number_toPrecision(&mut ctx, prec_val, &[new_short_int(1)]);
+        let prec = js_number_toPrecision(&mut ctx, prec_val, &[JSValue::new_short_int(1)]);
         assert_eq!(string_from_value(prec), "3");
 
         let fixed_val = ctx.new_float64(1.125).unwrap();
-        let fixed = js_number_toFixed(&mut ctx, fixed_val, &[new_short_int(2)]);
+        let fixed = js_number_toFixed(&mut ctx, fixed_val, &[JSValue::new_short_int(2)]);
         assert_eq!(string_from_value(fixed), "1.13");
 
         let fixed_neg_val = ctx.new_float64(-1e-10).unwrap();
-        let fixed_neg = js_number_toFixed(&mut ctx, fixed_neg_val, &[new_short_int(0)]);
+        let fixed_neg = js_number_toFixed(&mut ctx, fixed_neg_val, &[JSValue::new_short_int(0)]);
         assert_eq!(string_from_value(fixed_neg), "-0");
     }
 
@@ -4202,23 +4192,23 @@ mod tests {
         })
         .expect("context init");
         let val = ctx.new_string("  123r").unwrap();
-        let out = js_number_parseInt(&mut ctx, JS_UNDEFINED, &[val]);
+        let out = js_number_parseInt(&mut ctx, JSValue::JS_UNDEFINED, &[val]);
         assert_eq!(to_number(out), 123.0);
 
         let hex = ctx.new_string("0x123").unwrap();
-        let out = js_number_parseInt(&mut ctx, JS_UNDEFINED, &[hex]);
+        let out = js_number_parseInt(&mut ctx, JSValue::JS_UNDEFINED, &[hex]);
         assert_eq!(to_number(out), 0x123 as f64);
 
         let oct = ctx.new_string("0o123").unwrap();
-        let out = js_number_parseInt(&mut ctx, JS_UNDEFINED, &[oct]);
+        let out = js_number_parseInt(&mut ctx, JSValue::JS_UNDEFINED, &[oct]);
         assert_eq!(to_number(out), 0.0);
 
         let hex_float = ctx.new_string("0x1234").unwrap();
-        let out = js_number_parseFloat(&mut ctx, JS_UNDEFINED, &[hex_float]);
+        let out = js_number_parseFloat(&mut ctx, JSValue::JS_UNDEFINED, &[hex_float]);
         assert_eq!(to_number(out), 0.0);
 
         let inf = ctx.new_string("Infinity").unwrap();
-        let out = js_number_parseFloat(&mut ctx, JS_UNDEFINED, &[inf]);
+        let out = js_number_parseFloat(&mut ctx, JSValue::JS_UNDEFINED, &[inf]);
         assert!(to_number(out).is_infinite());
     }
 
@@ -4232,34 +4222,34 @@ mod tests {
         })
         .expect("context init");
 
-        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[]);
+        let out = js_boolean_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[]);
         assert!(out.is_bool());
-        assert_eq!(value_get_special_value(out), 0);
+        assert_eq!(out.get_special_value(), 0);
 
-        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[JS_TRUE]);
-        assert_eq!(value_get_special_value(out), 1);
+        let out = js_boolean_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::JS_TRUE]);
+        assert_eq!(out.get_special_value(), 1);
 
-        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[JS_FALSE]);
-        assert_eq!(value_get_special_value(out), 0);
+        let out = js_boolean_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::JS_FALSE]);
+        assert_eq!(out.get_special_value(), 0);
 
-        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[new_short_int(0)]);
-        assert_eq!(value_get_special_value(out), 0);
+        let out = js_boolean_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::new_short_int(0)]);
+        assert_eq!(out.get_special_value(), 0);
 
         let empty = ctx.new_string("").unwrap();
-        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[empty]);
-        assert_eq!(value_get_special_value(out), 0);
+        let out = js_boolean_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[empty]);
+        assert_eq!(out.get_special_value(), 0);
 
         let nonempty = ctx.new_string("0").unwrap();
-        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[nonempty]);
-        assert_eq!(value_get_special_value(out), 1);
+        let out = js_boolean_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[nonempty]);
+        assert_eq!(out.get_special_value(), 1);
 
         let nan = ctx.new_float64(f64::NAN).unwrap();
-        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[nan]);
-        assert_eq!(value_get_special_value(out), 0);
+        let out = js_boolean_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[nan]);
+        assert_eq!(out.get_special_value(), 0);
 
         let obj = ctx.alloc_object_default().unwrap();
-        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[obj]);
-        assert_eq!(value_get_special_value(out), 1);
+        let out = js_boolean_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[obj]);
+        assert_eq!(out.get_special_value(), 1);
     }
 
     #[test]
@@ -4271,21 +4261,21 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let min = js_math_min_max(&mut ctx, JS_UNDEFINED, &[new_short_int(3), new_short_int(1)], 0);
-        assert_eq!(value_get_int(min), 1);
+        let min = js_math_min_max(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::new_short_int(3), JSValue::new_short_int(1)], 0);
+        assert_eq!(min.get_int(), 1);
 
-        let max = js_math_min_max(&mut ctx, JS_UNDEFINED, &[new_short_int(3), new_short_int(1)], 1);
-        assert_eq!(value_get_int(max), 3);
+        let max = js_math_min_max(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::new_short_int(3), JSValue::new_short_int(1)], 1);
+        assert_eq!(max.get_int(), 3);
 
         let imul = js_math_imul(
             &mut ctx,
-            JS_UNDEFINED,
-            &[new_short_int(0x12345678), new_short_int(123)],
+            JSValue::JS_UNDEFINED,
+            &[JSValue::new_short_int(0x12345678), JSValue::new_short_int(123)],
         );
         assert_eq!(to_number(imul), -1088058456.0);
 
-        let clz = js_math_clz32(&mut ctx, JS_UNDEFINED, &[new_short_int(1)]);
-        assert_eq!(value_get_int(clz), 31);
+        let clz = js_math_clz32(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::new_short_int(1)]);
+        assert_eq!(clz.get_int(), 31);
     }
 
     #[test]
@@ -4300,7 +4290,7 @@ mod tests {
         let input = ctx.new_string("abbbc").expect("input string");
         let re = make_regexp(&mut ctx, b"b+", 0);
         let match_val = js_string_match(&mut ctx, input, &[re]);
-        let first = get_property(&mut ctx, match_val, new_short_int(0)).expect("match[0]");
+        let first = get_property(&mut ctx, match_val, JSValue::new_short_int(0)).expect("match[0]");
         assert_string_bytes(first, b"bbb");
 
         let input_global = ctx.new_string("abcaaad").expect("input string");
@@ -4308,19 +4298,19 @@ mod tests {
         let matches = js_string_match(&mut ctx, input_global, &[re_global]);
         let len = get_array_info(matches).expect("match array").1;
         assert_eq!(len, 2);
-        let m0 = get_property(&mut ctx, matches, new_short_int(0)).expect("match[0]");
-        let m1 = get_property(&mut ctx, matches, new_short_int(1)).expect("match[1]");
+        let m0 = get_property(&mut ctx, matches, JSValue::new_short_int(0)).expect("match[0]");
+        let m1 = get_property(&mut ctx, matches, JSValue::new_short_int(1)).expect("match[1]");
         assert_string_bytes(m0, b"a");
         assert_string_bytes(m1, b"aaa");
 
         let input_search = ctx.new_string("abc").expect("input string");
         let re_b = make_regexp(&mut ctx, b"b", 0);
         let search = js_string_search(&mut ctx, input_search, &[re_b]);
-        assert_eq!(value_get_int(search), 1);
+        assert_eq!(search.get_int(), 1);
 
         let re_d = make_regexp(&mut ctx, b"d", 0);
         let search = js_string_search(&mut ctx, input_search, &[re_d]);
-        assert_eq!(value_get_int(search), -1);
+        assert_eq!(search.get_int(), -1);
     }
 
     #[test]
@@ -4388,13 +4378,13 @@ mod tests {
         if !out.is_ptr() {
             panic!(
                 "split returned non-pointer tag {}",
-                value_get_special_tag(out)
+                out.get_special_tag()
             );
         }
         let len = match get_array_info(out) {
             Some((_, len)) => len,
             None => {
-                let ptr = value_to_ptr::<u8>(out).expect("split ptr");
+                let ptr = out.to_ptr::<u8>().expect("split ptr");
                 let header_word =
                     unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
                 let header = MbHeader::from_word(header_word);
@@ -4407,8 +4397,8 @@ mod tests {
             }
         };
         assert_eq!(len, 2);
-        let a0 = get_property(&mut ctx, out, new_short_int(0)).expect("split[0]");
-        let a1 = get_property(&mut ctx, out, new_short_int(1)).expect("split[1]");
+        let a0 = get_property(&mut ctx, out, JSValue::new_short_int(0)).expect("split[0]");
+        let a1 = get_property(&mut ctx, out, JSValue::new_short_int(1)).expect("split[1]");
         assert_string_bytes(a0, b"a");
         assert_string_bytes(a1, b"c");
 
@@ -4417,8 +4407,8 @@ mod tests {
         let out = js_string_split(&mut ctx, input_empty, &[re_empty]);
         let len = get_array_info(out).expect("split array a*").1;
         assert_eq!(len, 2);
-        let b0 = get_property(&mut ctx, out, new_short_int(0)).expect("split[0]");
-        let b1 = get_property(&mut ctx, out, new_short_int(1)).expect("split[1]");
+        let b0 = get_property(&mut ctx, out, JSValue::new_short_int(0)).expect("split[0]");
+        let b1 = get_property(&mut ctx, out, JSValue::new_short_int(1)).expect("split[1]");
         assert_string_bytes(b0, b"");
         assert_string_bytes(b1, b"b");
 
@@ -4427,8 +4417,8 @@ mod tests {
         let out = js_string_split(&mut ctx, input_lazy, &[re_lazy]);
         let len = get_array_info(out).expect("split array a*?").1;
         assert_eq!(len, 2);
-        let c0 = get_property(&mut ctx, out, new_short_int(0)).expect("split[0]");
-        let c1 = get_property(&mut ctx, out, new_short_int(1)).expect("split[1]");
+        let c0 = get_property(&mut ctx, out, JSValue::new_short_int(0)).expect("split[0]");
+        let c1 = get_property(&mut ctx, out, JSValue::new_short_int(1)).expect("split[1]");
         assert_string_bytes(c0, b"a");
         assert_string_bytes(c1, b"b");
 
@@ -4438,30 +4428,30 @@ mod tests {
         let tag_pattern = b"<(\\/)?([^<>]+)>";
         let re_tags = make_regexp(&mut ctx, tag_pattern, 0);
         let out = js_string_split(&mut ctx, input_tags, &[re_tags]);
-        if out == JS_EXCEPTION {
+        if out == JSValue::JS_EXCEPTION {
             panic!("split tags returned exception");
         }
         if !out.is_ptr() {
             panic!(
                 "split tags returned non-pointer tag {}",
-                value_get_special_tag(out)
+                out.get_special_tag()
             );
         }
         let len = get_array_info(out).expect("split array tags").1;
         assert_eq!(len, 13);
-        let d0 = get_property(&mut ctx, out, new_short_int(0)).expect("split[0]");
-        let d1 = get_property(&mut ctx, out, new_short_int(1)).expect("split[1]");
-        let d2 = get_property(&mut ctx, out, new_short_int(2)).expect("split[2]");
-        let d3 = get_property(&mut ctx, out, new_short_int(3)).expect("split[3]");
-        let d4 = get_property(&mut ctx, out, new_short_int(4)).expect("split[4]");
-        let d5 = get_property(&mut ctx, out, new_short_int(5)).expect("split[5]");
-        let d6 = get_property(&mut ctx, out, new_short_int(6)).expect("split[6]");
-        let d7 = get_property(&mut ctx, out, new_short_int(7)).expect("split[7]");
-        let d8 = get_property(&mut ctx, out, new_short_int(8)).expect("split[8]");
-        let d9 = get_property(&mut ctx, out, new_short_int(9)).expect("split[9]");
-        let d10 = get_property(&mut ctx, out, new_short_int(10)).expect("split[10]");
-        let d11 = get_property(&mut ctx, out, new_short_int(11)).expect("split[11]");
-        let d12 = get_property(&mut ctx, out, new_short_int(12)).expect("split[12]");
+        let d0 = get_property(&mut ctx, out, JSValue::new_short_int(0)).expect("split[0]");
+        let d1 = get_property(&mut ctx, out, JSValue::new_short_int(1)).expect("split[1]");
+        let d2 = get_property(&mut ctx, out, JSValue::new_short_int(2)).expect("split[2]");
+        let d3 = get_property(&mut ctx, out, JSValue::new_short_int(3)).expect("split[3]");
+        let d4 = get_property(&mut ctx, out, JSValue::new_short_int(4)).expect("split[4]");
+        let d5 = get_property(&mut ctx, out, JSValue::new_short_int(5)).expect("split[5]");
+        let d6 = get_property(&mut ctx, out, JSValue::new_short_int(6)).expect("split[6]");
+        let d7 = get_property(&mut ctx, out, JSValue::new_short_int(7)).expect("split[7]");
+        let d8 = get_property(&mut ctx, out, JSValue::new_short_int(8)).expect("split[8]");
+        let d9 = get_property(&mut ctx, out, JSValue::new_short_int(9)).expect("split[9]");
+        let d10 = get_property(&mut ctx, out, JSValue::new_short_int(10)).expect("split[10]");
+        let d11 = get_property(&mut ctx, out, JSValue::new_short_int(11)).expect("split[11]");
+        let d12 = get_property(&mut ctx, out, JSValue::new_short_int(12)).expect("split[12]");
         assert_string_bytes(d0, b"A");
         assert_string_bytes(d1, b"");
         assert_string_bytes(d2, b"B");
@@ -4486,13 +4476,13 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let nan = js_global_isNaN(&mut ctx, JS_UNDEFINED, &[JS_UNDEFINED]);
-        assert!(value_get_special_value(nan) != 0);
-        let finite = js_global_isFinite(&mut ctx, JS_UNDEFINED, &[new_short_int(1)]);
-        assert!(value_get_special_value(finite) != 0);
+        let nan = js_global_isNaN(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::JS_UNDEFINED]);
+        assert!(nan.get_special_value() != 0);
+        let finite = js_global_isFinite(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::new_short_int(1)]);
+        assert!(finite.get_special_value() != 0);
         let inf = ctx.new_string("Infinity").unwrap();
-        let not_finite = js_global_isFinite(&mut ctx, JS_UNDEFINED, &[inf]);
-        assert_eq!(value_get_special_value(not_finite), 0);
+        let not_finite = js_global_isFinite(&mut ctx, JSValue::JS_UNDEFINED, &[inf]);
+        assert_eq!(not_finite.get_special_value(), 0);
     }
 
     #[test]
@@ -4505,7 +4495,7 @@ mod tests {
         })
         .expect("context init");
         let msg = ctx.new_string("boom").expect("msg");
-        let err = js_error_constructor(&mut ctx, JS_UNDEFINED, &[msg], JSObjectClass::TypeError as i32);
+        let err = js_error_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[msg], JSObjectClass::TypeError as i32);
         assert!(is_error(err));
         assert_eq!(object_class_id(err), JSObjectClass::Error as u8);
         let message = ctx.get_error_message(err).expect("message");
@@ -4547,7 +4537,7 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let val = js_date_now(&mut ctx, JS_UNDEFINED, &[]);
+        let val = js_date_now(&mut ctx, JSValue::JS_UNDEFINED, &[]);
         assert!(to_number(val) >= 0.0);
     }
 
@@ -4560,8 +4550,8 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let val = js_date_constructor(&mut ctx, JS_UNDEFINED, &[]);
-        assert_eq!(val, JS_EXCEPTION);
+        let val = js_date_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[]);
+        assert_eq!(val, JSValue::JS_EXCEPTION);
         let err = ctx.take_current_exception();
         assert!(is_error(err));
         let message = ctx.get_error_message(err).expect("message");
@@ -4590,12 +4580,12 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let ab = js_array_buffer_constructor(&mut ctx, JS_UNDEFINED, &[new_short_int(16)]);
-        assert_ne!(ab, JS_EXCEPTION);
+        let ab = js_array_buffer_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::new_short_int(16)]);
+        assert_ne!(ab, JSValue::JS_EXCEPTION);
         
         // Check byteLength
         let len = js_array_buffer_get_byteLength(&mut ctx, ab, &[]);
-        assert_eq!(value_get_int(len), 16);
+        assert_eq!(len.get_int(), 16);
     }
 
     #[test]
@@ -4612,19 +4602,19 @@ mod tests {
         // Create Uint8Array with length 4
         let ta = js_typed_array_constructor(
             &mut ctx,
-            JS_UNDEFINED,
-            &[new_short_int(4)],
+            JSValue::JS_UNDEFINED,
+            &[JSValue::new_short_int(4)],
             JSObjectClass::Uint8Array as i32,
         );
-        assert_ne!(ta, JS_EXCEPTION);
+        assert_ne!(ta, JSValue::JS_EXCEPTION);
         
         // Check length
         let len = js_typed_array_get_length(&mut ctx, ta, &[], 0);
-        assert_eq!(value_get_int(len), 4);
+        assert_eq!(len.get_int(), 4);
         
         // Check byteLength
         let byte_len = js_typed_array_get_length(&mut ctx, ta, &[], 1);
-        assert_eq!(value_get_int(byte_len), 4);
+        assert_eq!(byte_len.get_int(), 4);
     }
 
     #[test]
@@ -4643,30 +4633,30 @@ mod tests {
         // Create Uint8Array with length 4
         let ta = js_typed_array_constructor(
             &mut ctx,
-            JS_UNDEFINED,
-            &[new_short_int(4)],
+            JSValue::JS_UNDEFINED,
+            &[JSValue::new_short_int(4)],
             JSObjectClass::Uint8Array as i32,
         );
-        assert_ne!(ta, JS_EXCEPTION);
+        assert_ne!(ta, JSValue::JS_EXCEPTION);
         
         // Set elements
-        set_property(&mut ctx, ta, new_short_int(0), new_short_int(10)).unwrap();
-        set_property(&mut ctx, ta, new_short_int(1), new_short_int(20)).unwrap();
-        set_property(&mut ctx, ta, new_short_int(2), new_short_int(30)).unwrap();
-        set_property(&mut ctx, ta, new_short_int(3), new_short_int(40)).unwrap();
+        set_property(&mut ctx, ta, JSValue::new_short_int(0), JSValue::new_short_int(10)).unwrap();
+        set_property(&mut ctx, ta, JSValue::new_short_int(1), JSValue::new_short_int(20)).unwrap();
+        set_property(&mut ctx, ta, JSValue::new_short_int(2), JSValue::new_short_int(30)).unwrap();
+        set_property(&mut ctx, ta, JSValue::new_short_int(3), JSValue::new_short_int(40)).unwrap();
         
         // Read elements back
-        let v0 = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
-        assert_eq!(value_get_int(v0), 10);
+        let v0 = get_property(&mut ctx, ta, JSValue::new_short_int(0)).unwrap();
+        assert_eq!(v0.get_int(), 10);
         
-        let v1 = get_property(&mut ctx, ta, new_short_int(1)).unwrap();
-        assert_eq!(value_get_int(v1), 20);
+        let v1 = get_property(&mut ctx, ta, JSValue::new_short_int(1)).unwrap();
+        assert_eq!(v1.get_int(), 20);
         
-        let v2 = get_property(&mut ctx, ta, new_short_int(2)).unwrap();
-        assert_eq!(value_get_int(v2), 30);
+        let v2 = get_property(&mut ctx, ta, JSValue::new_short_int(2)).unwrap();
+        assert_eq!(v2.get_int(), 30);
         
-        let v3 = get_property(&mut ctx, ta, new_short_int(3)).unwrap();
-        assert_eq!(value_get_int(v3), 40);
+        let v3 = get_property(&mut ctx, ta, JSValue::new_short_int(3)).unwrap();
+        assert_eq!(v3.get_int(), 40);
     }
 
     #[test]
@@ -4685,16 +4675,16 @@ mod tests {
         // Create Uint8Array
         let ta = js_typed_array_constructor(
             &mut ctx,
-            JS_UNDEFINED,
-            &[new_short_int(1)],
+            JSValue::JS_UNDEFINED,
+            &[JSValue::new_short_int(1)],
             JSObjectClass::Uint8Array as i32,
         );
-        assert_ne!(ta, JS_EXCEPTION);
+        assert_ne!(ta, JSValue::JS_EXCEPTION);
         
         // Set -1, should wrap to 255
-        set_property(&mut ctx, ta, new_short_int(0), new_short_int(-1)).unwrap();
-        let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
-        assert_eq!(value_get_int(v), 255);
+        set_property(&mut ctx, ta, JSValue::new_short_int(0), JSValue::new_short_int(-1)).unwrap();
+        let v = get_property(&mut ctx, ta, JSValue::new_short_int(0)).unwrap();
+        assert_eq!(v.get_int(), 255);
     }
 
     #[test]
@@ -4713,16 +4703,16 @@ mod tests {
         // Create Int8Array
         let ta = js_typed_array_constructor(
             &mut ctx,
-            JS_UNDEFINED,
-            &[new_short_int(1)],
+            JSValue::JS_UNDEFINED,
+            &[JSValue::new_short_int(1)],
             JSObjectClass::Int8Array as i32,
         );
-        assert_ne!(ta, JS_EXCEPTION);
+        assert_ne!(ta, JSValue::JS_EXCEPTION);
         
         // Set 255, should wrap to -1
-        set_property(&mut ctx, ta, new_short_int(0), new_short_int(255)).unwrap();
-        let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
-        assert_eq!(value_get_int(v), -1);
+        set_property(&mut ctx, ta, JSValue::new_short_int(0), JSValue::new_short_int(255)).unwrap();
+        let v = get_property(&mut ctx, ta, JSValue::new_short_int(0)).unwrap();
+        assert_eq!(v.get_int(), -1);
     }
 
     #[test]
@@ -4741,21 +4731,21 @@ mod tests {
         // Create Uint8ClampedArray
         let ta = js_typed_array_constructor(
             &mut ctx,
-            JS_UNDEFINED,
-            &[new_short_int(2)],
+            JSValue::JS_UNDEFINED,
+            &[JSValue::new_short_int(2)],
             JSObjectClass::Uint8CArray as i32,
         );
-        assert_ne!(ta, JS_EXCEPTION);
+        assert_ne!(ta, JSValue::JS_EXCEPTION);
         
         // Set -100, should clamp to 0
-        set_property(&mut ctx, ta, new_short_int(0), new_short_int(-100)).unwrap();
-        let v0 = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
-        assert_eq!(value_get_int(v0), 0);
+        set_property(&mut ctx, ta, JSValue::new_short_int(0), JSValue::new_short_int(-100)).unwrap();
+        let v0 = get_property(&mut ctx, ta, JSValue::new_short_int(0)).unwrap();
+        assert_eq!(v0.get_int(), 0);
         
         // Set 1000, should clamp to 255
-        set_property(&mut ctx, ta, new_short_int(1), new_short_int(1000)).unwrap();
-        let v1 = get_property(&mut ctx, ta, new_short_int(1)).unwrap();
-        assert_eq!(value_get_int(v1), 255);
+        set_property(&mut ctx, ta, JSValue::new_short_int(1), JSValue::new_short_int(1000)).unwrap();
+        let v1 = get_property(&mut ctx, ta, JSValue::new_short_int(1)).unwrap();
+        assert_eq!(v1.get_int(), 255);
     }
 
     #[test]
@@ -4774,20 +4764,20 @@ mod tests {
         // Create Int32Array
         let ta = js_typed_array_constructor(
             &mut ctx,
-            JS_UNDEFINED,
-            &[new_short_int(1)],
+            JSValue::JS_UNDEFINED,
+            &[JSValue::new_short_int(1)],
             JSObjectClass::Int32Array as i32,
         );
-        assert_ne!(ta, JS_EXCEPTION);
+        assert_ne!(ta, JSValue::JS_EXCEPTION);
         
         // Check byteLength (4 bytes per element)
         let byte_len = js_typed_array_get_length(&mut ctx, ta, &[], 1);
-        assert_eq!(value_get_int(byte_len), 4);
+        assert_eq!(byte_len.get_int(), 4);
         
         // Set and read
-        set_property(&mut ctx, ta, new_short_int(0), new_short_int(-12345)).unwrap();
-        let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
-        assert_eq!(value_get_int(v), -12345);
+        set_property(&mut ctx, ta, JSValue::new_short_int(0), JSValue::new_short_int(-12345)).unwrap();
+        let v = get_property(&mut ctx, ta, JSValue::new_short_int(0)).unwrap();
+        assert_eq!(v.get_int(), -12345);
     }
 
     #[test]
@@ -4806,32 +4796,32 @@ mod tests {
         // Create Uint8Array with 4 elements
         let ta = js_typed_array_constructor(
             &mut ctx,
-            JS_UNDEFINED,
-            &[new_short_int(4)],
+            JSValue::JS_UNDEFINED,
+            &[JSValue::new_short_int(4)],
             JSObjectClass::Uint8Array as i32,
         );
-        assert_ne!(ta, JS_EXCEPTION);
+        assert_ne!(ta, JSValue::JS_EXCEPTION);
         
         // Set values [1, 2, 3, 4]
-        set_property(&mut ctx, ta, new_short_int(0), new_short_int(1)).unwrap();
-        set_property(&mut ctx, ta, new_short_int(1), new_short_int(2)).unwrap();
-        set_property(&mut ctx, ta, new_short_int(2), new_short_int(3)).unwrap();
-        set_property(&mut ctx, ta, new_short_int(3), new_short_int(4)).unwrap();
+        set_property(&mut ctx, ta, JSValue::new_short_int(0), JSValue::new_short_int(1)).unwrap();
+        set_property(&mut ctx, ta, JSValue::new_short_int(1), JSValue::new_short_int(2)).unwrap();
+        set_property(&mut ctx, ta, JSValue::new_short_int(2), JSValue::new_short_int(3)).unwrap();
+        set_property(&mut ctx, ta, JSValue::new_short_int(3), JSValue::new_short_int(4)).unwrap();
         
         // Create subarray [1, 3) -> should be [2, 3]
-        let sub = js_typed_array_subarray(&mut ctx, ta, &[new_short_int(1), new_short_int(3)]);
-        assert_ne!(sub, JS_EXCEPTION);
+        let sub = js_typed_array_subarray(&mut ctx, ta, &[JSValue::new_short_int(1), JSValue::new_short_int(3)]);
+        assert_ne!(sub, JSValue::JS_EXCEPTION);
         
         // Check length is 2
         let len = js_typed_array_get_length(&mut ctx, sub, &[], 0);
-        assert_eq!(value_get_int(len), 2);
+        assert_eq!(len.get_int(), 2);
         
         // Check values are [2, 3]
-        let v0 = get_property(&mut ctx, sub, new_short_int(0)).unwrap();
-        assert_eq!(value_get_int(v0), 2);
+        let v0 = get_property(&mut ctx, sub, JSValue::new_short_int(0)).unwrap();
+        assert_eq!(v0.get_int(), 2);
         
-        let v1 = get_property(&mut ctx, sub, new_short_int(1)).unwrap();
-        assert_eq!(value_get_int(v1), 3);
+        let v1 = get_property(&mut ctx, sub, JSValue::new_short_int(1)).unwrap();
+        assert_eq!(v1.get_int(), 3);
     }
 
     #[test]
@@ -4848,30 +4838,30 @@ mod tests {
         .expect("context init");
         
         // Create ArrayBuffer with 16 bytes
-        let ab = js_array_buffer_constructor(&mut ctx, JS_UNDEFINED, &[new_short_int(16)]);
-        assert_ne!(ab, JS_EXCEPTION);
+        let ab = js_array_buffer_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[JSValue::new_short_int(16)]);
+        assert_ne!(ab, JSValue::JS_EXCEPTION);
         
         // Create Uint32Array view from byte 12, length 1
         let ta = js_typed_array_constructor(
             &mut ctx,
-            JS_UNDEFINED,
-            &[ab, new_short_int(12), new_short_int(1)],
+            JSValue::JS_UNDEFINED,
+            &[ab, JSValue::new_short_int(12), JSValue::new_short_int(1)],
             JSObjectClass::Uint32Array as i32,
         );
-        assert_ne!(ta, JS_EXCEPTION);
+        assert_ne!(ta, JSValue::JS_EXCEPTION);
         
         // Check length is 1
         let len = js_typed_array_get_length(&mut ctx, ta, &[], 0);
-        assert_eq!(value_get_int(len), 1);
+        assert_eq!(len.get_int(), 1);
         
         // Check byteOffset is 12
         let offset = js_typed_array_get_length(&mut ctx, ta, &[], 2);
-        assert_eq!(value_get_int(offset), 12);
+        assert_eq!(offset.get_int(), 12);
         
         // Set a value and check we can read it back
-        set_property(&mut ctx, ta, new_short_int(0), new_short_int(42)).unwrap();
-        let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
-        assert_eq!(value_get_int(v), 42);
+        set_property(&mut ctx, ta, JSValue::new_short_int(0), JSValue::new_short_int(42)).unwrap();
+        let v = get_property(&mut ctx, ta, JSValue::new_short_int(0)).unwrap();
+        assert_eq!(v.get_int(), 42);
     }
 
     #[test]
@@ -4886,8 +4876,8 @@ mod tests {
         
         let pattern = ctx.new_string("a+").unwrap();
         let flags = ctx.new_string("g").unwrap();
-        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern, flags]);
-        assert_ne!(re, JS_EXCEPTION);
+        let re = js_regexp_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[pattern, flags]);
+        assert_ne!(re, JSValue::JS_EXCEPTION);
         
         // Check that it's a RegExp object by testing source and flags
         let source = js_regexp_get_source(&mut ctx, re, &[]);
@@ -4909,21 +4899,21 @@ mod tests {
         
         let pattern = ctx.new_string("x").unwrap();
         let flags = ctx.new_string("g").unwrap();
-        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern, flags]);
-        assert_ne!(re, JS_EXCEPTION);
+        let re = js_regexp_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[pattern, flags]);
+        assert_ne!(re, JSValue::JS_EXCEPTION);
         
         // Initial lastIndex should be 0
         let idx = js_regexp_get_lastIndex(&mut ctx, re, &[]);
         assert!(idx.is_int());
-        assert_eq!(value_get_int(idx), 0);
+        assert_eq!(idx.get_int(), 0);
         
         // Set lastIndex to 5
-        let result = js_regexp_set_lastIndex(&mut ctx, re, &[new_short_int(5)]);
-        assert_eq!(result, JS_UNDEFINED);
+        let result = js_regexp_set_lastIndex(&mut ctx, re, &[JSValue::new_short_int(5)]);
+        assert_eq!(result, JSValue::JS_UNDEFINED);
         
         // Read back should be 5
         let idx2 = js_regexp_get_lastIndex(&mut ctx, re, &[]);
-        assert_eq!(value_get_int(idx2), 5);
+        assert_eq!(idx2.get_int(), 5);
     }
 
     #[test]
@@ -4951,23 +4941,23 @@ mod tests {
         .expect("context init");
         
         let pattern = ctx.new_string("a").unwrap();
-        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern]);
-        assert_ne!(re, JS_EXCEPTION);
+        let re = js_regexp_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[pattern]);
+        assert_ne!(re, JSValue::JS_EXCEPTION);
         
         let input = ctx.new_string("cat").unwrap();
         let result = js_regexp_exec(&mut ctx, re, &[input], 0); // magic=0 for exec
-        assert_ne!(result, JS_EXCEPTION);
-        assert_ne!(result, JS_NULL);
+        assert_ne!(result, JSValue::JS_EXCEPTION);
+        assert_ne!(result, JSValue::JS_NULL);
         
         // Check the match at index 0
-        let match_val = get_property(&mut ctx, result, new_short_int(0)).unwrap();
+        let match_val = get_property(&mut ctx, result, JSValue::new_short_int(0)).unwrap();
         assert_string_bytes(match_val, b"a");
         
         // Check the index property
         let index_key = ctx.intern_string(b"index").unwrap();
         let index = get_property(&mut ctx, result, index_key).unwrap();
         assert!(index.is_int());
-        assert_eq!(value_get_int(index), 1); // 'a' is at position 1 in "cat"
+        assert_eq!(index.get_int(), 1); // 'a' is at position 1 in "cat"
     }
 
     #[test]
@@ -4981,18 +4971,18 @@ mod tests {
         .expect("context init");
         
         let pattern = ctx.new_string("x").unwrap();
-        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern]);
-        assert_ne!(re, JS_EXCEPTION);
+        let re = js_regexp_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[pattern]);
+        assert_ne!(re, JSValue::JS_EXCEPTION);
         
         // Test match
         let input_match = ctx.new_string("fox").unwrap();
         let result_match = js_regexp_exec(&mut ctx, re, &[input_match], 1); // magic=1 for test
-        assert_eq!(result_match, JS_TRUE);
+        assert_eq!(result_match, JSValue::JS_TRUE);
         
         // Test no match
         let input_no_match = ctx.new_string("cat").unwrap();
         let result_no_match = js_regexp_exec(&mut ctx, re, &[input_no_match], 1);
-        assert_eq!(result_no_match, JS_FALSE);
+        assert_eq!(result_no_match, JSValue::JS_FALSE);
     }
 
     #[test]
@@ -5007,19 +4997,19 @@ mod tests {
         
         let pattern = ctx.new_string("a").unwrap();
         let flags = ctx.new_string("g").unwrap();
-        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern, flags]);
-        assert_ne!(re, JS_EXCEPTION);
+        let re = js_regexp_constructor(&mut ctx, JSValue::JS_UNDEFINED, &[pattern, flags]);
+        assert_ne!(re, JSValue::JS_EXCEPTION);
         
         let input = ctx.new_string("banana").unwrap();
         
         // First exec should find 'a' at index 1
         let _ = js_regexp_exec(&mut ctx, re, &[input], 0);
         let idx1 = js_regexp_get_lastIndex(&mut ctx, re, &[]);
-        assert_eq!(value_get_int(idx1), 2);
+        assert_eq!(idx1.get_int(), 2);
         
         // Second exec should find 'a' at index 3
         let _ = js_regexp_exec(&mut ctx, re, &[input], 0);
         let idx2 = js_regexp_get_lastIndex(&mut ctx, re, &[]);
-        assert_eq!(value_get_int(idx2), 4);
+        assert_eq!(idx2.get_int(), 4);
     }
 }

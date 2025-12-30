@@ -11,153 +11,155 @@ pub type JSWord = u32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct JSValue(TaggedPtr);
 
-pub const JSW: JSWord = core::mem::size_of::<JSValue>() as JSWord;
-
-// Tagged value layout: low bits select tag, pointer values are addr + 1.
-pub const JS_TAG_INT: JSWord = 0;
-pub const JS_TAG_PTR: JSWord = 1;
-pub const JS_TAG_SPECIAL: JSWord = 3;
-pub const JS_TAG_BOOL: JSWord = JS_TAG_SPECIAL | ((0 as JSWord) << 2);
-pub const JS_TAG_NULL: JSWord = JS_TAG_SPECIAL | ((1 as JSWord) << 2);
-pub const JS_TAG_UNDEFINED: JSWord = JS_TAG_SPECIAL | ((2 as JSWord) << 2);
-pub const JS_TAG_EXCEPTION: JSWord = JS_TAG_SPECIAL | ((3 as JSWord) << 2);
-pub const JS_TAG_SHORT_FUNC: JSWord = JS_TAG_SPECIAL | ((4 as JSWord) << 2);
-pub const JS_TAG_UNINITIALIZED: JSWord = JS_TAG_SPECIAL | ((5 as JSWord) << 2);
-pub const JS_TAG_STRING_CHAR: JSWord = JS_TAG_SPECIAL | ((6 as JSWord) << 2);
-pub const JS_TAG_CATCH_OFFSET: JSWord = JS_TAG_SPECIAL | ((7 as JSWord) << 2);
-
-#[cfg(target_pointer_width = "64")]
-pub const JS_TAG_SHORT_FLOAT: JSWord = 5;
-
-pub const JS_TAG_SPECIAL_BITS: u32 = 5;
-
-pub const JS_NULL: JSValue = value_make_special(JS_TAG_NULL, 0);
-pub const JS_UNDEFINED: JSValue = value_make_special(JS_TAG_UNDEFINED, 0);
-pub const JS_UNINITIALIZED: JSValue = value_make_special(JS_TAG_UNINITIALIZED, 0);
-pub const JS_FALSE: JSValue = value_make_special(JS_TAG_BOOL, 0);
-pub const JS_TRUE: JSValue = value_make_special(JS_TAG_BOOL, 1);
-
-pub const JS_EX_NORMAL: u32 = 0;
-pub const JS_EX_CALL: u32 = 1;
-pub const JS_EXCEPTION: JSValue = value_make_special(JS_TAG_EXCEPTION, JS_EX_NORMAL);
-
-pub const JS_SHORTINT_MIN: i32 = -(1 << 30);
-pub const JS_SHORTINT_MAX: i32 = (1 << 30) - 1;
-
-pub(crate) const fn from_bits(bits: JSWord) -> JSValue {
-    JSValue(TaggedPtr::from_bits(bits as usize))
-}
-
-pub(crate) fn raw_bits(v: JSValue) -> JSWord {
-    v.0.addr() as JSWord
-}
-
-pub const fn value_make_special(tag: JSWord, v: u32) -> JSValue {
-    from_bits(tag | ((v as JSWord) << JS_TAG_SPECIAL_BITS))
-}
-
-#[cfg(target_pointer_width = "64")]
-pub fn value_get_int(v: JSValue) -> i32 {
-    ((raw_bits(v) as u32) as i32) >> 1
-}
-
-#[cfg(target_pointer_width = "32")]
-pub fn value_get_int(v: JSValue) -> i32 {
-    (raw_bits(v) as i32) >> 1
-}
-
-#[cfg(target_pointer_width = "64")]
-pub fn value_get_special_value(v: JSValue) -> i32 {
-    ((raw_bits(v) as u32) as i32) >> JS_TAG_SPECIAL_BITS
-}
-
-#[cfg(target_pointer_width = "32")]
-pub fn value_get_special_value(v: JSValue) -> i32 {
-    (raw_bits(v) as i32) >> JS_TAG_SPECIAL_BITS
-}
-
-pub fn value_get_special_tag(v: JSValue) -> JSWord {
-    raw_bits(v) & (((1 as JSWord) << JS_TAG_SPECIAL_BITS) - 1)
-}
-
-pub const fn new_short_int(val: i32) -> JSValue {
-    from_bits(((val as u32 as JSWord) << 1) | JS_TAG_INT)
-}
-
-pub const fn new_bool(val: i32) -> JSValue {
-    value_make_special(JS_TAG_BOOL, (val != 0) as u32)
-}
-
 impl JSValue {
+    pub const JSW: JSWord = core::mem::size_of::<JSValue>() as JSWord;
+
+    // Tagged value layout: low bits select tag, pointer values are addr + 1.
+    pub const JS_TAG_INT: JSWord = 0;
+    pub const JS_TAG_PTR: JSWord = 1;
+    pub const JS_TAG_SPECIAL: JSWord = 3;
+    pub const JS_TAG_BOOL: JSWord = Self::JS_TAG_SPECIAL | ((0 as JSWord) << 2);
+    pub const JS_TAG_NULL: JSWord = Self::JS_TAG_SPECIAL | ((1 as JSWord) << 2);
+    pub const JS_TAG_UNDEFINED: JSWord = Self::JS_TAG_SPECIAL | ((2 as JSWord) << 2);
+    pub const JS_TAG_EXCEPTION: JSWord = Self::JS_TAG_SPECIAL | ((3 as JSWord) << 2);
+    pub const JS_TAG_SHORT_FUNC: JSWord = Self::JS_TAG_SPECIAL | ((4 as JSWord) << 2);
+    pub const JS_TAG_UNINITIALIZED: JSWord = Self::JS_TAG_SPECIAL | ((5 as JSWord) << 2);
+    pub const JS_TAG_STRING_CHAR: JSWord = Self::JS_TAG_SPECIAL | ((6 as JSWord) << 2);
+    pub const JS_TAG_CATCH_OFFSET: JSWord = Self::JS_TAG_SPECIAL | ((7 as JSWord) << 2);
+
+    #[cfg(target_pointer_width = "64")]
+    pub const JS_TAG_SHORT_FLOAT: JSWord = 5;
+
+    pub const JS_TAG_SPECIAL_BITS: u32 = 5;
+
+    pub const JS_NULL: JSValue = Self::value_make_special(Self::JS_TAG_NULL, 0);
+    pub const JS_UNDEFINED: JSValue = Self::value_make_special(Self::JS_TAG_UNDEFINED, 0);
+    pub const JS_UNINITIALIZED: JSValue = Self::value_make_special(Self::JS_TAG_UNINITIALIZED, 0);
+    pub const JS_FALSE: JSValue = Self::value_make_special(Self::JS_TAG_BOOL, 0);
+    pub const JS_TRUE: JSValue = Self::value_make_special(Self::JS_TAG_BOOL, 1);
+
+    pub const JS_EX_NORMAL: u32 = 0;
+    pub const JS_EX_CALL: u32 = 1;
+    pub const JS_EXCEPTION: JSValue =
+        Self::value_make_special(Self::JS_TAG_EXCEPTION, Self::JS_EX_NORMAL);
+
+    pub const JS_SHORTINT_MIN: i32 = -(1 << 30);
+    pub const JS_SHORTINT_MAX: i32 = (1 << 30) - 1;
+
+    pub(crate) const fn from_bits(bits: JSWord) -> JSValue {
+        JSValue(TaggedPtr::from_bits(bits as usize))
+    }
+
+    pub(crate) fn raw_bits(&self) -> JSWord {
+        self.0.addr() as JSWord
+    }
+
+    pub const fn value_make_special(tag: JSWord, v: u32) -> JSValue {
+        Self::from_bits(tag | ((v as JSWord) << Self::JS_TAG_SPECIAL_BITS))
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    pub fn get_int(&self) -> i32 {
+        ((self.raw_bits() as u32) as i32) >> 1
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn get_int(&self) -> i32 {
+        (self.raw_bits() as i32) >> 1
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    pub fn get_special_value(&self) -> i32 {
+        ((self.raw_bits() as u32) as i32) >> Self::JS_TAG_SPECIAL_BITS
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn get_special_value(&self) -> i32 {
+        (self.raw_bits() as i32) >> Self::JS_TAG_SPECIAL_BITS
+    }
+
+    pub fn get_special_tag(&self) -> JSWord {
+        self.raw_bits() & (((1 as JSWord) << Self::JS_TAG_SPECIAL_BITS) - 1)
+    }
+
+    pub const fn new_short_int(val: i32) -> JSValue {
+        Self::from_bits(((val as u32 as JSWord) << 1) | Self::JS_TAG_INT)
+    }
+
+    pub const fn new_bool(val: i32) -> JSValue {
+        Self::value_make_special(Self::JS_TAG_BOOL, (val != 0) as u32)
+    }
+
     pub fn is_int(&self) -> bool {
-        (raw_bits(*self) & 1) == JS_TAG_INT
+        (self.raw_bits() & 1) == Self::JS_TAG_INT
     }
 
     pub fn is_ptr(&self) -> bool {
-        (raw_bits(*self) & (JSW - 1)) == JS_TAG_PTR
+        (self.raw_bits() & (Self::JSW - 1)) == Self::JS_TAG_PTR
     }
 
     #[cfg(target_pointer_width = "64")]
     pub fn is_short_float(&self) -> bool {
-        (raw_bits(*self) & (JSW - 1)) == JS_TAG_SHORT_FLOAT
+        (self.raw_bits() & (Self::JSW - 1)) == Self::JS_TAG_SHORT_FLOAT
     }
 
     pub fn is_bool(&self) -> bool {
-        value_get_special_tag(*self) == JS_TAG_BOOL
+        self.get_special_tag() == Self::JS_TAG_BOOL
     }
 
     pub fn is_null(&self) -> bool {
-        raw_bits(*self) == raw_bits(JS_NULL)
+        self.raw_bits() == Self::JS_NULL.raw_bits()
     }
 
     pub fn is_undefined(&self) -> bool {
-        raw_bits(*self) == raw_bits(JS_UNDEFINED)
+        self.raw_bits() == Self::JS_UNDEFINED.raw_bits()
     }
 
     pub fn is_uninitialized(&self) -> bool {
-        raw_bits(*self) == raw_bits(JS_UNINITIALIZED)
+        self.raw_bits() == Self::JS_UNINITIALIZED.raw_bits()
     }
 
     pub fn is_exception(&self) -> bool {
-        raw_bits(*self) == raw_bits(JS_EXCEPTION)
+        self.raw_bits() == Self::JS_EXCEPTION.raw_bits()
     }
-}
+    pub fn from_ptr<T>(ptr: NonNull<T>) -> JSValue {
+        JSValue(TaggedPtr::from_ptr(
+            ptr,
+            Self::JS_TAG_PTR as usize,
+            (Self::JSW - 1) as usize,
+        ))
+    }
 
-pub fn value_from_ptr<T>(ptr: NonNull<T>) -> JSValue {
-    JSValue(TaggedPtr::from_ptr(
-        ptr,
-        JS_TAG_PTR as usize,
-        (JSW - 1) as usize,
-    ))
-}
+    pub fn from_ptr_raw<T>(ptr: *mut T) -> Option<JSValue> {
+        NonNull::new(ptr).map(Self::from_ptr)
+    }
 
-pub fn value_from_ptr_raw<T>(ptr: *mut T) -> Option<JSValue> {
-    NonNull::new(ptr).map(value_from_ptr)
-}
+    pub fn to_ptr<T>(&self) -> Option<NonNull<T>> {
+        self.0
+            .to_ptr(Self::JS_TAG_PTR as usize, (Self::JSW - 1) as usize)
+    }
 
-pub fn value_to_ptr<T>(val: JSValue) -> Option<NonNull<T>> {
-    val.0.to_ptr(JS_TAG_PTR as usize, (JSW - 1) as usize)
-}
+    #[cfg(target_pointer_width = "64")]
+    const JS_FLOAT64_VALUE_EXP_MIN: i64 = 1023 - 127;
+    #[cfg(target_pointer_width = "64")]
+    const JS_FLOAT64_VALUE_ADDEND: u64 =
+        ((Self::JS_FLOAT64_VALUE_EXP_MIN - ((Self::JS_TAG_SHORT_FLOAT as i64) << 8)) as u64)
+            << 52;
 
-#[cfg(target_pointer_width = "64")]
-const JS_FLOAT64_VALUE_EXP_MIN: i64 = 1023 - 127;
-#[cfg(target_pointer_width = "64")]
-const JS_FLOAT64_VALUE_ADDEND: u64 =
-    ((JS_FLOAT64_VALUE_EXP_MIN - ((JS_TAG_SHORT_FLOAT as i64) << 8)) as u64) << 52;
+    #[cfg(target_pointer_width = "64")]
+    pub fn short_float_to_f64(&self) -> f64 {
+        let bits = self.raw_bits() as u64;
+        uint64_as_float64(bits.rotate_left(60).wrapping_add(Self::JS_FLOAT64_VALUE_ADDEND))
+    }
 
-#[cfg(target_pointer_width = "64")]
-pub fn short_float_to_f64(v: JSValue) -> f64 {
-    let bits = raw_bits(v) as u64;
-    uint64_as_float64(bits.rotate_left(60).wrapping_add(JS_FLOAT64_VALUE_ADDEND))
-}
-
-#[cfg(target_pointer_width = "64")]
-pub fn short_float_from_f64(d: f64) -> JSValue {
-    from_bits(
-        float64_as_uint64(d)
-        .wrapping_sub(JS_FLOAT64_VALUE_ADDEND)
-        .rotate_left(4) as JSWord,
-    )
+    #[cfg(target_pointer_width = "64")]
+    pub fn short_float_from_f64(d: f64) -> JSValue {
+        Self::from_bits(
+            float64_as_uint64(d)
+            .wrapping_sub(Self::JS_FLOAT64_VALUE_ADDEND)
+            .rotate_left(4) as JSWord,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -167,22 +169,22 @@ mod tests {
 
     #[test]
     fn word_size_matches_value() {
-        assert_eq!(JSW as usize, mem::size_of::<JSValue>());
+        assert_eq!(JSValue::JSW as usize, mem::size_of::<JSValue>());
     }
 
     #[test]
     fn bool_values_match_tags() {
-        assert!(JS_FALSE.is_bool());
-        assert!(JS_TRUE.is_bool());
-        assert_eq!(value_get_special_value(JS_FALSE), 0);
-        assert_eq!(value_get_special_value(JS_TRUE), 1);
+        assert!(JSValue::JS_FALSE.is_bool());
+        assert!(JSValue::JS_TRUE.is_bool());
+        assert_eq!(JSValue::JS_FALSE.get_special_value(), 0);
+        assert_eq!(JSValue::JS_TRUE.get_special_value(), 1);
     }
 
     #[test]
     fn null_undefined_uninitialized() {
-        assert!(JS_NULL.is_null());
-        assert!(JS_UNDEFINED.is_undefined());
-        assert!(JS_UNINITIALIZED.is_uninitialized());
+        assert!(JSValue::JS_NULL.is_null());
+        assert!(JSValue::JS_UNDEFINED.is_undefined());
+        assert!(JSValue::JS_UNINITIALIZED.is_uninitialized());
     }
 
 }

@@ -37,18 +37,18 @@ mod tests {
 
     #[test]
     fn closure_data_var_refs_offset() {
-        let mut slots = [crate::jsvalue::JS_NULL; 2];
+        let mut slots = [JSValue::JS_NULL; 2];
         let base = slots.as_mut_ptr();
         let closure = base.cast::<ClosureData>();
         unsafe {
             // SAFETY: slots provides writable storage for ClosureData + one var ref.
-            *ClosureData::func_bytecode_ptr(closure) = crate::jsvalue::JS_TRUE;
-            *ClosureData::var_refs_ptr(closure) = crate::jsvalue::JS_FALSE;
+            *ClosureData::func_bytecode_ptr(closure) = JSValue::JS_TRUE;
+            *ClosureData::var_refs_ptr(closure) = JSValue::JS_FALSE;
         }
         unsafe {
             // SAFETY: slots still owns the backing storage.
-            assert_eq!(*base, crate::jsvalue::JS_TRUE);
-            assert_eq!(*base.add(1), crate::jsvalue::JS_FALSE);
+            assert_eq!(*base, JSValue::JS_TRUE);
+            assert_eq!(*base.add(1), JSValue::JS_FALSE);
         }
     }
 }

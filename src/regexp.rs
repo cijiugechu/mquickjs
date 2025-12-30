@@ -5,9 +5,7 @@ use crate::conversion::{self, ConversionError};
 use crate::cutils::{get_u16, get_u32, utf8_get};
 use crate::enums::JSObjectClass;
 use crate::heap::JS_STACK_SLACK;
-use crate::jsvalue::{
-    new_short_int, value_get_int, value_to_ptr, JSValue, JSWord, JSW, JS_FALSE, JS_NULL, JS_TRUE,
-};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader, RegExp};
 use crate::opcode::{
@@ -97,7 +95,7 @@ struct ByteArrayView {
 
 impl ByteArrayView {
     unsafe fn from_value(val: JSValue) -> Result<Self, RegExpError> {
-        let ptr = value_to_ptr::<u8>(val).ok_or(RegExpError::InvalidValue("byte array"))?;
+        let ptr = val.to_ptr::<u8>().ok_or(RegExpError::InvalidValue("byte array"))?;
         let header_word = unsafe {
             // SAFETY: ptr points to a readable memblock header.
             ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -147,7 +145,7 @@ pub(crate) fn new_regexp_object(
 ) -> Result<JSValue, ContextError> {
     let proto = ctx.class_proto()[JSObjectClass::RegExp as usize];
     let obj = ctx.alloc_object(JSObjectClass::RegExp, proto, size_of::<RegExp>())?;
-    let obj_ptr = value_to_ptr::<Object>(obj).expect("regexp object pointer");
+    let obj_ptr = obj.to_ptr::<Object>().expect("regexp object pointer");
     unsafe {
         // SAFETY: object payload contains space for RegExp.
         let payload = Object::payload_ptr(obj_ptr.as_ptr());
@@ -238,9 +236,9 @@ pub(crate) fn regexp_exec(
                 }
             }
             return match mode {
-                RegExpExecMode::Search => Ok(new_short_int(-1)),
-                RegExpExecMode::Test => Ok(JS_FALSE),
-                RegExpExecMode::Exec | RegExpExecMode::ForceGlobal => Ok(JS_NULL),
+                RegExpExecMode::Search => Ok(JSValue::new_short_int(-1)),
+                RegExpExecMode::Test => Ok(JSValue::JS_FALSE),
+                RegExpExecMode::Exec | RegExpExecMode::ForceGlobal => Ok(JSValue::JS_NULL),
             };
         }
 
@@ -248,7 +246,7 @@ pub(crate) fn regexp_exec(
         let capture = capture_view.as_u32_slice();
         if mode == RegExpExecMode::Search {
             let index = ctx.string_utf8_to_utf16_pos(input, capture[0] * 2) as i32;
-            return Ok(new_short_int(index));
+            return Ok(JSValue::new_short_int(index));
         }
 
         if (re_flags & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) != 0 {
@@ -260,7 +258,7 @@ pub(crate) fn regexp_exec(
         }
 
         if mode == RegExpExecMode::Test {
-            return Ok(JS_TRUE);
+            return Ok(JSValue::JS_TRUE);
         }
 
         let result = ctx.alloc_array(capture_count)?;
@@ -272,7 +270,7 @@ pub(crate) fn regexp_exec(
         let index_key = ctx.intern_string(b"index")?;
         let input_key = ctx.intern_string(b"input")?;
         let index_val = ctx.string_utf8_to_utf16_pos(input, capture[0] * 2) as i32;
-        define_property_value(ctx, result, index_key, new_short_int(index_val))?;
+        define_property_value(ctx, result, index_key, JSValue::new_short_int(index_val))?;
         define_property_value(ctx, result, input_key, input)?;
 
         for i in 0..capture_count {
@@ -280,7 +278,7 @@ pub(crate) fn regexp_exec(
             let end = capture[2 * i + 1];
             if start != u32::MAX && end != u32::MAX {
                 let val = ctx.sub_string_utf8(input, start * 2, end * 2)?;
-                set_property(ctx, result, new_short_int(i as i32), val)?;
+                set_property(ctx, result, JSValue::new_short_int(i as i32), val)?;
             }
         }
 
@@ -291,7 +289,7 @@ pub(crate) fn regexp_exec(
 }
 
 fn regexp_object_ptr(obj: JSValue) -> Result<NonNull<Object>, RegExpError> {
-    let ptr = value_to_ptr::<Object>(obj).ok_or(RegExpError::TypeError("not a regular expression"))?;
+    let ptr = obj.to_ptr::<Object>().ok_or(RegExpError::TypeError("not a regular expression"))?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable object header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -336,7 +334,7 @@ fn lre_get_flags(bytecode: &[u8]) -> Result<u16, RegExpError> {
 
 fn check_stack_space(ctx: &JSContext, sp: *mut JSValue, slots: usize) -> Result<(), RegExpError> {
     let new_sp = unsafe { sp.sub(slots) };
-    let heap_limit = ctx.heap_free_ptr().as_ptr() as usize + (JS_STACK_SLACK as usize * JSW as usize);
+    let heap_limit = ctx.heap_free_ptr().as_ptr() as usize + (JS_STACK_SLACK as usize * JSValue::JSW as usize);
     if (new_sp as usize) < heap_limit {
         return Err(RegExpError::StackOverflow);
     }
@@ -438,16 +436,16 @@ fn peek_prev_char(input: &[u8], pos: usize) -> Option<u32> {
 }
 
 fn encode_stack_ptr(stack_top: *mut JSValue, ptr: *mut JSValue) -> Result<JSValue, RegExpError> {
-    let offset = (stack_top as isize - ptr as isize) / (JSW as isize);
+    let offset = (stack_top as isize - ptr as isize) / (JSValue::JSW as isize);
     let offset = i32::try_from(offset).map_err(|_| RegExpError::StackOverflow)?;
-    Ok(new_short_int(offset))
+    Ok(JSValue::new_short_int(offset))
 }
 
 fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Result<*mut JSValue, RegExpError> {
     if !val.is_int() {
         return Err(RegExpError::InvalidValue("stack ptr"));
     }
-    let offset = value_get_int(val);
+    let offset = val.get_int();
     if offset < 0 {
         return Err(RegExpError::InvalidValue("stack ptr"));
     }
@@ -456,14 +454,14 @@ fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Result<*mut JSValu
 
 fn encode_pc_state(pc: usize, state: ReExecState) -> JSValue {
     let value = ((pc as i32) << 2) | (state as i32);
-    new_short_int(value)
+    JSValue::new_short_int(value)
 }
 
 fn decode_pc_state(val: JSValue) -> Result<(usize, ReExecState), RegExpError> {
     if !val.is_int() {
         return Err(RegExpError::InvalidValue("state"));
     }
-    let raw = value_get_int(val);
+    let raw = val.get_int();
     if raw < 0 {
         return Err(RegExpError::InvalidValue("state"));
     }
@@ -510,11 +508,11 @@ fn lre_exec(
                 if !idx.is_int() || !prev.is_int() {
                     return Err(RegExpError::InvalidValue("capture restore"));
                 }
-                let idx = value_get_int(idx);
+                let idx = idx.get_int();
                 if idx < 0 {
                     return Err(RegExpError::InvalidValue("capture index"));
                 }
-                capture[idx as usize] = value_get_int(prev) as u32;
+                capture[idx as usize] = prev.get_int() as u32;
                 *sp = unsafe { (*sp).add(2) };
             }
             let state_val = unsafe { ptr::read_unaligned(*sp) };
@@ -524,7 +522,7 @@ fn lre_exec(
             if !cptr_val.is_int() {
                 return Err(RegExpError::InvalidValue("cptr"));
             }
-            let cptr_offset = value_get_int(cptr_val);
+            let cptr_offset = cptr_val.get_int();
             if cptr_offset < 0 {
                 return Err(RegExpError::InvalidValue("cptr"));
             }
@@ -559,7 +557,7 @@ fn lre_exec(
                     if !cptr_val.is_int() {
                         return Err(RegExpError::InvalidValue("cptr"));
                     }
-                    let cptr_offset = value_get_int(cptr_val);
+                    let cptr_offset = cptr_val.get_int();
                     if cptr_offset < 0 {
                         return Err(RegExpError::InvalidValue("cptr"));
                     }
@@ -600,11 +598,11 @@ fn lre_exec(
                         if !idx.is_int() || !prev.is_int() {
                             return Err(RegExpError::InvalidValue("capture restore"));
                         }
-                        let idx = value_get_int(idx);
+                        let idx = idx.get_int();
                         if idx < 0 {
                             return Err(RegExpError::InvalidValue("capture index"));
                         }
-                        capture[idx as usize] = value_get_int(prev) as u32;
+                        capture[idx as usize] = prev.get_int() as u32;
                         sp = unsafe { sp.add(2) };
                     }
                     let state_val = unsafe { ptr::read_unaligned(sp) };
@@ -614,7 +612,7 @@ fn lre_exec(
                     if !cptr_val.is_int() {
                         return Err(RegExpError::InvalidValue("cptr"));
                     }
-                    let cptr_offset = value_get_int(cptr_val);
+                    let cptr_offset = cptr_val.get_int();
                     if cptr_offset < 0 {
                         return Err(RegExpError::InvalidValue("cptr"));
                     }
@@ -709,7 +707,7 @@ fn lre_exec(
                     (pc, (pc as i32 + offset) as usize)
                 };
                 let state = encode_pc_state(pc1, ReExecState::Split);
-                let cptr_val = new_short_int(cptr as i32);
+                let cptr_val = JSValue::new_short_int(cptr as i32);
                 let bp_val = encode_stack_ptr(stack_top, bp)?;
                 unsafe {
                     sp = sp.sub(3);
@@ -737,7 +735,7 @@ fn lre_exec(
                         ReExecState::NegativeLookahead
                     },
                 );
-                let cptr_val = new_short_int(cptr as i32);
+                let cptr_val = JSValue::new_short_int(cptr as i32);
                 let bp_val = encode_stack_ptr(stack_top, bp)?;
                 unsafe {
                     sp = sp.sub(3);
@@ -933,7 +931,7 @@ fn lre_exec(
                             (pc, (pc as i32 + offset) as usize)
                         };
                         let state = encode_pc_state(pc1, ReExecState::Split);
-                        let cptr_val = new_short_int(cptr as i32);
+                        let cptr_val = JSValue::new_short_int(cptr as i32);
                         let bp_val = encode_stack_ptr(stack_top, bp)?;
                         unsafe {
                             sp = sp.sub(3);
@@ -1153,8 +1151,8 @@ fn save_capture(
     unsafe {
         *sp = (*sp).sub(2);
         // SAFETY: stack has space for capture undo info.
-        ptr::write_unaligned(*sp, new_short_int(idx as i32));
-        ptr::write_unaligned((*sp).add(1), new_short_int(prev));
+        ptr::write_unaligned(*sp, JSValue::new_short_int(idx as i32));
+        ptr::write_unaligned((*sp).add(1), JSValue::new_short_int(prev));
     }
     capture[idx] = value;
     Ok(())
@@ -1175,7 +1173,7 @@ fn save_capture_check(
             if !saved_idx.is_int() {
                 return Err(RegExpError::InvalidValue("capture index"));
             }
-            if value_get_int(saved_idx) == idx as i32 {
+            if saved_idx.get_int() == idx as i32 {
                 break;
             }
             sp1 = unsafe { sp1.add(2) };
@@ -1185,8 +1183,8 @@ fn save_capture_check(
             unsafe {
                 *sp = (*sp).sub(2);
                 // SAFETY: stack has space for capture undo info.
-                ptr::write_unaligned(*sp, new_short_int(idx as i32));
-                ptr::write_unaligned((*sp).add(1), new_short_int(prev));
+                ptr::write_unaligned(*sp, JSValue::new_short_int(idx as i32));
+                ptr::write_unaligned((*sp).add(1), JSValue::new_short_int(prev));
             }
             break;
         }
@@ -1222,12 +1220,12 @@ mod tests {
         let input_key = ctx.intern_string(b"input").expect("input key");
         let index_val = get_property(&mut ctx, result, index_key).expect("index prop");
         assert!(index_val.is_int());
-        assert_eq!(value_get_int(index_val), 1);
+        assert_eq!(index_val.get_int(), 1);
         let input_val = get_property(&mut ctx, result, input_key).expect("input prop");
         let mut scratch = [0u8; 5];
         let view = string_view(input_val, &mut scratch).expect("input view");
         assert_eq!(view.bytes(), b"cat");
-        let match_val = get_property(&mut ctx, result, new_short_int(0)).expect("match");
+        let match_val = get_property(&mut ctx, result, JSValue::new_short_int(0)).expect("match");
         let view = string_view(match_val, &mut scratch).expect("match view");
         assert_eq!(view.bytes(), b"a");
     }

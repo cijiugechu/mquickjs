@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 use bitflags::bitflags;
 
 use crate::capi_defs::JSContext;
-use crate::jsvalue::{value_to_ptr, JSValue, JSWord, JS_NULL};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use core::mem::size_of;
 use core::ptr;
@@ -116,16 +116,16 @@ impl JSParseState {
         flags.set(ParseStateFlags::HAS_COLUMN, has_column);
         Self {
             ctx,
-            token: Cell::new(Token::new(0, 0, TokenExtra::None, JS_NULL)),
-            token_value: Cell::new(JS_NULL),
+            token: Cell::new(Token::new(0, 0, TokenExtra::None, JSValue::JS_NULL)),
+            token_value: Cell::new(JSValue::JS_NULL),
             flags: Cell::new(flags),
-            source_str: Cell::new(JS_NULL),
-            filename_str: Cell::new(JS_NULL),
+            source_str: Cell::new(JSValue::JS_NULL),
+            filename_str: Cell::new(JSValue::JS_NULL),
             source_buf: Cell::new(core::ptr::null()),
             buf_pos: Cell::new(0),
             buf_len: Cell::new(0),
-            cur_func: Cell::new(JS_NULL),
-            byte_code: Cell::new(JS_NULL),
+            cur_func: Cell::new(JSValue::JS_NULL),
+            byte_code: Cell::new(JSValue::JS_NULL),
             byte_code_len: Cell::new(0),
             last_opcode_pos: Cell::new(0),
             last_pc2line_pos: Cell::new(0),
@@ -136,7 +136,7 @@ impl JSParseState {
             hoisted_code_len: Cell::new(0),
             local_vars_len: Cell::new(0),
             eval_ret_idx: Cell::new(0),
-            top_break: Cell::new(JS_NULL),
+            top_break: Cell::new(JSValue::JS_NULL),
             capture_count: Cell::new(0),
             error_msg: Cell::new([0; ERROR_MSG_LEN]),
         }
@@ -153,11 +153,11 @@ impl JSParseState {
     pub fn reset_parse_state(&self, input_pos: u32, cur_func: JSValue) {
         debug_assert!(input_pos <= self.buf_len.get());
         self.buf_pos.set(input_pos);
-        let token = Token::new(b' ' as i32, 0, TokenExtra::None, JS_NULL);
+        let token = Token::new(b' ' as i32, 0, TokenExtra::None, JSValue::JS_NULL);
         self.set_token(token);
 
         self.cur_func.set(cur_func);
-        self.byte_code.set(JS_NULL);
+        self.byte_code.set(JSValue::JS_NULL);
         self.byte_code_len.set(0);
         self.last_opcode_pos.set(-1);
 
@@ -314,7 +314,7 @@ impl JSParseState {
     }
 
     pub(crate) fn refresh_source_buf_from_str(&self) {
-        let Some(ptr) = value_to_ptr::<u8>(self.source_str.get()) else {
+        let Some(ptr) = self.source_str.get().to_ptr::<u8>() else {
             return;
         };
         let header_word = unsafe {
@@ -338,7 +338,6 @@ mod tests {
     use super::*;
     use core::ptr::NonNull;
 
-    use crate::jsvalue::new_short_int;
 
     #[test]
     #[cfg(not(miri))]
@@ -398,9 +397,9 @@ mod tests {
         let buf = [0u8; 10];
         state.set_source(buf.as_ptr(), buf.len() as u32);
         state.buf_pos.set(5);
-        state.set_token(Token::new(123, 7, TokenExtra::None, JS_NULL));
-        state.cur_func.set(new_short_int(1));
-        state.byte_code.set(new_short_int(2));
+        state.set_token(Token::new(123, 7, TokenExtra::None, JSValue::JS_NULL));
+        state.cur_func.set(JSValue::new_short_int(1));
+        state.byte_code.set(JSValue::new_short_int(2));
         state.byte_code_len.set(3);
         state.last_opcode_pos.set(17);
         state.pc2line_bit_len.set(9);
@@ -410,12 +409,12 @@ mod tests {
         state.local_vars_len.set(4);
         state.eval_ret_idx.set(2);
 
-        state.reset_parse_state(2, JS_NULL);
+        state.reset_parse_state(2, JSValue::JS_NULL);
 
         assert_eq!(state.buf_pos.get(), 2);
         assert_eq!(state.token.get().val(), b' ' as i32);
-        assert_eq!(state.cur_func.get(), JS_NULL);
-        assert_eq!(state.byte_code.get(), JS_NULL);
+        assert_eq!(state.cur_func.get(), JSValue::JS_NULL);
+        assert_eq!(state.byte_code.get(), JSValue::JS_NULL);
         assert_eq!(state.byte_code_len.get(), 0);
         assert_eq!(state.last_opcode_pos.get(), -1);
         assert_eq!(state.pc2line_bit_len.get(), 0);

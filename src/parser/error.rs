@@ -121,7 +121,7 @@ pub fn parse_expect_semi<S: TokenStream>(state: &mut S) -> Result<(), ParserErro
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
-    use crate::jsvalue::JS_NULL;
+    use crate::jsvalue::JSValue;
     use crate::parser::types::TokenExtra;
 
     #[derive(Debug)]
@@ -134,7 +134,7 @@ mod tests {
     impl DummyState {
         fn new(val: i32, source_pos: u32, got_lf: bool) -> Self {
             Self {
-                token: Token::new(val, source_pos, TokenExtra::None, JS_NULL),
+                token: Token::new(val, source_pos, TokenExtra::None, JSValue::JS_NULL),
                 got_lf,
                 next_calls: 0,
             }

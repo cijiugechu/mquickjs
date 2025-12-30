@@ -5,7 +5,7 @@ use crate::enums::JSObjectClass;
 use crate::function_bytecode::FunctionBytecode;
 use crate::gc_ref::GcRefState;
 use crate::heap::{mblock_size, set_free_block, HeapLayout};
-use crate::jsvalue::{value_from_ptr, value_to_ptr, JSValue, JSWord, JS_NULL};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader, PrimitiveValue};
 use crate::parser::parse_state::JSParseState;
@@ -133,14 +133,14 @@ pub fn gc_mark_all(heap: &HeapLayout, roots: &mut GcRoots<'_>, config: GcMarkCon
     if let Some(cache) = roots.string_pos_cache.as_mut() {
         for entry in cache.iter_mut() {
             if !gc_is_marked(heap, entry.str()) {
-                entry.set_str(JS_NULL);
+                entry.set_str(JSValue::JS_NULL);
             }
         }
     }
 }
 
 pub fn gc_is_marked(heap: &HeapLayout, val: JSValue) -> bool {
-    let Some(ptr) = value_to_ptr::<u8>(val) else {
+    let Some(ptr) = val.to_ptr::<u8>() else {
         return false;
     };
     if !ptr_in_heap(heap, ptr) {
@@ -322,7 +322,7 @@ impl GcMarker {
     }
 
     fn mark_value(&mut self, val: JSValue) {
-        let Some(ptr) = value_to_ptr::<u8>(val) else {
+        let Some(ptr) = val.to_ptr::<u8>() else {
             return;
         };
         if !self.ptr_in_heap(ptr) {
@@ -360,7 +360,7 @@ impl GcMarker {
     }
 
     fn flush_value(&mut self, val: JSValue) {
-        let Some(ptr) = value_to_ptr::<u8>(val) else {
+        let Some(ptr) = val.to_ptr::<u8>() else {
             return;
         };
         if !self.ptr_in_heap(ptr) {
@@ -377,7 +377,7 @@ impl GcMarker {
     }
 
     fn flush_value_array(&mut self, value: JSValue, pos: u32) {
-        let Some(ptr) = value_to_ptr::<u8>(value) else {
+        let Some(ptr) = value.to_ptr::<u8>() else {
             return;
         };
         if !self.ptr_in_heap(ptr) {
@@ -395,7 +395,7 @@ impl GcMarker {
 
         while idx < size {
             let val = unsafe { *arr_ptr.add(idx) };
-            if value_to_ptr::<u8>(val).is_some() {
+            if val.to_ptr::<u8>().is_some() {
                 break;
             }
             idx += 1;
@@ -425,7 +425,7 @@ impl GcMarker {
                 let header_word = unsafe { ptr::read_unaligned(ptr.cast::<JSWord>()) };
                 let header = MbHeader::from_word(header_word);
                 if header.gc_mark() && mtag_has_references(header.tag()) {
-                    let val = unsafe { value_from_ptr(NonNull::new_unchecked(ptr)) };
+                    let val = unsafe { JSValue::from_ptr(NonNull::new_unchecked(ptr)) };
                     let item = if header.tag() == MTag::ValueArray {
                         MarkItem::ValueArray { value: val, pos: 0 }
                     } else {
@@ -561,7 +561,6 @@ mod tests {
     use crate::containers::{ByteArrayHeader, ValueArrayHeader};
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
     use crate::heap::HeapLayout;
-    use crate::jsvalue::{value_from_ptr, JSW, JS_NULL};
     use crate::memblock::{MbHeader, MTag};
     use crate::object::{Object, ObjectUserData};
     use crate::capi_defs::JSContext;
@@ -578,12 +577,12 @@ mod tests {
             let mut storage = vec![0 as JSWord; words];
             let base = NonNull::new(storage.as_mut_ptr() as *mut u8).unwrap();
             let stack_top =
-                unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSW as usize)) };
+                unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSValue::JSW as usize)) };
             let stack_bottom = unsafe {
                 NonNull::new_unchecked(
                     stack_top
                         .as_ptr()
-                        .sub(stack_words * JSW as usize) as *mut JSValue,
+                        .sub(stack_words * JSValue::JSW as usize) as *mut JSValue,
                 )
             };
             let layout = HeapLayout::new(base, base, stack_top, stack_bottom, 0);
@@ -613,7 +612,7 @@ mod tests {
         unsafe {
             write_header(byte_ptr, MbHeader::from(byte_header));
         }
-        let byte_val = value_from_ptr(byte_ptr);
+        let byte_val = JSValue::from_ptr(byte_ptr);
 
         let value_array_len = 2usize;
         let array_size = size_of::<JSWord>() + value_array_len * size_of::<JSValue>();
@@ -626,9 +625,9 @@ mod tests {
             write_header(array_ptr, MbHeader::from(array_header));
             let arr_ptr = array_ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
             *arr_ptr.add(0) = byte_val;
-            *arr_ptr.add(1) = JS_NULL;
+            *arr_ptr.add(1) = JSValue::JS_NULL;
         }
-        let array_val = value_from_ptr(array_ptr);
+        let array_val = JSValue::from_ptr(array_ptr);
 
         let func_ptr = arena
             .layout
@@ -636,25 +635,25 @@ mod tests {
             .unwrap();
         let func_header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let func_fields = FunctionBytecodeFields {
-            func_name: JS_NULL,
-            byte_code: JS_NULL,
-            cpool: JS_NULL,
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            func_name: JSValue::JS_NULL,
+            byte_code: JSValue::JS_NULL,
+            cpool: JSValue::JS_NULL,
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 0,
             ext_vars_len: 0,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         let func = FunctionBytecode::from_fields(func_header, func_fields);
         unsafe {
             ptr::write(func_ptr.as_ptr() as *mut FunctionBytecode, func);
         }
-        let func_val = value_from_ptr(func_ptr);
+        let func_val = JSValue::from_ptr(func_ptr);
 
         let extra_size = 2;
-        let obj_size = Object::PAYLOAD_OFFSET + (extra_size as usize) * (JSW as usize);
+        let obj_size = Object::PAYLOAD_OFFSET + (extra_size as usize) * (JSValue::JSW as usize);
         let obj_ptr = arena
             .layout
             .malloc(obj_size, MTag::Object, |_| {})
@@ -663,15 +662,15 @@ mod tests {
         unsafe {
             write_header(obj_ptr, obj_header.header());
             let obj = obj_ptr.as_ptr() as *mut Object;
-            *Object::proto_ptr(obj) = JS_NULL;
-            *Object::props_ptr(obj) = JS_NULL;
+            *Object::proto_ptr(obj) = JSValue::JS_NULL;
+            *Object::props_ptr(obj) = JSValue::JS_NULL;
             let payload = Object::payload_ptr(obj);
             let closure = core::ptr::addr_of_mut!((*payload).closure);
             *ClosureData::func_bytecode_ptr(closure) = func_val;
             let var_refs = ClosureData::var_refs_ptr(closure);
             *var_refs = array_val;
         }
-        let obj_val = value_from_ptr(obj_ptr);
+        let obj_val = JSValue::from_ptr(obj_ptr);
 
         let other_ptr = arena
             .layout
@@ -681,7 +680,7 @@ mod tests {
         unsafe {
             write_header(other_ptr, MbHeader::from(other_header));
         }
-        let other_val = value_from_ptr(other_ptr);
+        let other_val = JSValue::from_ptr(other_ptr);
 
         let roots = [obj_val];
         let mut gc_roots = GcRoots::new(&roots, &[]);
@@ -706,10 +705,10 @@ mod tests {
         unsafe {
             write_header(byte_ptr, MbHeader::from(byte_header));
         }
-        let byte_val = value_from_ptr(byte_ptr);
+        let byte_val = JSValue::from_ptr(byte_ptr);
 
         let mut refs = GcRefState::new();
-        let mut slot_ref = Box::new(crate::gc_ref::GcRef::new(JS_NULL));
+        let mut slot_ref = Box::new(crate::gc_ref::GcRef::new(JSValue::JS_NULL));
         let slot = refs.push_gc_ref(slot_ref.as_mut());
         unsafe {
             *slot = byte_val;
@@ -735,14 +734,14 @@ mod tests {
         unsafe {
             write_header(byte_ptr, MbHeader::from(byte_header));
         }
-        let byte_val = value_from_ptr(byte_ptr);
+        let byte_val = JSValue::from_ptr(byte_ptr);
 
         let mut cache = [StringPosCacheEntry::new(byte_val, 0, 0); JS_STRING_POS_CACHE_SIZE];
         let mut gc_roots = GcRoots::new(&[], &[]).with_string_pos_cache(&mut cache);
         gc_mark_all(&arena.layout, &mut gc_roots, GcMarkConfig::default());
 
-        assert_eq!(cache[0].str(), JS_NULL);
-        assert_eq!(cache[1].str(), JS_NULL);
+        assert_eq!(cache[0].str(), JSValue::JS_NULL);
+        assert_eq!(cache[1].str(), JSValue::JS_NULL);
     }
 
     #[test]
@@ -768,7 +767,7 @@ mod tests {
             write_header(live_ptr, MbHeader::from(live_header));
         }
 
-        let obj_size = Object::PAYLOAD_OFFSET + JSW as usize;
+        let obj_size = Object::PAYLOAD_OFFSET + JSValue::JSW as usize;
         let obj_ptr = arena
             .layout
             .malloc(obj_size, MTag::Object, |_| {})
@@ -783,8 +782,8 @@ mod tests {
         let opaque_ptr = core::ptr::addr_of_mut!(opaque_byte) as *mut c_void;
         unsafe {
             // SAFETY: object fields are within the allocated object payload.
-            *Object::proto_ptr(obj) = JS_NULL;
-            *Object::props_ptr(obj) = JS_NULL;
+            *Object::proto_ptr(obj) = JSValue::JS_NULL;
+            *Object::props_ptr(obj) = JSValue::JS_NULL;
             let payload = Object::payload_ptr(obj);
             let user = core::ptr::addr_of_mut!((*payload).user);
             *user = ObjectUserData::new(opaque_ptr);

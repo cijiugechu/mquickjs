@@ -1,5 +1,7 @@
-use crate::cutils::{get_u16, get_u32, put_u16, put_u32, unicode_from_utf8, unicode_to_utf8, UTF8_CHAR_LEN_MAX};
-use crate::jsvalue::JS_SHORTINT_MAX;
+use crate::cutils::{
+    get_u16, get_u32, put_u16, put_u32, unicode_from_utf8, unicode_to_utf8, UTF8_CHAR_LEN_MAX,
+};
+use crate::jsvalue::JSValue;
 use crate::opcode::{
     RegExpOpCode, REOP_ANY, REOP_BACK_REFERENCE, REOP_BACK_REFERENCE_I, REOP_CHAR1, REOP_CHAR4,
     REOP_CHECK_ADVANCE, REOP_DOT, REOP_GOTO, REOP_LINE_END, REOP_LINE_END_M, REOP_LINE_START,
@@ -311,8 +313,8 @@ impl<'a> RegExpParser<'a> {
                 break;
             }
             v = v.saturating_mul(10).saturating_add((c - b'0') as u64);
-            if v >= JS_SHORTINT_MAX as u64 {
-                v = JS_SHORTINT_MAX as u64;
+            if v >= JSValue::JS_SHORTINT_MAX as u64 {
+                v = JSValue::JS_SHORTINT_MAX as u64;
             }
             *pos += 1;
         }
@@ -628,11 +630,11 @@ impl<'a> RegExpParser<'a> {
         let (quant_min, quant_max) = match c {
             b'*' => {
                 p += 1;
-                (0, JS_SHORTINT_MAX)
+                (0, JSValue::JS_SHORTINT_MAX)
             }
             b'+' => {
                 p += 1;
-                (1, JS_SHORTINT_MAX)
+                (1, JSValue::JS_SHORTINT_MAX)
             }
             b'?' => {
                 p += 1;
@@ -654,7 +656,7 @@ impl<'a> RegExpParser<'a> {
                             return Err(self.error(ERR_INVALID_REPETITION_COUNT));
                         }
                     } else {
-                        max = JS_SHORTINT_MAX;
+                        max = JSValue::JS_SHORTINT_MAX;
                     }
                 }
                 self.buf_pos = tmp_pos;
@@ -698,8 +700,8 @@ impl<'a> RegExpParser<'a> {
             }
             if quant_max == 0 {
                 self.bytecode.truncate(last_atom_start);
-            } else if quant_max == 1 || quant_max == JS_SHORTINT_MAX {
-                let has_goto = quant_max == JS_SHORTINT_MAX;
+            } else if quant_max == 1 || quant_max == JSValue::JS_SHORTINT_MAX {
+                let has_goto = quant_max == JSValue::JS_SHORTINT_MAX;
                 let extra = if need_check_adv { 2 } else { 0 };
                 self.bytecode.insert(last_atom_start, 5 + extra);
                 self.bytecode.write_u8(
@@ -755,7 +757,7 @@ impl<'a> RegExpParser<'a> {
                     loop_start,
                 );
             }
-        } else if quant_min == 1 && quant_max == JS_SHORTINT_MAX && !need_check_adv {
+        } else if quant_min == 1 && quant_max == JSValue::JS_SHORTINT_MAX && !need_check_adv {
             self.re_emit_goto(
                 opcode_u8(RegExpOpCode::from_u16(
                     REOP_SPLIT_NEXT_FIRST.as_u16() - greedy_offset as u16,

@@ -1,7 +1,7 @@
 use crate::containers::{StringHeader, ValueArrayHeader};
 use crate::function_bytecode::FunctionBytecode;
 use crate::heap::mblock_size;
-use crate::jsvalue::{value_from_ptr_raw, value_to_ptr, JSValue, JSWord};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use crate::stdlib::stdlib_def::{BytecodeHeader, JS_BYTECODE_MAGIC, JS_BYTECODE_VERSION};
 use core::mem::size_of;
@@ -13,8 +13,6 @@ use crate::gc::GcMarkConfig;
 use crate::gc_runtime::GcRuntimeRoots;
 #[cfg(target_pointer_width = "64")]
 use crate::heap::{mblock_tag, thread_block, thread_pointer, HeapLayout, RootVisitor};
-#[cfg(target_pointer_width = "64")]
-use crate::jsvalue::{from_bits, raw_bits, short_float_to_f64, value_from_ptr, JS_TAG_PTR};
 #[cfg(target_pointer_width = "64")]
 use crate::containers::ByteArrayHeader;
 #[cfg(target_pointer_width = "64")]
@@ -128,7 +126,7 @@ fn align_up_32(size: usize) -> usize {
 
 #[cfg(target_pointer_width = "64")]
 fn jsvalue_to_u32(val: JSValue) -> Result<u32, BytecodePrepareError> {
-    let bits = raw_bits(val);
+    let bits = val.raw_bits();
     if bits > u32::MAX as JSWord {
         return Err(BytecodePrepareError::HeapTooLarge);
     }
@@ -166,23 +164,23 @@ fn mblock_size_32(ptr: *const u8) -> Result<usize, BytecodePrepareError> {
 
 #[cfg(target_pointer_width = "64")]
 fn update_threaded_pointers_64to32(ptr: *mut u8, new_offset: usize) -> Result<(), BytecodePrepareError> {
-    if new_offset > (u32::MAX as usize).saturating_sub(JS_TAG_PTR as usize) {
+    if new_offset > (u32::MAX as usize).saturating_sub(JSValue::JS_TAG_PTR as usize) {
         return Err(BytecodePrepareError::HeapTooLarge);
     }
-    let new_bits = (new_offset as JSWord) | (JS_TAG_PTR as JSWord);
+    let new_bits = (new_offset as JSWord) | (JSValue::JS_TAG_PTR as JSWord);
     let header_ptr = ptr as *mut JSValue;
     let mut val = unsafe {
         // SAFETY: caller guarantees `ptr` is readable as a JSValue header.
         *header_ptr
     };
-    while let Some(pv) = value_to_ptr::<JSValue>(val) {
+    while let Some(pv) = val.to_ptr::<JSValue>() {
         let next_val = unsafe {
             // SAFETY: threaded pointer points at a valid JSValue slot.
             *pv.as_ptr()
         };
         unsafe {
             // SAFETY: `pv` points at a writable JSValue slot.
-            *pv.as_ptr() = from_bits(new_bits);
+            *pv.as_ptr() = JSValue::from_bits(new_bits);
         }
         val = next_val;
     }
@@ -392,7 +390,7 @@ fn expand_short_floats(heap: &mut HeapLayout) -> Result<(), BytecodePrepareError
                         *slot
                     };
                     if val.is_short_float() {
-                        let float = short_float_to_f64(val);
+                        let float = val.short_float_to_f64();
                         let size = size_of::<JSWord>() + size_of::<f64>();
                         let float_ptr = heap
                             .malloc(size, MTag::Float64, |_| {})
@@ -401,7 +399,7 @@ fn expand_short_floats(heap: &mut HeapLayout) -> Result<(), BytecodePrepareError
                         unsafe {
                             // SAFETY: payload points within the newly allocated float64 block.
                             ptr::write_unaligned(payload, float);
-                            *slot = value_from_ptr(float_ptr);
+                            *slot = JSValue::from_ptr(float_ptr);
                         }
                     }
                 }
@@ -591,14 +589,14 @@ fn relocate_value(
         // SAFETY: caller guarantees `pval` is a valid JSValue slot.
         *pval
     };
-    let Some(ptr) = value_to_ptr::<u8>(val) else {
+    let Some(ptr) = val.to_ptr::<u8>() else {
         return;
     };
     let old_addr = ptr.as_ptr().addr();
     let offset = old_addr.wrapping_sub(old_base_addr);
     let new_addr = new_base_addr.wrapping_add(offset);
     let new_ptr = data_base.with_addr(new_addr);
-    let mut new_val = value_from_ptr_raw(new_ptr).expect("relocated pointer must be non-null");
+    let mut new_val = JSValue::from_ptr_raw(new_ptr).expect("relocated pointer must be non-null");
     if let Some(resolver) = resolver.as_deref_mut() {
         new_val = resolve_unique_string(new_val, resolver);
     }
@@ -609,7 +607,7 @@ fn relocate_value(
 }
 
 fn resolve_unique_string(val: JSValue, resolver: &mut dyn BytecodeAtomResolver) -> JSValue {
-    let Some(ptr) = value_to_ptr::<u8>(val) else {
+    let Some(ptr) = val.to_ptr::<u8>() else {
         return val;
     };
     let header_word = unsafe {
@@ -632,10 +630,7 @@ mod tests {
     use super::*;
     use crate::containers::string_alloc_size;
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
-    use crate::jsvalue::{value_from_ptr, JS_NULL};
     use core::ptr::NonNull;
-    #[cfg(target_pointer_width = "64")]
-    use crate::jsvalue::JSW;
 
     fn align_up(size: usize, align: usize) -> usize {
         debug_assert!(align.is_power_of_two());
@@ -670,7 +665,7 @@ mod tests {
         fn new(words: usize) -> Self {
             let mut storage = vec![0 as JSWord; words];
             let base = NonNull::new(storage.as_mut_ptr() as *mut u8).unwrap();
-            let bytes = words * JSW as usize;
+            let bytes = words * JSValue::JSW as usize;
             let stack_top = unsafe { NonNull::new_unchecked(base.as_ptr().add(bytes)) };
             let stack_bottom = unsafe {
                 // SAFETY: stack_top is non-null and within the allocation.
@@ -714,8 +709,8 @@ mod tests {
             magic: JS_BYTECODE_MAGIC,
             version: JS_BYTECODE_VERSION,
             base_addr: 0,
-            unique_strings: JS_NULL,
-            main_func: JS_NULL,
+            unique_strings: JSValue::JS_NULL,
+            main_func: JSValue::JS_NULL,
         };
         let mut buf = vec![0u8; size_of::<BytecodeHeader>()];
         unsafe {
@@ -737,12 +732,12 @@ mod tests {
         let func_size = size_of::<FunctionBytecode>();
         let array_size = size_of::<JSWord>() + 2 * size_of::<JSValue>();
         let string_size = string_alloc_size(3);
-        assert_eq!(func_size % (crate::jsvalue::JSW as usize), 0);
-        assert_eq!(array_size % (crate::jsvalue::JSW as usize), 0);
-        assert_eq!(string_size % (crate::jsvalue::JSW as usize), 0);
+        assert_eq!(func_size % (JSValue::JSW as usize), 0);
+        assert_eq!(array_size % (JSValue::JSW as usize), 0);
+        assert_eq!(string_size % (JSValue::JSW as usize), 0);
 
         let total = func_size + array_size + string_size;
-        let words = align_up(total, crate::jsvalue::JSW as usize) / (crate::jsvalue::JSW as usize);
+        let words = align_up(total, JSValue::JSW as usize) / (JSValue::JSW as usize);
         let mut old_words = vec![0 as JSWord; words];
         let old_base = old_words.as_mut_ptr().cast::<u8>();
         let old_base_addr = old_base as usize;
@@ -757,21 +752,21 @@ mod tests {
         unsafe {
             ptr::write_unaligned(array_ptr.cast::<JSWord>(), array_header.header().word());
             let arr_ptr = array_ptr.add(size_of::<JSWord>()).cast::<JSValue>();
-            *arr_ptr.add(0) = value_from_ptr(NonNull::new(string_ptr).unwrap());
-            *arr_ptr.add(1) = JS_NULL;
+            *arr_ptr.add(0) = JSValue::from_ptr(NonNull::new(string_ptr).unwrap());
+            *arr_ptr.add(1) = JSValue::JS_NULL;
         }
 
         let func_header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let func_fields = FunctionBytecodeFields {
-            func_name: value_from_ptr(NonNull::new(string_ptr).unwrap()),
-            byte_code: JS_NULL,
-            cpool: value_from_ptr(NonNull::new(array_ptr).unwrap()),
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            func_name: JSValue::from_ptr(NonNull::new(string_ptr).unwrap()),
+            byte_code: JSValue::JS_NULL,
+            cpool: JSValue::from_ptr(NonNull::new(array_ptr).unwrap()),
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 0,
             ext_vars_len: 0,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         let func = FunctionBytecode::from_fields(func_header, func_fields);
@@ -783,8 +778,8 @@ mod tests {
             magic: JS_BYTECODE_MAGIC,
             version: JS_BYTECODE_VERSION,
             base_addr: old_base_addr,
-            unique_strings: value_from_ptr(NonNull::new(array_ptr).unwrap()),
-            main_func: value_from_ptr(NonNull::new(func_ptr).unwrap()),
+            unique_strings: JSValue::from_ptr(NonNull::new(array_ptr).unwrap()),
+            main_func: JSValue::from_ptr(NonNull::new(func_ptr).unwrap()),
         };
 
         let mut new_words = vec![0 as JSWord; words];
@@ -797,10 +792,10 @@ mod tests {
         }
 
         let expected_string =
-            value_from_ptr(NonNull::new(unsafe { new_base.add(func_size + array_size) }).unwrap());
+            JSValue::from_ptr(NonNull::new(unsafe { new_base.add(func_size + array_size) }).unwrap());
         let expected_array =
-            value_from_ptr(NonNull::new(unsafe { new_base.add(func_size) }).unwrap());
-        let expected_func = value_from_ptr(NonNull::new(new_base).unwrap());
+            JSValue::from_ptr(NonNull::new(unsafe { new_base.add(func_size) }).unwrap());
+        let expected_func = JSValue::from_ptr(NonNull::new(new_base).unwrap());
 
         assert_eq!(header.base_addr, new_base_addr);
         assert_eq!(header.unique_strings, expected_array);
@@ -841,7 +836,7 @@ mod tests {
         let array_size = size_of::<JSWord>() + size_of::<JSValue>();
         let string_size = string_alloc_size(3);
         let total = func_size + array_size + string_size;
-        let words = align_up(total, crate::jsvalue::JSW as usize) / (crate::jsvalue::JSW as usize);
+        let words = align_up(total, JSValue::JSW as usize) / (JSValue::JSW as usize);
         let mut old_words = vec![0 as JSWord; words];
         let old_base = old_words.as_mut_ptr().cast::<u8>();
         let old_base_addr = old_base as usize;
@@ -856,20 +851,20 @@ mod tests {
         unsafe {
             ptr::write_unaligned(array_ptr.cast::<JSWord>(), array_header.header().word());
             let arr_ptr = array_ptr.add(size_of::<JSWord>()).cast::<JSValue>();
-            *arr_ptr = value_from_ptr(NonNull::new(string_ptr).unwrap());
+            *arr_ptr = JSValue::from_ptr(NonNull::new(string_ptr).unwrap());
         }
 
         let func_header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let func_fields = FunctionBytecodeFields {
-            func_name: value_from_ptr(NonNull::new(string_ptr).unwrap()),
-            byte_code: JS_NULL,
-            cpool: value_from_ptr(NonNull::new(array_ptr).unwrap()),
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            func_name: JSValue::from_ptr(NonNull::new(string_ptr).unwrap()),
+            byte_code: JSValue::JS_NULL,
+            cpool: JSValue::from_ptr(NonNull::new(array_ptr).unwrap()),
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 0,
             ext_vars_len: 0,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         let func = FunctionBytecode::from_fields(func_header, func_fields);
@@ -881,24 +876,24 @@ mod tests {
             magic: JS_BYTECODE_MAGIC,
             version: JS_BYTECODE_VERSION,
             base_addr: old_base_addr,
-            unique_strings: value_from_ptr(NonNull::new(array_ptr).unwrap()),
-            main_func: value_from_ptr(NonNull::new(func_ptr).unwrap()),
+            unique_strings: JSValue::from_ptr(NonNull::new(array_ptr).unwrap()),
+            main_func: JSValue::from_ptr(NonNull::new(func_ptr).unwrap()),
         };
 
         let mut replacement_mem = vec![
             0 as JSWord;
-            align_up(string_size, crate::jsvalue::JSW as usize) / (crate::jsvalue::JSW as usize)
+            align_up(string_size, JSValue::JSW as usize) / (JSValue::JSW as usize)
         ];
         let replacement_ptr = replacement_mem.as_mut_ptr().cast::<u8>();
         write_string(replacement_ptr, b"bar", true);
-        let replacement_val = value_from_ptr(NonNull::new(replacement_ptr).unwrap());
+        let replacement_val = JSValue::from_ptr(NonNull::new(replacement_ptr).unwrap());
 
         let mut new_words = vec![0 as JSWord; words];
         new_words.copy_from_slice(&old_words);
         let new_base = new_words.as_mut_ptr().cast::<u8>();
         let new_base_addr = new_base as usize;
         let new_string_ptr = unsafe { new_base.add(func_size + array_size) };
-        let target_val = value_from_ptr(NonNull::new(new_string_ptr).unwrap());
+        let target_val = JSValue::from_ptr(NonNull::new(new_string_ptr).unwrap());
         let mut resolver = Resolver {
             target: target_val,
             replacement: replacement_val,
@@ -934,7 +929,7 @@ mod tests {
         unsafe {
             ptr::write_unaligned(array_ptr.as_ptr().cast::<JSWord>(), header.header().word());
             let arr_ptr = array_ptr.as_ptr().add(size_of::<JSWord>()).cast::<JSValue>();
-            *arr_ptr = crate::jsvalue::short_float_from_f64(1.5);
+            *arr_ptr = JSValue::short_float_from_f64(1.5);
         }
 
         expand_short_floats(&mut arena.layout).expect("expand short floats");
@@ -942,7 +937,7 @@ mod tests {
         let arr_ptr = unsafe { array_ptr.as_ptr().add(size_of::<JSWord>()).cast::<JSValue>() };
         let val = unsafe { *arr_ptr };
         assert!(val.is_ptr());
-        let ptr = crate::jsvalue::value_to_ptr::<u8>(val).expect("float64 pointer");
+        let ptr = val.to_ptr::<u8>().expect("float64 pointer");
         let payload = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *const f64 };
         let stored = unsafe { ptr::read_unaligned(payload) };
         assert_eq!(stored.to_bits(), 1.5_f64.to_bits());
@@ -975,10 +970,10 @@ mod tests {
         unsafe {
             ptr::write_unaligned(array_ptr.as_ptr().cast::<JSWord>(), array_header.header().word());
             let arr_ptr = array_ptr.as_ptr().add(size_of::<JSWord>()).cast::<JSValue>();
-            *arr_ptr = value_from_ptr(byte_ptr);
+            *arr_ptr = JSValue::from_ptr(byte_ptr);
         }
 
-        let mut root_val = value_from_ptr(array_ptr);
+        let mut root_val = JSValue::from_ptr(array_ptr);
         let mut roots = RootSlot::new(&mut root_val);
         let len = unsafe { compact_heap_64to32(&mut arena.layout, &mut roots) }
             .expect("compact 64->32");
@@ -988,13 +983,13 @@ mod tests {
         let expected_len = expected_byte_size + expected_array_size;
         assert_eq!(len, expected_len);
 
-        let expected_root = (expected_byte_size as u32) | (JS_TAG_PTR as u32);
-        assert_eq!(raw_bits(root_val) as u32, expected_root);
+        let expected_root = (expected_byte_size as u32) | (JSValue::JS_TAG_PTR as u32);
+        assert_eq!(root_val.raw_bits() as u32, expected_root);
 
         let base = arena.layout.heap_base().as_ptr();
         let array32 = unsafe { base.add(expected_byte_size) };
         let arr_val = unsafe { ptr::read_unaligned(array32.add(WORD_32) as *const u32) };
-        assert_eq!(arr_val, JS_TAG_PTR as u32);
+        assert_eq!(arr_val, JSValue::JS_TAG_PTR as u32);
 
         let payload = unsafe { base.add(WORD_32) };
         let bytes = unsafe { core::slice::from_raw_parts(payload, byte_len) };
@@ -1015,7 +1010,7 @@ mod tests {
             ptr::write_unaligned(var_ptr.as_ptr().cast::<JSWord>(), header.header().word());
         }
 
-        let mut root_val = value_from_ptr(var_ptr);
+        let mut root_val = JSValue::from_ptr(var_ptr);
         let mut roots = RootSlot::new(&mut root_val);
         let err = unsafe { compact_heap_64to32(&mut arena.layout, &mut roots) }
             .expect_err("unsupported tag");

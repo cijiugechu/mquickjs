@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn array_data_len_max() {
-        let data = ArrayData::new(crate::jsvalue::JS_NULL, ArrayData::LEN_MAX);
+        let data = ArrayData::new(JSValue::JS_NULL, ArrayData::LEN_MAX);
         assert_eq!(data.len(), ArrayData::LEN_MAX);
     }
 }

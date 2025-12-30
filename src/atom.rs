@@ -1,10 +1,7 @@
 use crate::containers::StringHeader;
 use crate::cutils::{unicode_to_utf8, utf8_get};
 use crate::dtoa::{js_atod, js_dtoa, AtodFlags, JS_DTOA_FORMAT_FREE};
-use crate::jsvalue::{
-    raw_bits, value_get_special_tag, value_get_special_value, value_to_ptr, JSValue, JSWord,
-    JS_TAG_STRING_CHAR,
-};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use core::cmp::Ordering;
 use core::mem::size_of;
@@ -51,7 +48,7 @@ impl AtomTables {
         if !val.is_ptr() {
             return val;
         }
-        let ptr = match value_to_ptr::<u8>(val) {
+        let ptr = match val.to_ptr::<u8>() {
             Some(ptr) => ptr,
             None => return val,
         };
@@ -81,22 +78,22 @@ impl AtomTables {
     }
 
     pub fn resolve_atom(&self, val: JSValue) -> Option<JSValue> {
-        if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
+        if val.get_special_tag() == JSValue::JS_TAG_STRING_CHAR {
             return Some(val);
         }
         if !val.is_ptr() {
             return None;
         }
-        let raw = raw_bits(val);
+        let raw = val.raw_bits();
         for table in &self.rom_tables {
-            if let Some(entry) = table.iter().find(|entry| raw_bits(**entry) == raw) {
+            if let Some(entry) = table.iter().find(|entry| entry.raw_bits() == raw) {
                 return Some(*entry);
             }
         }
         if let Some(entry) = self
             .unique_strings
             .iter()
-            .find(|entry| raw_bits(**entry) == raw)
+            .find(|entry| entry.raw_bits() == raw)
         {
             return Some(*entry);
         }
@@ -204,13 +201,13 @@ fn is_numeric_string(bytes: &[u8], is_ascii: bool) -> bool {
 
 fn string_bytes(val: JSValue, scratch: &mut [u8; STRING_CHAR_BUF_LEN]) -> Option<&[u8]> {
     if val.is_ptr() {
-        let ptr = value_to_ptr::<u8>(val)?;
+        let ptr = val.to_ptr::<u8>()?;
         let header = string_header(ptr)?;
         let bytes = string_bytes_from_ptr(ptr, header);
         return Some(bytes);
     }
-    if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
-        let codepoint = value_get_special_value(val) as u32;
+    if val.get_special_tag() == JSValue::JS_TAG_STRING_CHAR {
+        let codepoint = val.get_special_value() as u32;
         let len = unicode_to_utf8(scratch, codepoint);
         debug_assert!(len > 0);
         return Some(&scratch[..len]);
@@ -309,7 +306,6 @@ mod tests {
     use super::*;
     use crate::containers::{string_alloc_size, JS_STRING_LEN_MAX};
     use crate::heap::HeapLayout;
-    use crate::jsvalue::{value_from_ptr, value_make_special, JSValue, JSW};
     use crate::memblock::MTag;
     use crate::string::js_string::is_ascii_bytes;
     use core::ptr::{self, NonNull};
@@ -324,7 +320,7 @@ mod tests {
             let mut storage = vec![0 as JSWord; words];
             let base = NonNull::new(storage.as_mut_ptr() as *mut u8).unwrap();
             let stack_top =
-                unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSW as usize)) };
+                unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSValue::JSW as usize)) };
             let stack_bottom =
                 unsafe { NonNull::new_unchecked(stack_top.as_ptr() as *mut JSValue) };
             let layout = HeapLayout::new(base, base, stack_top, stack_bottom, 0);
@@ -351,12 +347,12 @@ mod tests {
                 ptr::write_bytes(payload, 0, size - size_of::<JSWord>());
                 ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
             }
-            value_from_ptr(ptr)
+            JSValue::from_ptr(ptr)
         }
     }
 
     fn header_for(val: JSValue) -> StringHeader {
-        let ptr = value_to_ptr::<u8>(val).expect("string ptr");
+        let ptr = val.to_ptr::<u8>().expect("string ptr");
         string_header(ptr).expect("string header")
     }
 
@@ -401,7 +397,7 @@ mod tests {
     #[test]
     fn make_unique_string_ignores_string_char_values() {
         let mut tables = AtomTables::new();
-        let val = value_make_special(JS_TAG_STRING_CHAR, 0x61);
+        let val = JSValue::value_make_special(JSValue::JS_TAG_STRING_CHAR, 0x61);
         let out = tables.make_unique_string(val);
         assert_eq!(out, val);
         assert_eq!(tables.unique_len(), 0);

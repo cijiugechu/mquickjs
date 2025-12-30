@@ -13,12 +13,7 @@ use crate::gc::{GcMarkConfig};
 use crate::gc_ref::{GcRef, GcRefState};
 use crate::gc_runtime::{gc_collect, GcRuntimeRoots};
 use crate::heap::{mblock_size, HeapLayout, JS_MIN_CRITICAL_FREE_SIZE, JS_MIN_FREE_SIZE, JS_STACK_SLACK};
-use crate::jsvalue::{
-    from_bits, new_short_int, raw_bits, value_from_ptr, value_get_int, value_get_special_tag,
-    value_get_special_value, value_make_special, value_to_ptr, JSValue, JSWord, JSW, JS_NULL,
-    JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_PTR, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR,
-    JS_UNDEFINED,
-};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
@@ -75,7 +70,7 @@ impl HeapStorage {
     }
 
     unsafe fn from_raw(mem_start: NonNull<u8>, mem_size: usize) -> Result<Self, ContextError> {
-        let word_bytes = JSW as usize;
+        let word_bytes = JSValue::JSW as usize;
         let addr = mem_start.as_ptr() as usize;
         if !addr.is_multiple_of(word_bytes) {
             return Err(ContextError::MemoryUnaligned {
@@ -159,7 +154,7 @@ impl RomTable {
         let word_bytes = image.word_bytes as usize;
         let mut words = vec![0 as JSWord; image.words.len()].into_boxed_slice();
         let base_addr = words.as_mut_ptr() as usize;
-        let tag_mask = (JSW as usize) - 1;
+        let tag_mask = (JSValue::JSW as usize) - 1;
         for (idx, word) in image.words.iter().enumerate() {
             let value = match *word {
                 StdlibWord::Raw(raw) => {
@@ -175,7 +170,7 @@ impl RomTable {
                 StdlibWord::RomOffset(offset) => {
                     let addr = base_addr + offset as usize * word_bytes;
                     debug_assert!((addr & tag_mask) == 0);
-                    (addr | JS_TAG_PTR as usize) as JSWord
+                    (addr | JSValue::JS_TAG_PTR as usize) as JSWord
                 }
             };
             words[idx] = value;
@@ -256,9 +251,9 @@ impl RomTable {
     }
 
     fn value_from_word(&self, word: JSWord) -> JSValue {
-        let tag_mask = (JSW as usize) - 1;
+        let tag_mask = (JSValue::JSW as usize) - 1;
         let tag = (word as usize) & tag_mask;
-        if tag == JS_TAG_PTR as usize {
+        if tag == JSValue::JS_TAG_PTR as usize {
             let addr = (word as usize) & !tag_mask;
             if let Some(offset) = self.offset_from_addr(addr) {
                 let ptr = unsafe {
@@ -266,11 +261,11 @@ impl RomTable {
                     self.base_ptr().add(offset)
                 };
                 if let Some(ptr) = NonNull::new(ptr) {
-                    return value_from_ptr(ptr);
+                    return JSValue::from_ptr(ptr);
                 }
             }
         }
-        from_bits(word)
+        JSValue::from_bits(word)
     }
 }
 
@@ -306,8 +301,8 @@ impl RomClassView {
         if !val.is_ptr() {
             return Err(ContextError::InvalidRomClassValue);
         }
-        let tagged = raw_bits(val) as usize;
-        let addr = tagged & !((JSW as usize) - 1);
+        let tagged = val.raw_bits() as usize;
+        let addr = tagged & !((JSValue::JSW as usize) - 1);
         let rom_start = rom_table.base_ptr() as usize;
         let rom_end = rom_start + rom_table.bytes_len();
         let offset = rom_table
@@ -365,18 +360,18 @@ impl RomClassView {
     }
 
     fn value_from_word(&self, word: JSWord) -> JSValue {
-        let tag_mask = (JSW as usize) - 1;
+        let tag_mask = (JSValue::JSW as usize) - 1;
         let tag = (word as usize) & tag_mask;
-        if tag == JS_TAG_PTR as usize {
+        if tag == JSValue::JS_TAG_PTR as usize {
             let addr = (word as usize) & !tag_mask;
             if addr >= self.rom_start && addr < self.rom_end {
                 let ptr = self.base.as_ptr().with_addr(addr);
                 if let Some(ptr) = NonNull::new(ptr) {
-                    return value_from_ptr(ptr);
+                    return JSValue::from_ptr(ptr);
                 }
             }
         }
-        from_bits(word)
+        JSValue::from_bits(word)
     }
 }
 
@@ -419,7 +414,7 @@ pub struct JSContext {
 
 impl JSContext {
     pub fn new(config: ContextConfig<'_>) -> Result<Self, ContextError> {
-        let word_bytes = JSW as usize;
+        let word_bytes = JSValue::JSW as usize;
         let mem_size = config.memory_size & !(word_bytes - 1);
         let words = mem_size / word_bytes;
         let heap_storage = HeapStorage::new(words);
@@ -434,7 +429,7 @@ impl JSContext {
         mem_size: usize,
         config: ContextConfig<'_>,
     ) -> Result<Self, ContextError> {
-        let word_bytes = JSW as usize;
+        let word_bytes = JSValue::JSW as usize;
         let mem_size = mem_size & !(word_bytes - 1);
         let heap_storage = unsafe { HeapStorage::from_raw(mem_start, mem_size)? };
         Self::init_with_storage(heap_storage, mem_size, config)
@@ -445,7 +440,7 @@ impl JSContext {
         mem_size: usize,
         config: ContextConfig<'_>,
     ) -> Result<Self, ContextError> {
-        let word_bytes = JSW as usize;
+        let word_bytes = JSValue::JSW as usize;
         if config.image.word_bytes as usize != word_bytes {
             return Err(ContextError::StdlibWordBytesMismatch {
                 expected: word_bytes,
@@ -472,8 +467,8 @@ impl JSContext {
         let heap = HeapLayout::new(base, base, stack_top, stack_bottom, JS_MIN_FREE_SIZE as usize);
 
         let root_len = ROOT_PREFIX_LEN + (class_count as usize) * 2;
-        let mut class_roots = vec![JS_NULL; root_len];
-        class_roots[ROOT_CURRENT_EXCEPTION] = JS_UNDEFINED;
+        let mut class_roots = vec![JSValue::JS_NULL; root_len];
+        class_roots[ROOT_CURRENT_EXCEPTION] = JSValue::JS_UNDEFINED;
 
         let mut ctx = Self {
             heap_storage,
@@ -496,7 +491,7 @@ impl JSContext {
             finalizers: config.finalizers.to_vec(),
             n_rom_atom_tables: 0,
             sorted_atoms_offset: config.image.sorted_atoms_offset as usize,
-            string_pos_cache: [StringPosCacheEntry::new(JS_NULL, 0, 0); JS_STRING_POS_CACHE_SIZE],
+            string_pos_cache: [StringPosCacheEntry::new(JSValue::JS_NULL, 0, 0); JS_STRING_POS_CACHE_SIZE],
             string_pos_cache_counter: 0,
             gc_refs: GcRefState::new(),
             parse_state: None,
@@ -758,7 +753,7 @@ impl JSContext {
 
     pub(crate) fn take_current_exception(&mut self) -> JSValue {
         let value = self.class_roots[ROOT_CURRENT_EXCEPTION];
-        self.class_roots[ROOT_CURRENT_EXCEPTION] = JS_NULL;
+        self.class_roots[ROOT_CURRENT_EXCEPTION] = JSValue::JS_NULL;
         value
     }
 
@@ -769,7 +764,7 @@ impl JSContext {
     pub(crate) fn throw(&mut self, obj: JSValue) -> JSValue {
         self.set_current_exception(obj);
         self.current_exception_is_uncatchable = false;
-        crate::jsvalue::JS_EXCEPTION
+        JSValue::JS_EXCEPTION
     }
 
     pub(crate) fn throw_error(&mut self, class: JSObjectClass, message: &str) -> JSValue {
@@ -798,7 +793,7 @@ impl JSContext {
     }
 
     fn throw_error_with_message(&mut self, class: JSObjectClass, msg_val: JSValue) -> JSValue {
-        let mut msg_ref = GcRef::new(JS_UNDEFINED);
+        let mut msg_ref = GcRef::new(JSValue::JS_UNDEFINED);
         let msg_slot = self.gc_refs.push_gc_ref(&mut msg_ref);
         unsafe {
             // SAFETY: msg_slot points to a GC root slot for msg_ref.
@@ -880,7 +875,7 @@ impl JSContext {
 
     pub(crate) fn throw_out_of_memory(&mut self) -> JSValue {
         if self.in_out_of_memory {
-            return self.throw(JS_NULL);
+            return self.throw(JSValue::JS_NULL);
         }
         self.in_out_of_memory = true;
         self.heap.set_min_free_size(JS_MIN_CRITICAL_FREE_SIZE as usize);
@@ -891,18 +886,18 @@ impl JSContext {
     }
 
     pub fn new_float64(&mut self, value: f64) -> Result<JSValue, ContextError> {
-        if value >= JS_SHORTINT_MIN as f64 && value <= JS_SHORTINT_MAX as f64 {
+        if value >= JSValue::JS_SHORTINT_MIN as f64 && value <= JSValue::JS_SHORTINT_MAX as f64 {
             let val = value as i32;
             if float64_as_uint64(value) == float64_as_uint64(val as f64) {
-                return Ok(new_short_int(val));
+                return Ok(JSValue::new_short_int(val));
             }
         }
         self.new_float64_slow(value)
     }
 
     pub fn new_int64(&mut self, value: i64) -> Result<JSValue, ContextError> {
-        if value >= JS_SHORTINT_MIN as i64 && value <= JS_SHORTINT_MAX as i64 {
-            return Ok(new_short_int(value as i32));
+        if value >= JSValue::JS_SHORTINT_MIN as i64 && value <= JSValue::JS_SHORTINT_MAX as i64 {
+            return Ok(JSValue::new_short_int(value as i32));
         }
         self.new_float64(value as f64)
     }
@@ -925,7 +920,7 @@ impl JSContext {
             let min = 2.0_f64.powi(-127);
             let max = 2.0_f64.powi(128);
             if abs >= min && abs <= max {
-                return Ok(crate::jsvalue::short_float_from_f64(value));
+                return Ok(JSValue::short_float_from_f64(value));
             }
         }
         self.alloc_float64(value)
@@ -942,7 +937,7 @@ impl JSContext {
         if let Some(table) = self.rom_table.as_ref() {
             table.value_from_word(word)
         } else {
-            from_bits(word)
+            JSValue::from_bits(word)
         }
     }
 
@@ -954,7 +949,7 @@ impl JSContext {
                 .ok_or(ContextError::MissingEmptyAtom);
         }
         if let Some(codepoint) = single_codepoint(bytes) {
-            return Ok(value_make_special(JS_TAG_STRING_CHAR, codepoint));
+            return Ok(JSValue::value_make_special(JSValue::JS_TAG_STRING_CHAR, codepoint));
         }
         let is_ascii = is_ascii_bytes(bytes);
         self.alloc_string_bytes(bytes, false, is_ascii, false)
@@ -1004,8 +999,8 @@ impl JSContext {
 
     #[allow(dead_code)]
     pub(crate) fn string_len(&mut self, val: JSValue) -> u32 {
-        if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
-            let codepoint = value_get_special_value(val) as u32;
+        if val.get_special_tag() == JSValue::JS_TAG_STRING_CHAR {
+            let codepoint = val.get_special_value() as u32;
             return if codepoint >= 0x10000 { 2 } else { 1 };
         }
         let mut scratch = [0u8; 5];
@@ -1085,7 +1080,7 @@ impl JSContext {
                 let mut clen = 0usize;
                 let c = utf8_get(&bytes[start..], &mut clen);
                 if c >= 0 {
-                    return Ok(value_make_special(JS_TAG_STRING_CHAR, c as u32));
+                    return Ok(JSValue::value_make_special(JSValue::JS_TAG_STRING_CHAR, c as u32));
                 }
             }
             let slice = if start <= end && end <= bytes.len() {
@@ -1165,8 +1160,8 @@ impl JSContext {
         if !val.is_ptr() {
             return Ok(val);
         }
-        let tagged = raw_bits(val) as usize;
-        let addr = tagged & !((JSW as usize) - 1);
+        let tagged = val.raw_bits() as usize;
+        let addr = tagged & !((JSValue::JSW as usize) - 1);
         let base = rom_table.base_ptr() as usize;
         if addr < base {
             return Err(ContextError::RomOffsetOutOfBounds {
@@ -1218,7 +1213,7 @@ impl JSContext {
         let empty_props = self.alloc_empty_props()?;
         self.class_roots[ROOT_EMPTY_PROPS] = empty_props;
 
-        let obj_proto = self.alloc_object(JSObjectClass::Object, JS_NULL, 0)?;
+        let obj_proto = self.alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)?;
         self.class_proto_mut()[JSObjectClass::Object as usize] = obj_proto;
 
         let closure_proto = self.alloc_object(JSObjectClass::Object, obj_proto, 0)?;
@@ -1251,8 +1246,8 @@ impl JSContext {
             let name = self.resolve_rom_atom_value(pair[0])?;
             let mut val = pair[1];
             if val.is_ptr() {
-                let tagged = raw_bits(val) as usize;
-                let addr = tagged & !((JSW as usize) - 1);
+                let tagged = val.raw_bits() as usize;
+                let addr = tagged & !((JSValue::JSW as usize) - 1);
                 if addr >= rom_base && addr < rom_base + rom_len {
                     let offset = addr - rom_base;
                     if offset.is_multiple_of(rom_word_bytes) {
@@ -1270,7 +1265,7 @@ impl JSContext {
                     }
                 }
             }
-            if val == JS_NULL {
+            if val == JSValue::JS_NULL {
                 val = global_obj;
             }
             define_property_varref(self, global_obj, name, val).map_err(map_property_error)?;
@@ -1294,12 +1289,12 @@ impl JSContext {
             let class_id = class_id_from_ctor(image, ctor_idx)?;
             let class_idx = class_id as usize;
             let existing = self.class_obj()[class_idx];
-            if existing != JS_NULL {
+            if existing != JSValue::JS_NULL {
                 return Ok(existing);
             }
 
             let parent_val = class_def.parent_class();
-            let (mut parent_class, parent_proto) = if parent_val != JS_NULL {
+            let (mut parent_class, parent_proto) = if parent_val != JSValue::JS_NULL {
                 let parent_class_id = unsafe {
                     // SAFETY: rom_table points to the context ROM table allocation.
                     let parent_def = RomClassView::from_value(&*rom_table, parent_val)?;
@@ -1313,11 +1308,11 @@ impl JSContext {
                 let parent_proto = self.class_proto()[parent_class_id as usize];
                 (parent_obj, parent_proto)
             } else {
-                (JS_NULL, self.class_proto()[JSObjectClass::Object as usize])
+                (JSValue::JS_NULL, self.class_proto()[JSObjectClass::Object as usize])
             };
 
             let proto = match self.class_proto()[class_idx] {
-                JS_NULL => {
+                JSValue::JS_NULL => {
                     let created = self.alloc_object(JSObjectClass::Object, parent_proto, 0)?;
                     self.class_proto_mut()[class_idx] = created;
                     created
@@ -1325,17 +1320,17 @@ impl JSContext {
                 existing => existing,
             };
             let proto_props = class_def.proto_props();
-            if proto_props != JS_NULL {
+            if proto_props != JSValue::JS_NULL {
                 self.set_object_props(proto, proto_props)?;
             }
 
-            if parent_class == JS_NULL {
+            if parent_class == JSValue::JS_NULL {
                 parent_class = self.class_proto()[JSObjectClass::Closure as usize];
             }
             let ctor = self.new_cfunction_proto(ctor_idx as u32, parent_class, None)?;
             self.class_obj_mut()[class_idx] = ctor;
             let class_props = class_def.props();
-            if class_props != JS_NULL {
+            if class_props != JSValue::JS_NULL {
                 self.set_object_props(ctor, class_props)?;
             }
             Ok(ctor)
@@ -1343,7 +1338,7 @@ impl JSContext {
             let proto = self.class_proto()[JSObjectClass::Object as usize];
             let obj = self.alloc_object(JSObjectClass::Object, proto, 0)?;
             let class_props = class_def.props();
-            if class_props != JS_NULL {
+            if class_props != JSValue::JS_NULL {
                 self.set_object_props(obj, class_props)?;
             }
             Ok(obj)
@@ -1354,8 +1349,8 @@ impl JSContext {
         if !val.is_ptr() {
             return Ok(val);
         }
-        let tagged = raw_bits(val) as usize;
-        let addr = tagged & !((JSW as usize) - 1);
+        let tagged = val.raw_bits() as usize;
+        let addr = tagged & !((JSValue::JSW as usize) - 1);
         let heap_base = self.heap.heap_base().as_ptr() as usize;
         let heap_end = self.stack_top().as_ptr() as usize;
         if addr >= heap_base && addr < heap_end {
@@ -1364,14 +1359,14 @@ impl JSContext {
         let Some(rom_table) = self.rom_table.as_ref().map(|table| table as *const RomTable) else {
             return Ok(val);
         };
-        let target = raw_bits(val);
+        let target = val.raw_bits();
         let raw_atoms = unsafe {
             // SAFETY: rom_table points to the context ROM table allocation.
             (&*rom_table).value_array(self.sorted_atoms_offset)?
         };
         if let Some(index) = raw_atoms
             .iter()
-            .position(|entry| raw_bits(*entry) == target)
+            .position(|entry| entry.raw_bits() == target)
             && let Some(mapped) = self.atom_tables().rom_table_entry(index)
         {
             return Ok(mapped);
@@ -1395,7 +1390,7 @@ impl JSContext {
             size_of::<u32>()
         };
         let func = self.alloc_object(JSObjectClass::CFunction, proto, extra_size_bytes)?;
-        let obj_ptr = value_to_ptr::<Object>(func).expect("cfunction allocation must be a pointer");
+        let obj_ptr = func.to_ptr::<Object>().expect("cfunction allocation must be a pointer");
         unsafe {
             // SAFETY: payload region is writable for the requested size.
             let payload = Object::payload_ptr(obj_ptr.as_ptr()).cast::<u8>();
@@ -1419,7 +1414,7 @@ impl JSContext {
     }
 
     fn set_object_props(&mut self, obj: JSValue, props: JSValue) -> Result<(), ContextError> {
-        let obj_ptr = value_to_ptr::<u8>(obj).ok_or(ContextError::InvalidRomClassValue)?;
+        let obj_ptr = obj.to_ptr::<u8>().ok_or(ContextError::InvalidRomClassValue)?;
         let header_word = unsafe {
             // SAFETY: pointer is expected to reference an object header word.
             ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
@@ -1495,11 +1490,11 @@ impl JSContext {
         unsafe {
             // SAFETY: ptr points to a freshly allocated value array.
             let arr = ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
-            ptr::write_unaligned(arr, new_short_int(0));
-            ptr::write_unaligned(arr.add(1), new_short_int(0));
-            ptr::write_unaligned(arr.add(2), new_short_int(0));
+            ptr::write_unaligned(arr, JSValue::new_short_int(0));
+            ptr::write_unaligned(arr.add(1), JSValue::new_short_int(0));
+            ptr::write_unaligned(arr.add(2), JSValue::new_short_int(0));
         }
-        Ok(value_from_ptr(ptr))
+        Ok(JSValue::from_ptr(ptr))
     }
 
     pub(crate) fn alloc_value_array(&mut self, size: usize) -> Result<NonNull<u8>, ContextError> {
@@ -1511,7 +1506,7 @@ impl JSContext {
             ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), MbHeader::from(header).word());
             let arr = ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
             for i in 0..size {
-                ptr::write_unaligned(arr.add(i), JS_UNDEFINED);
+                ptr::write_unaligned(arr.add(i), JSValue::JS_UNDEFINED);
             }
         }
         Ok(ptr)
@@ -1538,7 +1533,7 @@ impl JSContext {
             ptr::write_bytes(payload, 0, len as usize);
             ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
         }
-        Ok(value_from_ptr(ptr))
+        Ok(JSValue::from_ptr(ptr))
     }
 
     pub(crate) fn alloc_object(
@@ -1547,8 +1542,8 @@ impl JSContext {
         proto: JSValue,
         extra_size_bytes: usize,
     ) -> Result<JSValue, ContextError> {
-        let extra_words = extra_size_bytes.div_ceil(JSW as usize);
-        let size = Object::PAYLOAD_OFFSET + extra_words * JSW as usize;
+        let extra_words = extra_size_bytes.div_ceil(JSValue::JSW as usize);
+        let size = Object::PAYLOAD_OFFSET + extra_words * JSValue::JSW as usize;
         let ptr = self.alloc_mblock(size, MTag::Object)?;
         let header = ObjectHeader::new(class_id as u8, extra_words as JSWord, false);
         unsafe {
@@ -1559,10 +1554,10 @@ impl JSContext {
             ptr::write_unaligned(proto_ptr, proto);
             ptr::write_unaligned(props_ptr, self.empty_props());
             if extra_words > 0 {
-                ptr::write_bytes(ptr.as_ptr().add(Object::PAYLOAD_OFFSET), 0, extra_words * JSW as usize);
+                ptr::write_bytes(ptr.as_ptr().add(Object::PAYLOAD_OFFSET), 0, extra_words * JSValue::JSW as usize);
             }
         }
-        Ok(value_from_ptr(ptr))
+        Ok(JSValue::from_ptr(ptr))
     }
 
     pub fn alloc_object_class_id(
@@ -1577,8 +1572,8 @@ impl JSContext {
                 max: self.class_count,
             });
         }
-        let extra_words = extra_size_bytes.div_ceil(JSW as usize);
-        let size = Object::PAYLOAD_OFFSET + extra_words * JSW as usize;
+        let extra_words = extra_size_bytes.div_ceil(JSValue::JSW as usize);
+        let size = Object::PAYLOAD_OFFSET + extra_words * JSValue::JSW as usize;
         let ptr = self.alloc_mblock(size, MTag::Object)?;
         let header = ObjectHeader::new(class_id, extra_words as JSWord, false);
         unsafe {
@@ -1589,10 +1584,10 @@ impl JSContext {
             ptr::write_unaligned(proto_ptr, proto);
             ptr::write_unaligned(props_ptr, self.empty_props());
             if extra_words > 0 {
-                ptr::write_bytes(ptr.as_ptr().add(Object::PAYLOAD_OFFSET), 0, extra_words * JSW as usize);
+                ptr::write_bytes(ptr.as_ptr().add(Object::PAYLOAD_OFFSET), 0, extra_words * JSValue::JSW as usize);
             }
         }
-        Ok(value_from_ptr(ptr))
+        Ok(JSValue::from_ptr(ptr))
     }
 
     /// Allocates a new plain Object with default prototype.
@@ -1618,14 +1613,14 @@ impl JSContext {
             });
         }
         let tab = if len == 0 {
-            JS_NULL
+            JSValue::JS_NULL
         } else {
             let ptr = self.alloc_value_array(len)?;
-            value_from_ptr(ptr)
+            JSValue::from_ptr(ptr)
         };
         let proto = self.class_proto()[JSObjectClass::Array as usize];
         let array = self.alloc_object(JSObjectClass::Array, proto, size_of::<ArrayData>())?;
-        let obj_ptr = value_to_ptr::<Object>(array).expect("array allocation must be a pointer");
+        let obj_ptr = array.to_ptr::<Object>().expect("array allocation must be a pointer");
         unsafe {
             // SAFETY: array points at a writable object payload.
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
@@ -1637,7 +1632,7 @@ impl JSContext {
 
     /// Resizes an array to a new length, allocating more space if needed.
     pub fn array_resize(&mut self, arr: JSValue, new_len: usize) -> Result<(), ContextError> {
-        let obj_ptr = value_to_ptr::<Object>(arr).ok_or(ContextError::InvalidRomClassValue)?;
+        let obj_ptr = arr.to_ptr::<Object>().ok_or(ContextError::InvalidRomClassValue)?;
         let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
         let header = ObjectHeader::from_word(header_word);
         if header.tag() != MTag::Object || header.class_id() != JSObjectClass::Array as u8 {
@@ -1659,19 +1654,19 @@ impl JSContext {
         }
 
         let new_tab = if new_len == 0 {
-            JS_NULL
-        } else if old_tab == JS_NULL {
+            JSValue::JS_NULL
+        } else if old_tab == JSValue::JS_NULL {
             let ptr = self.alloc_value_array(new_len)?;
             let arr = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
             unsafe {
                 for i in 0..new_len {
-                    ptr::write_unaligned(arr.add(i), JS_UNDEFINED);
+                    ptr::write_unaligned(arr.add(i), JSValue::JS_UNDEFINED);
                 }
             }
-            value_from_ptr(ptr)
+            JSValue::from_ptr(ptr)
         } else {
             // Need to resize existing array
-            let old_ptr = value_to_ptr::<u8>(old_tab).ok_or(ContextError::OutOfMemory)?;
+            let old_ptr = old_tab.to_ptr::<u8>().ok_or(ContextError::OutOfMemory)?;
             let new_ptr = self.alloc_value_array(new_len)?;
             let old_arr = unsafe { old_ptr.as_ptr().add(size_of::<JSWord>()) as *const JSValue };
             let new_arr = unsafe { new_ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
@@ -1683,10 +1678,10 @@ impl JSContext {
                 }
                 // Initialize new elements to undefined
                 for i in copy_len..new_len {
-                    ptr::write_unaligned(new_arr.add(i), JS_UNDEFINED);
+                    ptr::write_unaligned(new_arr.add(i), JSValue::JS_UNDEFINED);
                 }
             }
-            value_from_ptr(new_ptr)
+            JSValue::from_ptr(new_ptr)
         };
 
         // Update the array data
@@ -1700,7 +1695,7 @@ impl JSContext {
 
     /// Sets the length of an array.
     pub fn array_set_length(&mut self, arr: JSValue, new_len: u32) -> Result<(), ContextError> {
-        let obj_ptr = value_to_ptr::<Object>(arr).ok_or(ContextError::InvalidRomClassValue)?;
+        let obj_ptr = arr.to_ptr::<Object>().ok_or(ContextError::InvalidRomClassValue)?;
         let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
         let header = ObjectHeader::from_word(header_word);
         if header.tag() != MTag::Object || header.class_id() != JSObjectClass::Array as u8 {
@@ -1730,19 +1725,19 @@ impl JSContext {
     pub fn alloc_error(&mut self, proto: JSValue) -> Result<JSValue, ContextError> {
         use crate::error_data::ErrorData;
         let error = self.alloc_object(JSObjectClass::Error, proto, size_of::<ErrorData>())?;
-        let obj_ptr = value_to_ptr::<Object>(error).expect("error allocation must be a pointer");
+        let obj_ptr = error.to_ptr::<Object>().expect("error allocation must be a pointer");
         unsafe {
             // SAFETY: error points at a writable error object allocation.
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
             let error_ptr = core::ptr::addr_of_mut!((*payload).error);
-            ptr::write_unaligned(error_ptr, ErrorData::new(JS_NULL, JS_NULL));
+            ptr::write_unaligned(error_ptr, ErrorData::new(JSValue::JS_NULL, JSValue::JS_NULL));
         }
         Ok(error)
     }
 
     /// Sets the message on an Error object.
     pub fn set_error_message(&mut self, error: JSValue, message: JSValue) -> Result<(), ContextError> {
-        let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
+        let obj_ptr = error.to_ptr::<Object>().ok_or(ContextError::InvalidRomClassValue)?;
         unsafe {
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
             let error_ptr = core::ptr::addr_of_mut!((*payload).error);
@@ -1754,7 +1749,7 @@ impl JSContext {
 
     /// Sets the stack on an Error object.
     pub fn set_error_stack(&mut self, error: JSValue, stack: JSValue) -> Result<(), ContextError> {
-        let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
+        let obj_ptr = error.to_ptr::<Object>().ok_or(ContextError::InvalidRomClassValue)?;
         unsafe {
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
             let error_ptr = core::ptr::addr_of_mut!((*payload).error);
@@ -1766,7 +1761,7 @@ impl JSContext {
 
     /// Gets the message from an Error object.
     pub fn get_error_message(&self, error: JSValue) -> Result<JSValue, ContextError> {
-        let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
+        let obj_ptr = error.to_ptr::<Object>().ok_or(ContextError::InvalidRomClassValue)?;
         let data = unsafe {
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
             ptr::read_unaligned(core::ptr::addr_of!((*payload).error))
@@ -1776,7 +1771,7 @@ impl JSContext {
 
     /// Gets the stack from an Error object.
     pub fn get_error_stack(&self, error: JSValue) -> Result<JSValue, ContextError> {
-        let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
+        let obj_ptr = error.to_ptr::<Object>().ok_or(ContextError::InvalidRomClassValue)?;
         let data = unsafe {
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
             ptr::read_unaligned(core::ptr::addr_of!((*payload).error))
@@ -1819,7 +1814,7 @@ impl JSContext {
                         .unwrap_or_else(|| "<unknown>".to_string());
                     let pc_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_CUR_PC)) };
                     let pc = if pc_val.is_int() {
-                        let pc = value_get_int(pc_val);
+                        let pc = pc_val.get_int();
                         pc.saturating_sub(1) as u32
                     } else {
                         0
@@ -1865,13 +1860,13 @@ impl JSContext {
     }
 
     fn finish_backtrace(&mut self, error_obj: JSValue, buf: &str) -> Result<(), ContextError> {
-        let mut error_ref = GcRef::new(JS_UNDEFINED);
+        let mut error_ref = GcRef::new(JSValue::JS_UNDEFINED);
         let slot = self.gc_refs.push_gc_ref(&mut error_ref);
         unsafe {
             // SAFETY: slot points to a GC root slot for error_ref.
             *slot = error_obj;
         }
-        let stack_val = self.new_string_len(buf.as_bytes()).unwrap_or(JS_NULL);
+        let stack_val = self.new_string_len(buf.as_bytes()).unwrap_or(JSValue::JS_NULL);
         let _ = self.gc_refs.pop_gc_ref(&error_ref);
         self.set_error_stack(error_obj, stack_val)
     }
@@ -1880,7 +1875,7 @@ impl JSContext {
         if !val.is_ptr() {
             return false;
         }
-        let Some(obj_ptr) = value_to_ptr::<Object>(val) else {
+        let Some(obj_ptr) = val.to_ptr::<Object>() else {
             return false;
         };
         let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
@@ -1890,8 +1885,8 @@ impl JSContext {
 
     fn backtrace_func_info(&self, func_obj: JSValue) -> (String, Option<FunctionBytecode>) {
         if !func_obj.is_ptr() {
-            if value_get_special_tag(func_obj) == JS_TAG_SHORT_FUNC {
-                let idx = value_get_special_value(func_obj);
+            if func_obj.get_special_tag() == JSValue::JS_TAG_SHORT_FUNC {
+                let idx = func_obj.get_special_value();
                 if idx >= 0 && let Some(def) = self.c_function(idx as usize) {
                     return (def.name_str.to_string(), None);
                 }
@@ -1899,7 +1894,7 @@ impl JSContext {
             return ("<anonymous>".to_string(), None);
         }
 
-        let Some(obj_ptr) = value_to_ptr::<Object>(func_obj) else {
+        let Some(obj_ptr) = func_obj.to_ptr::<Object>() else {
             return ("<anonymous>".to_string(), None);
         };
         let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
@@ -1919,7 +1914,7 @@ impl JSContext {
                     return ("<anonymous>".to_string(), None);
                 };
                 let func = unsafe { ptr::read_unaligned(func_ptr.as_ptr()) };
-                let name = if func.func_name() == JS_NULL {
+                let name = if func.func_name() == JSValue::JS_NULL {
                     String::new()
                 } else {
                     self.string_from_value(func.func_name())
@@ -1958,7 +1953,7 @@ impl JSContext {
         use crate::object::RegExp;
         let proto = self.class_proto()[JSObjectClass::RegExp as usize];
         let regexp = self.alloc_object(JSObjectClass::RegExp, proto, size_of::<RegExp>())?;
-        let obj_ptr = value_to_ptr::<Object>(regexp).expect("regexp allocation must be a pointer");
+        let obj_ptr = regexp.to_ptr::<Object>().expect("regexp allocation must be a pointer");
         unsafe {
             // SAFETY: regexp points at a writable regexp object allocation.
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
@@ -1991,12 +1986,12 @@ impl JSContext {
             let payload = byte_ptr.as_ptr().add(size_of::<JSWord>());
             ptr::write_bytes(payload, 0, len);
         }
-        let byte_buffer = value_from_ptr(byte_ptr);
+        let byte_buffer = JSValue::from_ptr(byte_ptr);
 
         // Create ArrayBuffer object
         let proto = self.class_proto()[JSObjectClass::ArrayBuffer as usize];
         let array_buffer = self.alloc_object(JSObjectClass::ArrayBuffer, proto, size_of::<ArrayBuffer>())?;
-        let obj_ptr = value_to_ptr::<Object>(array_buffer).expect("array_buffer allocation must be a pointer");
+        let obj_ptr = array_buffer.to_ptr::<Object>().expect("array_buffer allocation must be a pointer");
         unsafe {
             // SAFETY: array_buffer points at a writable object allocation.
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
@@ -2017,7 +2012,7 @@ impl JSContext {
         use crate::typed_array::TypedArray;
         let proto = self.class_proto()[class_id as usize];
         let typed_array = self.alloc_object(class_id, proto, size_of::<TypedArray>())?;
-        let obj_ptr = value_to_ptr::<Object>(typed_array).expect("typed_array allocation must be a pointer");
+        let obj_ptr = typed_array.to_ptr::<Object>().expect("typed_array allocation must be a pointer");
         unsafe {
             // SAFETY: typed_array points at a writable object allocation.
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
@@ -2040,7 +2035,7 @@ impl JSContext {
             // SAFETY: `ptr` points to writable function bytecode storage.
             ptr::write(ptr.as_ptr() as *mut FunctionBytecode, func);
         }
-        Ok(value_from_ptr(ptr))
+        Ok(JSValue::from_ptr(ptr))
     }
 
     pub(crate) fn alloc_closure(
@@ -2051,7 +2046,7 @@ impl JSContext {
         let proto = self.class_proto()[JSObjectClass::Closure as usize];
         let extra_size_bytes = (1usize + var_refs_len) * size_of::<JSValue>();
         let closure = self.alloc_object(JSObjectClass::Closure, proto, extra_size_bytes)?;
-        let obj_ptr = value_to_ptr::<Object>(closure).expect("closure allocation must be a pointer");
+        let obj_ptr = closure.to_ptr::<Object>().expect("closure allocation must be a pointer");
         unsafe {
             // SAFETY: closure points at a writable closure object allocation.
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
@@ -2071,7 +2066,7 @@ impl JSContext {
             let payload = ptr.as_ptr().add(size_of::<JSWord>()) as *mut f64;
             ptr::write_unaligned(payload, value);
         }
-        Ok(value_from_ptr(ptr))
+        Ok(JSValue::from_ptr(ptr))
     }
 
     pub(crate) fn alloc_string_bytes(
@@ -2101,7 +2096,7 @@ impl JSContext {
             ptr::write_bytes(payload, 0, size - size_of::<JSWord>());
             ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
         }
-        Ok(value_from_ptr(ptr))
+        Ok(JSValue::from_ptr(ptr))
     }
 
     fn run_finalizers(&mut self) {
@@ -2178,7 +2173,7 @@ fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Option<*mut JSValu
     if !val.is_int() {
         return None;
     }
-    let offset = value_get_int(val);
+    let offset = val.get_int();
     if offset < 0 {
         return None;
     }
@@ -2198,7 +2193,7 @@ impl ByteArrayView {
 }
 
 fn byte_array_view(val: JSValue) -> Option<ByteArrayView> {
-    let ptr = value_to_ptr::<u8>(val)?;
+    let ptr = val.to_ptr::<u8>()?;
     let header_word = unsafe {
         // SAFETY: ptr points at a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -2213,7 +2208,7 @@ fn byte_array_view(val: JSValue) -> Option<ByteArrayView> {
 }
 
 fn function_bytecode_ptr(val: JSValue) -> Option<NonNull<FunctionBytecode>> {
-    let ptr = value_to_ptr::<FunctionBytecode>(val)?;
+    let ptr = val.to_ptr::<FunctionBytecode>()?;
     let header_word = unsafe {
         // SAFETY: ptr points at a readable function bytecode header word.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -2422,10 +2417,6 @@ mod tests {
     use super::*;
     use crate::cutils::unicode_to_utf8;
     use crate::exception::JsFormatArg;
-    use crate::jsvalue::{
-        value_get_int, value_get_special_tag, value_get_special_value, value_to_ptr,
-        JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR, JS_EXCEPTION,
-    };
     use crate::memblock::Float64Header;
     use crate::object::{Object, ObjectUserData};
     use crate::property::get_property;
@@ -2511,11 +2502,11 @@ mod tests {
         );
 
         let has_own = get_property(&mut ctx, object_proto, has_own_key).expect("hasOwnProperty");
-        assert_eq!(value_get_special_tag(has_own), JS_TAG_SHORT_FUNC);
+        assert_eq!(has_own.get_special_tag(), JSValue::JS_TAG_SHORT_FUNC);
         let to_string = get_property(&mut ctx, object_proto, to_string_key).expect("toString");
-        assert_eq!(value_get_special_tag(to_string), JS_TAG_SHORT_FUNC);
+        assert_eq!(to_string.get_special_tag(), JSValue::JS_TAG_SHORT_FUNC);
         let call = get_property(&mut ctx, function_proto, call_key).expect("call");
-        assert_eq!(value_get_special_tag(call), JS_TAG_SHORT_FUNC);
+        assert_eq!(call.get_special_tag(), JSValue::JS_TAG_SHORT_FUNC);
 
         let global_this = get_property(&mut ctx, global, global_this_key).expect("globalThis");
         assert_eq!(global_this, global);
@@ -2531,7 +2522,10 @@ mod tests {
         })
         .expect("context init");
 
-        let ptr = value_to_ptr::<u8>(ctx.empty_props()).expect("empty_props ptr");
+        let ptr = ctx
+            .empty_props()
+            .to_ptr::<u8>()
+            .expect("empty_props ptr");
         let header_word = unsafe {
             // SAFETY: ptr points to a readable ValueArray header.
             ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -2546,7 +2540,7 @@ mod tests {
         for i in 0..3 {
             let val = unsafe { ptr::read_unaligned(arr.add(i)) };
             assert!(val.is_int());
-            assert_eq!(value_get_int(val), 0);
+            assert_eq!(val.get_int(), 0);
         }
     }
 
@@ -2560,7 +2554,10 @@ mod tests {
         })
         .expect("context init");
 
-        let ptr = value_to_ptr::<u8>(ctx.minus_zero()).expect("minus_zero ptr");
+        let ptr = ctx
+            .minus_zero()
+            .to_ptr::<u8>()
+            .expect("minus_zero ptr");
         let header_word = unsafe {
             // SAFETY: ptr points to a readable Float64 header.
             ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -2586,7 +2583,7 @@ mod tests {
 
         let val = ctx.new_float64(42.0).expect("alloc");
         assert!(val.is_int());
-        assert_eq!(value_get_int(val), 42);
+        assert_eq!(val.get_int(), 42);
     }
 
     #[test]
@@ -2652,12 +2649,12 @@ mod tests {
         assert_eq!(empty, empty_atom);
 
         let char_val = ctx.new_string_len(b"a").expect("char string");
-        assert_eq!(value_get_special_tag(char_val), JS_TAG_STRING_CHAR);
-        assert_eq!(value_get_special_value(char_val), b'a' as i32);
+        assert_eq!(char_val.get_special_tag(), JSValue::JS_TAG_STRING_CHAR);
+        assert_eq!(char_val.get_special_value(), b'a' as i32);
 
         let string_val = ctx.new_string_len(b"ab").expect("string");
         assert!(string_val.is_ptr());
-        let ptr = value_to_ptr::<u8>(string_val).expect("string ptr");
+        let ptr = string_val.to_ptr::<u8>().expect("string ptr");
         let header_word = unsafe {
             // SAFETY: ptr points to a readable String header.
             ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -2744,8 +2741,8 @@ mod tests {
         assert_eq!(bytes_from_val(right), lo[..lo_len]);
 
         let full = ctx.sub_string(emoji, 0, 2).expect("full");
-        assert_eq!(value_get_special_tag(full), JS_TAG_STRING_CHAR);
-        assert_eq!(value_get_special_value(full), 0x1f600);
+        assert_eq!(full.get_special_tag(), JSValue::JS_TAG_STRING_CHAR);
+        assert_eq!(full.get_special_value(), 0x1f600);
     }
 
     #[test]
@@ -2762,7 +2759,7 @@ mod tests {
             .atom_tables()
             .empty_string_atom()
             .expect("empty atom");
-        let ptr = value_to_ptr::<u8>(empty_atom).expect("empty atom ptr");
+        let ptr = empty_atom.to_ptr::<u8>().expect("empty atom ptr");
         assert!(ctx.heap().ptr_in_heap(ptr));
     }
 
@@ -2812,7 +2809,7 @@ mod tests {
             let obj = ctx
                 .alloc_object(JSObjectClass::Object, proto, size_of::<ObjectUserData>())
                 .expect("user object");
-            let obj_ptr = value_to_ptr::<Object>(obj).expect("object ptr");
+            let obj_ptr = obj.to_ptr::<Object>().expect("object ptr");
             unsafe {
                 // SAFETY: obj_ptr points at a valid object payload.
                 let header_word = ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>());
@@ -2842,7 +2839,7 @@ mod tests {
             "cannot read property '%o' of null",
             &[JsFormatArg::from(prop)],
         );
-        assert_eq!(val, JS_EXCEPTION);
+        assert_eq!(val, JSValue::JS_EXCEPTION);
         let err = ctx.take_current_exception();
         let msg = ctx.get_error_message(err).expect("message");
         assert_eq!(
@@ -2864,7 +2861,7 @@ mod tests {
             "invalid opcode: pc=%u opcode=0x%02x",
             &[JsFormatArg::from(12u32), JsFormatArg::from(3u32)],
         );
-        assert_eq!(val, JS_EXCEPTION);
+        assert_eq!(val, JSValue::JS_EXCEPTION);
         let err = ctx.take_current_exception();
         let msg = ctx.get_error_message(err).expect("message");
         assert_eq!(bytes_from_val(msg), b"invalid opcode: pc=12 opcode=0x03");

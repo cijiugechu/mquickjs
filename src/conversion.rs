@@ -3,12 +3,7 @@ use crate::cutils::float64_as_uint64;
 use crate::dtoa::{js_atod, js_dtoa, AtodFlags, JS_ATOD_ACCEPT_BIN_OCT, JS_DTOA_FORMAT_FREE};
 use crate::enums::JSObjectClass;
 use crate::interpreter::{call_with_this, InterpreterError};
-use crate::jsvalue::{
-    new_short_int, value_get_int, value_get_special_tag, value_get_special_value, value_to_ptr,
-    JSValue, JSWord, JS_SHORTINT_MAX, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR,
-};
-#[cfg(target_pointer_width = "64")]
-use crate::jsvalue::short_float_to_f64;
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader, PrimitiveValue};
 use crate::property::{get_property, PropertyError};
@@ -53,9 +48,9 @@ impl From<InterpreterError> for ConversionError {
 }
 
 impl JSValue {
-    pub fn is_primitive(&self) -> bool {
+    pub(crate) fn is_primitive(&self) -> bool {
         if !self.is_ptr() {
-            return value_get_special_tag(*self) != JS_TAG_SHORT_FUNC;
+            return self.get_special_tag() != JSValue::JS_TAG_SHORT_FUNC;
         }
         match mtag_from_value(*self) {
             Some(MTag::Object) => false,
@@ -64,18 +59,18 @@ impl JSValue {
         }
     }
 
-    pub fn is_object(&self) -> bool {
+    pub(crate) fn is_object(&self) -> bool {
         matches!(mtag_from_value(*self), Some(MTag::Object))
     }
 
-    pub fn is_string(&self) -> bool {
+    pub(crate) fn is_string(&self) -> bool {
         if !self.is_ptr() {
-            return value_get_special_tag(*self) == JS_TAG_STRING_CHAR;
+            return self.get_special_tag() == JSValue::JS_TAG_STRING_CHAR;
         }
         matches!(mtag_from_value(*self), Some(MTag::String))
     }
 
-    pub fn is_number(&self) -> bool {
+    pub(crate) fn is_number(&self) -> bool {
         if self.is_int() {
             return true;
         }
@@ -86,9 +81,9 @@ impl JSValue {
         matches!(mtag_from_value(*self), Some(MTag::Float64))
     }
 
-    pub fn is_function(&self) -> bool {
+    pub(crate) fn is_function(&self) -> bool {
         if !self.is_ptr() {
-            return value_get_special_tag(*self) == JS_TAG_SHORT_FUNC;
+            return self.get_special_tag() == JSValue::JS_TAG_SHORT_FUNC;
         }
         let header = match object_header(*self) {
             Some(header) => header,
@@ -104,11 +99,11 @@ impl JSValue {
 pub(crate) fn to_number(ctx: &mut JSContext, mut val: JSValue) -> Result<f64, ConversionError> {
     loop {
         if val.is_int() {
-            return Ok(f64::from(value_get_int(val)));
+            return Ok(f64::from(val.get_int()));
         }
         #[cfg(target_pointer_width = "64")]
         if val.is_short_float() {
-            return Ok(short_float_to_f64(val));
+            return Ok(val.short_float_to_f64());
         }
         if val.is_ptr() {
             match mtag_from_value(val) {
@@ -126,15 +121,15 @@ pub(crate) fn to_number(ctx: &mut JSContext, mut val: JSValue) -> Result<f64, Co
                 _ => return Ok(f64::NAN),
             }
         } else {
-            match value_get_special_tag(val) {
-                tag if tag == crate::jsvalue::JS_TAG_NULL => {
-                    return Ok(f64::from(value_get_special_value(val)));
+            match val.get_special_tag() {
+                tag if tag == JSValue::JS_TAG_NULL => {
+                    return Ok(f64::from(val.get_special_value()));
                 }
-                tag if tag == crate::jsvalue::JS_TAG_BOOL => {
-                    return Ok(f64::from(value_get_special_value(val)));
+                tag if tag == JSValue::JS_TAG_BOOL => {
+                    return Ok(f64::from(val.get_special_value()));
                 }
-                tag if tag == crate::jsvalue::JS_TAG_UNDEFINED => return Ok(f64::NAN),
-                tag if tag == JS_TAG_STRING_CHAR => return Ok(to_number_from_string(val)),
+                tag if tag == JSValue::JS_TAG_UNDEFINED => return Ok(f64::NAN),
+                tag if tag == JSValue::JS_TAG_STRING_CHAR => return Ok(to_number_from_string(val)),
                 _ => return Ok(f64::NAN),
             }
         }
@@ -156,12 +151,12 @@ pub(crate) fn to_int32_sat(ctx: &mut JSContext, val: JSValue) -> Result<i32, Con
 pub(crate) fn to_string(ctx: &mut JSContext, mut val: JSValue) -> Result<JSValue, ConversionError> {
     loop {
         if val.is_int() {
-            let buf = value_get_int(val).to_string();
+            let buf = val.get_int().to_string();
             return Ok(ctx.new_string(&buf)?);
         }
         #[cfg(target_pointer_width = "64")]
         if val.is_short_float() {
-            return number_to_string(ctx, short_float_to_f64(val));
+            return number_to_string(ctx, val.short_float_to_f64());
         }
         if val.is_ptr() {
             match mtag_from_value(val) {
@@ -181,21 +176,21 @@ pub(crate) fn to_string(ctx: &mut JSContext, mut val: JSValue) -> Result<JSValue
                 None => return Ok(ctx.new_string("?")?),
             }
         } else {
-            match value_get_special_tag(val) {
-                tag if tag == crate::jsvalue::JS_TAG_NULL => return Ok(ctx.new_string("null")?),
-                tag if tag == crate::jsvalue::JS_TAG_UNDEFINED => {
+            match val.get_special_tag() {
+                tag if tag == JSValue::JS_TAG_NULL => return Ok(ctx.new_string("null")?),
+                tag if tag == JSValue::JS_TAG_UNDEFINED => {
                     return Ok(ctx.new_string("undefined")?)
                 }
-                tag if tag == crate::jsvalue::JS_TAG_BOOL => {
-                    let literal = if value_get_special_value(val) != 0 {
+                tag if tag == JSValue::JS_TAG_BOOL => {
+                    let literal = if val.get_special_value() != 0 {
                         "true"
                     } else {
                         "false"
                     };
                     return Ok(ctx.new_string(literal)?);
                 }
-                tag if tag == JS_TAG_STRING_CHAR => return Ok(val),
-                tag if tag == JS_TAG_SHORT_FUNC => {
+                tag if tag == JSValue::JS_TAG_STRING_CHAR => return Ok(val),
+                tag if tag == JSValue::JS_TAG_SHORT_FUNC => {
                     val = to_primitive(ctx, val, ToPrimitiveHint::String)?;
                 }
                 _ => return Ok(ctx.new_string("?")?),
@@ -210,7 +205,7 @@ pub(crate) fn to_property_key(ctx: &mut JSContext, val: JSValue) -> Result<JSVal
     }
     let str_val = to_string(ctx, val)?;
     if let Some(int_val) = parse_num_string(str_val) {
-        return Ok(new_short_int(int_val));
+        return Ok(JSValue::new_short_int(int_val));
     }
     Ok(ctx.atom_tables_mut().make_unique_string(str_val))
 }
@@ -222,7 +217,7 @@ fn alloc_primitive_object(
 ) -> Result<JSValue, ConversionError> {
     let proto = ctx.class_proto()[class_id as usize];
     let obj = ctx.alloc_object(class_id, proto, size_of::<PrimitiveValue>())?;
-    let obj_ptr = value_to_ptr::<Object>(obj).ok_or(ConversionError::TypeError("object"))?;
+    let obj_ptr = obj.to_ptr::<Object>().ok_or(ConversionError::TypeError("object"))?;
     unsafe {
         // SAFETY: payload region holds a PrimitiveValue.
         let payload = Object::payload_ptr(obj_ptr.as_ptr());
@@ -237,7 +232,7 @@ pub(crate) fn to_object(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, Co
     if val.is_object() {
         return Ok(val);
     }
-    if !val.is_ptr() && value_get_special_tag(val) == JS_TAG_SHORT_FUNC {
+    if !val.is_ptr() && val.get_special_tag() == JSValue::JS_TAG_SHORT_FUNC {
         return Ok(val);
     }
     if val.is_null() || val.is_undefined() {
@@ -316,7 +311,7 @@ fn get_property_for_value(
         ctx.class_proto()[JSObjectClass::Boolean as usize]
     } else if val.is_string() {
         ctx.class_proto()[JSObjectClass::String as usize]
-    } else if value_get_special_tag(val) == JS_TAG_SHORT_FUNC {
+    } else if val.get_special_tag() == JSValue::JS_TAG_SHORT_FUNC {
         ctx.class_proto()[JSObjectClass::Closure as usize]
     } else if val.is_null() || val.is_undefined() {
         return Err(ConversionError::TypeError("null or undefined"));
@@ -327,7 +322,7 @@ fn get_property_for_value(
 }
 
 fn mtag_from_value(val: JSValue) -> Option<MTag> {
-    let ptr = value_to_ptr::<u8>(val)?;
+    let ptr = val.to_ptr::<u8>()?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -336,7 +331,7 @@ fn mtag_from_value(val: JSValue) -> Option<MTag> {
 }
 
 fn object_header(val: JSValue) -> Option<ObjectHeader> {
-    let ptr = value_to_ptr::<Object>(val)?;
+    let ptr = val.to_ptr::<Object>()?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable object header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -349,7 +344,7 @@ fn object_header(val: JSValue) -> Option<ObjectHeader> {
 }
 
 fn object_primitive_value(val: JSValue) -> Option<JSValue> {
-    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let obj_ptr = val.to_ptr::<Object>()?;
     let header_word = unsafe {
         // SAFETY: obj_ptr points at a readable object header.
         ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
@@ -373,7 +368,7 @@ fn object_primitive_value(val: JSValue) -> Option<JSValue> {
 }
 
 fn read_float64(val: JSValue) -> Option<f64> {
-    let ptr = value_to_ptr::<u8>(val)?;
+    let ptr = val.to_ptr::<u8>()?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -423,7 +418,7 @@ fn parse_num_string(val: JSValue) -> Option<i32> {
         return Some(0);
     }
     let mut n: i64 = (first - b'0') as i64;
-    let max = JS_SHORTINT_MAX as i64 + if is_neg { 1 } else { 0 };
+    let max = JSValue::JS_SHORTINT_MAX as i64 + if is_neg { 1 } else { 0 };
     for &b in &bytes[idx + 1..] {
         if !b.is_ascii_digit() {
             return None;
@@ -519,7 +514,6 @@ mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
-    use crate::jsvalue::{value_get_int, JS_NULL, JS_UNDEFINED};
     use crate::opcode::{OP_PUSH_1, OP_RETURN};
     use crate::property::define_property_value;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
@@ -529,15 +523,15 @@ mod tests {
         let byte_code_val = ctx.alloc_byte_array(&bytecode).expect("bytecode");
         let header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let fields = FunctionBytecodeFields {
-            func_name: JS_NULL,
+            func_name: JSValue::JS_NULL,
             byte_code: byte_code_val,
-            cpool: JS_NULL,
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            cpool: JSValue::JS_NULL,
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 2,
             ext_vars_len: 0,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         let func = ctx.alloc_function_bytecode(header, fields).expect("func");
@@ -561,7 +555,7 @@ mod tests {
         let num = to_number(&mut ctx, empty).expect("number");
         assert_eq!(num, 0.0);
 
-        let undef = to_number(&mut ctx, JS_UNDEFINED).expect("number");
+        let undef = to_number(&mut ctx, JSValue::JS_UNDEFINED).expect("number");
         assert!(undef.is_nan());
     }
 
@@ -577,7 +571,7 @@ mod tests {
         let numeric = ctx.new_string("42").expect("string");
         let key = to_property_key(&mut ctx, numeric).expect("key");
         assert!(key.is_int());
-        assert_eq!(value_get_int(key), 42);
+        assert_eq!(key.get_int(), 42);
 
         let neg_zero = ctx.new_string("-0").expect("string");
         let key = to_property_key(&mut ctx, neg_zero).expect("key");
@@ -601,6 +595,6 @@ mod tests {
         define_property_value(&mut ctx, obj, value_of, func).expect("define");
         let prim = to_primitive(&mut ctx, obj, ToPrimitiveHint::Number).expect("primitive");
         assert!(prim.is_int());
-        assert_eq!(value_get_int(prim), 1);
+        assert_eq!(prim.get_int(), 1);
     }
 }

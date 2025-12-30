@@ -1,7 +1,7 @@
 use crate::containers::{ByteArrayHeader, StringHeader, ValueArrayHeader, VarRefHeader};
 use crate::enums::JSObjectClass;
 use crate::function_bytecode::FunctionBytecode;
-use crate::jsvalue::{value_from_ptr, value_to_ptr, JSValue, JSWord, JSW};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{FreeBlockHeader, MTag, MbHeader};
 use crate::object::{Object, ObjectHeader, PrimitiveValue, RegExp};
 use core::mem::size_of;
@@ -124,7 +124,7 @@ impl HeapLayout {
         if size == 0 {
             return None;
         }
-        let size = align_up(size, JSW as usize);
+        let size = align_up(size, JSValue::JSW as usize);
         if !self.check_free_mem(self.stack_bottom, size, &mut gc) {
             return None;
         }
@@ -177,7 +177,7 @@ impl HeapLayout {
     /// # Safety
     /// `ptr` must be a valid memblock start within this heap layout.
     pub unsafe fn shrink(&mut self, ptr: NonNull<u8>, new_size: usize) -> Option<NonNull<u8>> {
-        let new_size = align_up(new_size, JSW as usize);
+        let new_size = align_up(new_size, JSValue::JSW as usize);
         if new_size == 0 {
             unsafe {
                 self.free_last(ptr);
@@ -226,8 +226,8 @@ unsafe fn write_header_word(ptr: *mut u8, word: JSWord) {
 /// `ptr` must be writable for at least `size` bytes within a heap buffer.
 pub unsafe fn set_free_block(ptr: NonNull<u8>, size: usize) {
     debug_assert!(size >= size_of::<JSWord>());
-    debug_assert_eq!(size % (JSW as usize), 0);
-    let size_words = (size - size_of::<JSWord>()) / (JSW as usize);
+    debug_assert_eq!(size % (JSValue::JSW as usize), 0);
+    let size_words = (size - size_of::<JSWord>()) / (JSValue::JSW as usize);
     let header = FreeBlockHeader::new(size_words as JSWord, false);
     unsafe {
         // SAFETY: caller guarantees `ptr` is writable for at least `size` bytes.
@@ -250,18 +250,18 @@ pub unsafe fn mblock_size(ptr: NonNull<u8>) -> usize {
     match header.tag() {
         MTag::Object => {
             let obj_header = ObjectHeader::from_word(word);
-            Object::PAYLOAD_OFFSET + (obj_header.extra_size() as usize) * (JSW as usize)
+            Object::PAYLOAD_OFFSET + (obj_header.extra_size() as usize) * (JSValue::JSW as usize)
         }
         MTag::Float64 => size_of::<JSWord>() + size_of::<f64>(),
         MTag::String => {
             let header = StringHeader::from(header);
             let len = header.len() as usize;
-            size_of::<JSWord>() + align_up(len + 1, JSW as usize)
+            size_of::<JSWord>() + align_up(len + 1, JSValue::JSW as usize)
         }
         MTag::ByteArray => {
             let header = ByteArrayHeader::from(header);
             let len = header.size() as usize;
-            size_of::<JSWord>() + align_up(len, JSW as usize)
+            size_of::<JSWord>() + align_up(len, JSValue::JSW as usize)
         }
         MTag::ValueArray => {
             let header = ValueArrayHeader::from(header);
@@ -269,7 +269,7 @@ pub unsafe fn mblock_size(ptr: NonNull<u8>) -> usize {
         }
         MTag::Free => {
             let header = FreeBlockHeader::from(header);
-            size_of::<JSWord>() + (header.size() as usize) * (JSW as usize)
+            size_of::<JSWord>() + (header.size() as usize) * (JSValue::JSW as usize)
         }
         MTag::VarRef => {
             let header = VarRefHeader::from(header);
@@ -291,7 +291,7 @@ pub unsafe fn thread_pointer(heap: &HeapLayout, pval: *mut JSValue) {
     if !val.is_ptr() {
         return;
     }
-    let ptr = match value_to_ptr::<u8>(val) {
+    let ptr = match val.to_ptr::<u8>() {
         Some(ptr) => ptr,
         None => return,
     };
@@ -303,7 +303,7 @@ pub unsafe fn thread_pointer(heap: &HeapLayout, pval: *mut JSValue) {
         let prev = *header_ptr;
         *pval = prev;
         let pval_ptr = NonNull::new_unchecked(pval);
-        *header_ptr = value_from_ptr(pval_ptr);
+        *header_ptr = JSValue::from_ptr(pval_ptr);
     }
 }
 
@@ -312,11 +312,11 @@ pub unsafe fn thread_pointer(heap: &HeapLayout, pval: *mut JSValue) {
 pub unsafe fn update_threaded_pointers(ptr: *mut u8, new_ptr: *mut u8) {
     let header_ptr = ptr as *mut JSValue;
     let mut val = unsafe { *header_ptr };
-    while let Some(pv) = value_to_ptr::<JSValue>(val) {
+    while let Some(pv) = val.to_ptr::<JSValue>() {
         let next_val = unsafe { *pv.as_ptr() };
         let new_ptr = NonNull::new(new_ptr).expect("new_ptr should be non-null");
         unsafe {
-            *pv.as_ptr() = value_from_ptr(new_ptr);
+            *pv.as_ptr() = JSValue::from_ptr(new_ptr);
         }
         val = next_val;
     }
@@ -527,12 +527,12 @@ mod tests {
         fn new(words: usize, stack_words: usize, min_free_size: usize) -> Self {
             let mut storage = vec![0 as JSWord; words];
             let base = NonNull::new(storage.as_mut_ptr() as *mut u8).unwrap();
-            let stack_top = unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSW as usize)) };
+            let stack_top = unsafe { NonNull::new_unchecked(base.as_ptr().add(words * JSValue::JSW as usize)) };
             let stack_bottom = unsafe {
                 NonNull::new_unchecked(
                     stack_top
                         .as_ptr()
-                        .sub(stack_words * JSW as usize) as *mut JSValue,
+                        .sub(stack_words * JSValue::JSW as usize) as *mut JSValue,
                 )
             };
             let layout = HeapLayout::new(base, base, stack_top, stack_bottom, min_free_size);
@@ -564,19 +564,19 @@ mod tests {
         let ptr = arena.layout.malloc(3, MTag::ByteArray, |_| {}).unwrap();
         let base = arena.layout.heap_base().as_ptr() as usize;
         let ptr_addr = ptr.as_ptr() as usize;
-        assert_eq!((ptr_addr - base) % (JSW as usize), 0);
+        assert_eq!((ptr_addr - base) % (JSValue::JSW as usize), 0);
         let header = unsafe { MbHeader::from_word(read_header_word(ptr.as_ptr())) };
         assert_eq!(header.tag(), MTag::ByteArray);
         assert!(!header.gc_mark());
-        let expected_free = unsafe { ptr.as_ptr().add(JSW as usize) };
+        let expected_free = unsafe { ptr.as_ptr().add(JSValue::JSW as usize) };
         assert_eq!(arena.layout.heap_free().as_ptr(), expected_free);
     }
 
     #[test]
     fn free_last_only_updates_tail() {
         let mut arena = HeapArena::new(64, 8, 0);
-        let first = arena.layout.malloc(JSW as usize, MTag::Free, |_| {}).unwrap();
-        let second = arena.layout.malloc(JSW as usize, MTag::Free, |_| {}).unwrap();
+        let first = arena.layout.malloc(JSValue::JSW as usize, MTag::Free, |_| {}).unwrap();
+        let second = arena.layout.malloc(JSValue::JSW as usize, MTag::Free, |_| {}).unwrap();
         let heap_free = arena.layout.heap_free().as_ptr();
         unsafe {
             arena.layout.free_last(first);
@@ -591,8 +591,8 @@ mod tests {
     #[test]
     fn shrink_sets_free_block() {
         let mut arena = HeapArena::new(64, 8, 0);
-        let ptr = arena.layout.malloc(JSW as usize * 3, MTag::Object, |_| {}).unwrap();
-        let new_size = JSW as usize * 2;
+        let ptr = arena.layout.malloc(JSValue::JSW as usize * 3, MTag::Object, |_| {}).unwrap();
+        let new_size = JSValue::JSW as usize * 2;
         unsafe {
             arena.layout.shrink(ptr, new_size);
         }
@@ -604,42 +604,42 @@ mod tests {
     #[test]
     fn mblock_size_matches_tag_layouts() {
         let mut arena = HeapArena::new(128, 16, 0);
-        let obj = arena.layout.malloc(JSW as usize * 4, MTag::Object, |_| {}).unwrap();
+        let obj = arena.layout.malloc(JSValue::JSW as usize * 4, MTag::Object, |_| {}).unwrap();
         let obj_header = ObjectHeader::new(JSObjectClass::Object as u8, 3, false);
         unsafe {
             write_header_word(obj.as_ptr(), obj_header.header().word());
         }
         let obj_size = unsafe { mblock_size(obj) };
-        assert_eq!(obj_size, Object::PAYLOAD_OFFSET + 3 * (JSW as usize));
+        assert_eq!(obj_size, Object::PAYLOAD_OFFSET + 3 * (JSValue::JSW as usize));
 
-        let float_ptr = arena.layout.malloc(JSW as usize * 2, MTag::Float64, |_| {}).unwrap();
+        let float_ptr = arena.layout.malloc(JSValue::JSW as usize * 2, MTag::Float64, |_| {}).unwrap();
         let float_header = Float64Header::new(false);
         unsafe {
             write_header_word(float_ptr.as_ptr(), MbHeader::from(float_header).word());
         }
         assert_eq!(unsafe { mblock_size(float_ptr) }, size_of::<JSWord>() + size_of::<f64>());
 
-        let string_ptr = arena.layout.malloc(JSW as usize * 3, MTag::String, |_| {}).unwrap();
+        let string_ptr = arena.layout.malloc(JSValue::JSW as usize * 3, MTag::String, |_| {}).unwrap();
         let string_header = StringHeader::new(3, false, false, false, false);
         unsafe {
             write_header_word(string_ptr.as_ptr(), MbHeader::from(string_header).word());
         }
         assert_eq!(
             unsafe { mblock_size(string_ptr) },
-            size_of::<JSWord>() + align_up(4, JSW as usize)
+            size_of::<JSWord>() + align_up(4, JSValue::JSW as usize)
         );
 
-        let byte_ptr = arena.layout.malloc(JSW as usize * 2, MTag::ByteArray, |_| {}).unwrap();
+        let byte_ptr = arena.layout.malloc(JSValue::JSW as usize * 2, MTag::ByteArray, |_| {}).unwrap();
         let byte_header = ByteArrayHeader::new(7, false);
         unsafe {
             write_header_word(byte_ptr.as_ptr(), MbHeader::from(byte_header).word());
         }
         assert_eq!(
             unsafe { mblock_size(byte_ptr) },
-            size_of::<JSWord>() + align_up(7, JSW as usize)
+            size_of::<JSWord>() + align_up(7, JSValue::JSW as usize)
         );
 
-        let value_ptr = arena.layout.malloc(JSW as usize * 5, MTag::ValueArray, |_| {}).unwrap();
+        let value_ptr = arena.layout.malloc(JSValue::JSW as usize * 5, MTag::ValueArray, |_| {}).unwrap();
         let value_header = ValueArrayHeader::new(3, false);
         unsafe {
             write_header_word(value_ptr.as_ptr(), MbHeader::from(value_header).word());
@@ -649,16 +649,16 @@ mod tests {
             size_of::<JSWord>() + 3 * size_of::<JSValue>()
         );
 
-        let free_ptr = arena.layout.malloc(JSW as usize * 3, MTag::Free, |_| {}).unwrap();
+        let free_ptr = arena.layout.malloc(JSValue::JSW as usize * 3, MTag::Free, |_| {}).unwrap();
         unsafe {
-            set_free_block(free_ptr, JSW as usize * 3);
+            set_free_block(free_ptr, JSValue::JSW as usize * 3);
         }
         assert_eq!(
             unsafe { mblock_size(free_ptr) },
-            size_of::<JSWord>() + 2 * (JSW as usize)
+            size_of::<JSWord>() + 2 * (JSValue::JSW as usize)
         );
 
-        let var_ptr = arena.layout.malloc(JSW as usize * 3, MTag::VarRef, |_| {}).unwrap();
+        let var_ptr = arena.layout.malloc(JSValue::JSW as usize * 3, MTag::VarRef, |_| {}).unwrap();
         let var_header = VarRefHeader::new(true, false);
         unsafe {
             write_header_word(var_ptr.as_ptr(), MbHeader::from(var_header).word());
@@ -676,26 +676,26 @@ mod tests {
         unsafe {
             write_header_word(array_ptr.as_ptr(), MbHeader::from(array_header).word());
         }
-        let free_ptr = arena.layout.malloc(JSW as usize * 2, MTag::Free, |_| {}).unwrap();
+        let free_ptr = arena.layout.malloc(JSValue::JSW as usize * 2, MTag::Free, |_| {}).unwrap();
         unsafe {
-            set_free_block(free_ptr, JSW as usize * 2);
+            set_free_block(free_ptr, JSValue::JSW as usize * 2);
         }
-        let target_ptr = arena.layout.malloc(JSW as usize * 2, MTag::ByteArray, |_| {}).unwrap();
+        let target_ptr = arena.layout.malloc(JSValue::JSW as usize * 2, MTag::ByteArray, |_| {}).unwrap();
         let target_header = ByteArrayHeader::new(4, false);
         unsafe {
             write_header_word(target_ptr.as_ptr(), MbHeader::from(target_header).word());
         }
         let arr_payload = unsafe { array_ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
         unsafe {
-            let target_val = value_from_ptr(NonNull::new_unchecked(target_ptr.as_ptr()));
+            let target_val = JSValue::from_ptr(NonNull::new_unchecked(target_ptr.as_ptr()));
             *arr_payload = target_val;
         }
-        let mut roots = [unsafe { value_from_ptr(NonNull::new_unchecked(array_ptr.as_ptr())) }];
+        let mut roots = [unsafe { JSValue::from_ptr(NonNull::new_unchecked(array_ptr.as_ptr())) }];
         let mut root_slice = RootSlice { roots: &mut roots };
         unsafe {
             compact_heap(&mut arena.layout, &mut root_slice);
         }
-        let new_array_ptr = match value_to_ptr::<u8>(roots[0]) {
+        let new_array_ptr = match roots[0].to_ptr::<u8>() {
             Some(ptr) => ptr,
             None => panic!("root not updated"),
         };
@@ -703,12 +703,12 @@ mod tests {
         let new_arr_payload =
             unsafe { new_array_ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
         let updated = unsafe { *new_arr_payload };
-        let updated_ptr = value_to_ptr::<u8>(updated).expect("array element updated");
+        let updated_ptr = updated.to_ptr::<u8>().expect("array element updated");
         let expected_target = unsafe { arena.layout.heap_base().as_ptr().add(array_size) };
         assert_eq!(updated_ptr.as_ptr(), expected_target);
         assert_eq!(
             arena.layout.heap_free().as_ptr(),
-            unsafe { expected_target.add(JSW as usize * 2) }
+            unsafe { expected_target.add(JSValue::JSW as usize * 2) }
         );
     }
 }

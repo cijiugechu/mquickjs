@@ -2,10 +2,7 @@
 
 use crate::containers::StringHeader;
 use crate::cutils::unicode_to_utf8;
-use crate::jsvalue::{
-    value_get_special_tag, value_get_special_value, value_to_ptr, JSValue, JSWord,
-    JS_TAG_STRING_CHAR,
-};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use core::mem::size_of;
 use core::ptr;
@@ -15,7 +12,7 @@ use core::slice;
 // Invariants:
 // - String bytes are stored as UTF-8, but may include surrogate code points.
 // - UTF-8 positions are encoded as `byte_pos * 2 + surrogate_flag`.
-// - JS_TAG_STRING_CHAR stores a single code point encoded on demand.
+// - JSValue::JS_TAG_STRING_CHAR stores a single code point encoded on demand.
 #[derive(Copy, Clone)]
 pub(crate) struct StringView<'a> {
     bytes: &'a [u8],
@@ -33,8 +30,8 @@ impl<'a> StringView<'a> {
 }
 
 pub(crate) fn string_view<'a>(val: JSValue, scratch: &'a mut [u8; 5]) -> Option<StringView<'a>> {
-    if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
-        let codepoint = value_get_special_value(val) as u32;
+    if val.get_special_tag() == JSValue::JS_TAG_STRING_CHAR {
+        let codepoint = val.get_special_value() as u32;
         let len = unicode_to_utf8(scratch, codepoint);
         if len == 0 {
             return None;
@@ -47,7 +44,7 @@ pub(crate) fn string_view<'a>(val: JSValue, scratch: &'a mut [u8; 5]) -> Option<
     if !val.is_ptr() {
         return None;
     }
-    let ptr = value_to_ptr::<u8>(val)?;
+    let ptr = val.to_ptr::<u8>()?;
     let header = string_header(ptr)?;
     let bytes = string_bytes_from_ptr(ptr, header);
     Some(StringView {

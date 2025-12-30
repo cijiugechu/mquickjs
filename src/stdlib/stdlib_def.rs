@@ -1,4 +1,4 @@
-use crate::jsvalue::{JSValue, JSW};
+use crate::jsvalue::JSValue;
 
 // Rust-only function prototypes for builtin dispatch, derived from stdlib metadata.
 #[repr(u8)]
@@ -28,7 +28,7 @@ impl BuiltinProto {
 
 pub const JS_BYTECODE_MAGIC: u16 = 0xacfb;
 pub const JS_BYTECODE_VERSION_32: u16 = 0x0001;
-pub const JS_BYTECODE_VERSION: u16 = JS_BYTECODE_VERSION_32 | (((JSW as u16) & 8) << 12);
+pub const JS_BYTECODE_VERSION: u16 = JS_BYTECODE_VERSION_32 | (((JSValue::JSW as u16) & 8) << 12);
 
 // C: `JSBytecodeHeader` in mquickjs.h.
 #[repr(C)]

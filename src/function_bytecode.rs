@@ -1,4 +1,4 @@
-use crate::jsvalue::{JSValue, JSWord, JSW};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
 
 // C: `JSFunctionBytecode` header bitfields in mquickjs.c.
@@ -15,7 +15,7 @@ impl FunctionBytecodeHeader {
     pub const ARG_COUNT_MASK: JSWord = ((1 as JSWord) << Self::ARG_COUNT_BITS) - 1;
 
     pub const fn word_bits() -> u32 {
-        (JSW as u32) * 8
+        (JSValue::JSW as u32) * 8
     }
 
     pub const DUMMY_BITS: u32 = Self::word_bits() - (JS_MTAG_BITS + 3 + Self::ARG_COUNT_BITS);

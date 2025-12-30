@@ -8,12 +8,7 @@ use crate::enums::{JSObjectClass, JSPropType, JSVarRefKind};
 use crate::function_bytecode::FunctionBytecode;
 use crate::heap::JS_STACK_SLACK;
 use crate::js_libm::{js_fmod, js_pow};
-use crate::jsvalue::{
-    from_bits, new_bool, new_short_int, short_float_to_f64, value_get_int, value_from_ptr,
-    value_get_special_tag, value_get_special_value, value_make_special, value_to_ptr, JSValue,
-    JSWord, JSW, JS_EXCEPTION, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_CATCH_OFFSET,
-    JS_TAG_SHORT_FUNC, JS_UNDEFINED, JS_UNINITIALIZED,
-};
+use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
 use crate::object::{Object, ObjectHeader};
 use crate::property::{define_property_varref, get_own_property_raw, object_keys, PropertyError};
@@ -75,7 +70,7 @@ struct ByteArrayRaw {
 
 impl ByteArrayRaw {
     unsafe fn from_value(val: JSValue) -> Result<Self, InterpreterError> {
-        let ptr = value_to_ptr::<u8>(val).ok_or(InterpreterError::InvalidValue("byte array ptr"))?;
+        let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::InvalidValue("byte array ptr"))?;
         let header_word = unsafe {
             // SAFETY: ptr points at a readable memblock header.
             ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -108,7 +103,7 @@ struct ValueArrayRaw {
 
 impl ValueArrayRaw {
     unsafe fn from_value(val: JSValue) -> Result<Self, InterpreterError> {
-        let ptr = value_to_ptr::<u8>(val).ok_or(InterpreterError::InvalidValue("value array ptr"))?;
+        let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::InvalidValue("value array ptr"))?;
         let header_word = unsafe {
             // SAFETY: ptr points at a readable memblock header.
             ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -148,7 +143,7 @@ impl ValueArrayRaw {
 }
 
 fn object_ptr(val: JSValue) -> Result<NonNull<Object>, InterpreterError> {
-    let ptr = value_to_ptr::<Object>(val).ok_or(InterpreterError::InvalidValue("object ptr"))?;
+    let ptr = val.to_ptr::<Object>().ok_or(InterpreterError::InvalidValue("object ptr"))?;
     let header_word = unsafe {
         // SAFETY: ptr points at a readable object header word.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -215,9 +210,9 @@ fn for_of_start(ctx: &mut JSContext, mut val: JSValue, is_for_in: bool) -> Resul
         // SAFETY: iter_ptr points to a freshly allocated value array.
         let arr = iter_ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
         ptr::write_unaligned(arr, val);
-        ptr::write_unaligned(arr.add(1), new_short_int(0));
+        ptr::write_unaligned(arr.add(1), JSValue::new_short_int(0));
     }
-    Ok(value_from_ptr(iter_ptr))
+    Ok(JSValue::from_ptr(iter_ptr))
 }
 
 fn for_of_next(
@@ -235,7 +230,7 @@ fn for_of_next(
     if !idx_val.is_int() {
         return Err(InterpreterError::InvalidValue("for_of index"));
     }
-    let idx = value_get_int(idx_val);
+    let idx = idx_val.get_int();
     if idx < 0 {
         return Err(InterpreterError::InvalidValue("for_of index"));
     }
@@ -248,14 +243,14 @@ fn for_of_next(
     if (idx as u32) >= data.len() {
         unsafe {
             // SAFETY: caller provided writable stack slots.
-            ptr::write_unaligned(done_slot, new_bool(1));
-            ptr::write_unaligned(value_slot, JS_UNDEFINED);
+            ptr::write_unaligned(done_slot, JSValue::new_bool(1));
+            ptr::write_unaligned(value_slot, JSValue::JS_UNDEFINED);
         }
         return Ok(());
     }
     let tab = data.tab();
-    let value = if tab == JS_NULL {
-        JS_UNDEFINED
+    let value = if tab == JSValue::JS_NULL {
+        JSValue::JS_UNDEFINED
     } else {
         let arr = unsafe {
             // SAFETY: tab is the backing value array for an ArrayData payload.
@@ -265,12 +260,12 @@ fn for_of_next(
     };
     unsafe {
         // SAFETY: caller provided writable stack slots.
-        ptr::write_unaligned(done_slot, new_bool(0));
+        ptr::write_unaligned(done_slot, JSValue::new_bool(0));
         ptr::write_unaligned(value_slot, value);
     }
     unsafe {
         // SAFETY: iterator state array has length 2.
-        iter.write(1, new_short_int(idx + 1))?;
+        iter.write(1, JSValue::new_short_int(idx + 1))?;
     }
     Ok(())
 }
@@ -280,7 +275,7 @@ fn set_prototype_internal(obj: JSValue, proto: JSValue) -> Result<(), Interprete
     if object_proto(obj_ptr) == proto {
         return Ok(());
     }
-    if proto != JS_NULL {
+    if proto != JSValue::JS_NULL {
         let mut current = proto;
         loop {
             let current_ptr = object_ptr(current)?;
@@ -288,7 +283,7 @@ fn set_prototype_internal(obj: JSValue, proto: JSValue) -> Result<(), Interprete
                 return Err(InterpreterError::TypeError("circular prototype chain"));
             }
             let next = object_proto(current_ptr);
-            if next == JS_NULL {
+            if next == JSValue::JS_NULL {
                 break;
             }
             current = next;
@@ -299,7 +294,7 @@ fn set_prototype_internal(obj: JSValue, proto: JSValue) -> Result<(), Interprete
 }
 
 fn function_bytecode_ptr(val: JSValue) -> Result<NonNull<FunctionBytecode>, InterpreterError> {
-    let ptr = value_to_ptr::<FunctionBytecode>(val)
+    let ptr = val.to_ptr::<FunctionBytecode>()
         .ok_or(InterpreterError::InvalidValue("function bytecode ptr"))?;
     let header_word = unsafe {
         // SAFETY: ptr points at a readable function bytecode header word.
@@ -313,10 +308,10 @@ fn function_bytecode_ptr(val: JSValue) -> Result<NonNull<FunctionBytecode>, Inte
 }
 
 fn short_func_index(val: JSValue) -> Option<u32> {
-    if value_get_special_tag(val) != JS_TAG_SHORT_FUNC {
+    if val.get_special_tag() != JSValue::JS_TAG_SHORT_FUNC {
         return None;
     }
-    let idx = value_get_special_value(val);
+    let idx = val.get_special_value();
     if idx < 0 {
         return None;
     }
@@ -332,7 +327,7 @@ fn cfunction_data(
         // SAFETY: payload begins with the cfunction index.
         ptr::read_unaligned(payload.cast::<u32>())
     };
-    let extra_bytes = header.extra_size() as usize * JSW as usize;
+    let extra_bytes = header.extra_size() as usize * JSValue::JSW as usize;
     let params = if extra_bytes >= size_of::<CFunctionData>() {
         let params_ptr = unsafe {
             // SAFETY: params are present when extra_bytes covers CFunctionData.
@@ -340,23 +335,23 @@ fn cfunction_data(
         };
         unsafe { ptr::read_unaligned(params_ptr.cast::<JSValue>()) }
     } else {
-        JS_UNDEFINED
+        JSValue::JS_UNDEFINED
     };
     Ok((idx, params))
 }
 
 fn value_to_f64(val: JSValue) -> Result<f64, InterpreterError> {
     if val.is_int() {
-        return Ok(f64::from(value_get_int(val)));
+        return Ok(f64::from(val.get_int()));
     }
     #[cfg(target_pointer_width = "64")]
     {
         if val.is_short_float() {
-            return Ok(short_float_to_f64(val));
+            return Ok(val.short_float_to_f64());
         }
     }
     if val.is_ptr() {
-        let ptr = value_to_ptr::<u8>(val).ok_or(InterpreterError::TypeError("float ptr"))?;
+        let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::TypeError("float ptr"))?;
         let header_word = unsafe {
             // SAFETY: ptr points at a readable memblock header.
             ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -376,13 +371,13 @@ fn value_to_f64(val: JSValue) -> Result<f64, InterpreterError> {
 
 fn to_bool(val: JSValue) -> Result<bool, InterpreterError> {
     if val.is_bool() {
-        return Ok(value_get_special_value(val) != 0);
+        return Ok(val.get_special_value() != 0);
     }
     if val.is_null() || val.is_undefined() {
         return Ok(false);
     }
     if val.is_int() {
-        return Ok(value_get_int(val) != 0);
+        return Ok(val.get_int() != 0);
     }
     if let Ok(num) = value_to_f64(val) {
         return Ok(num != 0.0 && !num.is_nan());
@@ -438,8 +433,8 @@ fn handle_exception(
             ptr::read_unaligned(cursor)
         };
         cursor = unsafe { cursor.add(1) };
-        if value_get_special_tag(val) == JS_TAG_CATCH_OFFSET {
-            let offset = value_get_special_value(val);
+        if val.get_special_tag() == JSValue::JS_TAG_CATCH_OFFSET {
+            let offset = val.get_special_value();
             if offset < 0 {
                 return Err(InterpreterError::InvalidBytecode("catch"));
             }
@@ -466,16 +461,16 @@ fn handle_exception(
 }
 
 fn encode_stack_ptr(stack_top: *mut JSValue, sp: *mut JSValue) -> Result<JSValue, InterpreterError> {
-    let offset = (stack_top as isize - sp as isize) / (JSW as isize);
+    let offset = (stack_top as isize - sp as isize) / (JSValue::JSW as isize);
     let offset = i32::try_from(offset).map_err(|_| InterpreterError::StackOverflow)?;
-    Ok(new_short_int(offset))
+    Ok(JSValue::new_short_int(offset))
 }
 
 fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Result<*mut JSValue, InterpreterError> {
     if !val.is_int() {
         return Err(InterpreterError::InvalidValue("saved fp"));
     }
-    let offset = value_get_int(val) as isize;
+    let offset = val.get_int() as isize;
     if offset < 0 {
         return Err(InterpreterError::InvalidValue("saved fp"));
     }
@@ -488,7 +483,7 @@ fn call_argc(call_flags: i32) -> usize {
 
 fn stack_check(ctx: &JSContext, sp: *mut JSValue, slots: usize) -> Result<(), InterpreterError> {
     let new_sp = unsafe { sp.sub(slots) };
-    let heap_limit = ctx.heap_free_ptr().as_ptr() as usize + (JS_STACK_SLACK as usize * JSW as usize);
+    let heap_limit = ctx.heap_free_ptr().as_ptr() as usize + (JS_STACK_SLACK as usize * JSValue::JSW as usize);
     if (new_sp as usize) < heap_limit {
         return Err(InterpreterError::StackOverflow);
     }
@@ -562,7 +557,7 @@ fn binary_arith_slow(
 fn get_length_value(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, InterpreterError> {
     if obj.is_string() {
         let len = ctx.string_len(obj);
-        return Ok(new_short_int(len as i32));
+        return Ok(JSValue::new_short_int(len as i32));
     }
     if obj.is_object() {
         let obj_ptr = object_ptr(obj)?;
@@ -574,7 +569,7 @@ fn get_length_value(ctx: &mut JSContext, obj: JSValue) -> Result<JSValue, Interp
                 && props == ctx.empty_props()
             {
                 let data = array_data(obj_ptr);
-                return Ok(new_short_int(data.len() as i32));
+                return Ok(JSValue::new_short_int(data.len() as i32));
             }
         }
     }
@@ -677,7 +672,7 @@ fn relational_slow(
             _ => return Err(InterpreterError::InvalidBytecode("relational slow")),
         }
     };
-    Ok(new_bool(res as i32))
+    Ok(JSValue::new_bool(res as i32))
 }
 
 fn strict_eq(ctx: &mut JSContext, left: JSValue, right: JSValue) -> Result<bool, InterpreterError> {
@@ -724,12 +719,12 @@ fn eq_tag(val: JSValue) -> EqTag {
             _ => EqTag::Object,
         };
     }
-    match value_get_special_tag(val) {
-        tag if tag == crate::jsvalue::JS_TAG_STRING_CHAR => EqTag::String,
-        tag if tag == JS_TAG_SHORT_FUNC => EqTag::Object,
-        tag if tag == crate::jsvalue::JS_TAG_BOOL => EqTag::Bool,
-        tag if tag == crate::jsvalue::JS_TAG_NULL => EqTag::Null,
-        tag if tag == crate::jsvalue::JS_TAG_UNDEFINED => EqTag::Undefined,
+    match val.get_special_tag() {
+        tag if tag == JSValue::JS_TAG_STRING_CHAR => EqTag::String,
+        tag if tag == JSValue::JS_TAG_SHORT_FUNC => EqTag::Object,
+        tag if tag == JSValue::JS_TAG_BOOL => EqTag::Bool,
+        tag if tag == JSValue::JS_TAG_NULL => EqTag::Null,
+        tag if tag == JSValue::JS_TAG_UNDEFINED => EqTag::Undefined,
         _ => EqTag::Other,
     }
 }
@@ -756,10 +751,10 @@ fn eq_slow(
             let d2 = conversion::to_number(ctx, right)?;
             d1 == d2
         } else if tag1 == EqTag::Bool {
-            left = new_short_int(value_get_special_value(left));
+            left = JSValue::new_short_int(left.get_special_value());
             continue;
         } else if tag2 == EqTag::Bool {
-            right = new_short_int(value_get_special_value(right));
+            right = JSValue::new_short_int(right.get_special_value());
             continue;
         } else if tag1 == EqTag::Object
             && (tag2 == EqTag::Number || tag2 == EqTag::String)
@@ -774,7 +769,7 @@ fn eq_slow(
         } else {
             false
         };
-        return Ok(new_bool((res ^ is_neq) as i32));
+        return Ok(JSValue::new_bool((res ^ is_neq) as i32));
     }
 }
 
@@ -826,7 +821,7 @@ fn instanceof_check(obj: JSValue, proto: JSValue) -> Result<bool, InterpreterErr
     loop {
         let obj_ptr = object_ptr(current)?;
         let next_proto = object_proto_value(obj_ptr);
-        if next_proto == JS_NULL {
+        if next_proto == JSValue::JS_NULL {
             return Ok(false);
         }
         if next_proto == proto {
@@ -837,7 +832,7 @@ fn instanceof_check(obj: JSValue, proto: JSValue) -> Result<bool, InterpreterErr
 }
 
 fn mtag_from_value(val: JSValue) -> Option<MTag> {
-    let ptr = value_to_ptr::<u8>(val)?;
+    let ptr = val.to_ptr::<u8>()?;
     let header_word = unsafe {
         // SAFETY: ptr points at a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -859,7 +854,7 @@ fn call_cfunction_def(
         BuiltinCFunction::ConstructorMagic(func) => Ok(func(ctx, this_val, args, def.magic as i32)),
         BuiltinCFunction::GenericParams(func) => Ok(func(ctx, this_val, args, params)),
         BuiltinCFunction::FF(func) => {
-            let arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+            let arg = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
             let num = conversion::to_number(ctx, arg)?;
             let out = func(num);
             Ok(ctx.new_float64(out)?)
@@ -877,7 +872,7 @@ fn map_property_error(err: PropertyError) -> InterpreterError {
 }
 
 fn var_ref_ptr(val: JSValue) -> Result<NonNull<u8>, InterpreterError> {
-    let ptr = value_to_ptr::<u8>(val).ok_or(InterpreterError::InvalidValue("varref ptr"))?;
+    let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::InvalidValue("varref ptr"))?;
     let header_word = unsafe {
         // SAFETY: ptr points at a readable memblock header.
         ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
@@ -967,7 +962,7 @@ fn alloc_var_ref_attached(
         ptr::write_unaligned(var_ref_value_ptr(ptr), next);
         ptr::write_unaligned(var_ref_pvalue_ptr(ptr), pvalue);
     }
-    Ok(value_from_ptr(ptr))
+    Ok(JSValue::from_ptr(ptr))
 }
 
 fn get_var_ref(
@@ -979,7 +974,7 @@ fn get_var_ref(
         // SAFETY: caller ensures first_var_ref is a readable slot.
         ptr::read_unaligned(first_var_ref)
     };
-    while val != JS_NULL {
+    while val != JSValue::JS_NULL {
         let ptr = var_ref_ptr(val)?;
         if var_ref_is_detached(ptr) {
             return Err(InterpreterError::InvalidValue("detached varref in list"));
@@ -1000,7 +995,7 @@ fn get_var_ref(
 
 fn detach_var_refs(first_var_ref: JSValue) -> Result<(), InterpreterError> {
     let mut current = first_var_ref;
-    while current != JS_NULL {
+    while current != JSValue::JS_NULL {
         let ptr = var_ref_ptr(current)?;
         if var_ref_is_detached(ptr) {
             return Err(InterpreterError::InvalidValue("varref already detached"));
@@ -1046,12 +1041,12 @@ fn add_global_var(
         if define_flag {
             let current = var_ref_get(value)?;
             if current.is_uninitialized() {
-                var_ref_set(value, JS_UNDEFINED)?;
+                var_ref_set(value, JSValue::JS_UNDEFINED)?;
             }
         }
         return Ok(value);
     }
-    let init = if define_flag { JS_UNDEFINED } else { JS_UNINITIALIZED };
+    let init = if define_flag { JSValue::JS_UNDEFINED } else { JSValue::JS_UNINITIALIZED };
     define_property_varref(ctx, global_obj, name, init).map_err(map_property_error)
 }
 
@@ -1077,11 +1072,11 @@ pub(crate) fn create_closure(
         let closure_data = core::ptr::addr_of_mut!((*payload).closure);
         let var_refs = crate::closure_data::ClosureData::var_refs_ptr(closure_data);
         for idx in 0..ext_len {
-            ptr::write_unaligned(var_refs.add(idx), JS_NULL);
+            ptr::write_unaligned(var_refs.add(idx), JSValue::JS_NULL);
         }
     }
     let ext_vars_val = b.ext_vars();
-    if ext_vars_val == JS_NULL {
+    if ext_vars_val == JSValue::JS_NULL {
         return Err(InterpreterError::InvalidValue("ext vars"));
     }
     let ext_vars = unsafe { ValueArrayRaw::from_value(ext_vars_val)? };
@@ -1092,7 +1087,7 @@ pub(crate) fn create_closure(
         if !decl_val.is_int() {
             return Err(InterpreterError::InvalidValue("ext var decl"));
         }
-        let decl = value_get_int(decl_val);
+        let decl = decl_val.get_int();
         let kind = decl >> 16;
         let var_idx = (decl & 0xffff) as usize;
         let var_ref = match kind {
@@ -1156,7 +1151,7 @@ fn call_constructor_start(
     };
     let proto = match crate::property::get_property(ctx, func, proto_key) {
         Ok(val) => val,
-        Err(PropertyError::Unsupported(_)) => JS_UNDEFINED,
+        Err(PropertyError::Unsupported(_)) => JSValue::JS_UNDEFINED,
         Err(err) => return Err(map_property_error(err)),
     };
     let proto = if proto.is_object() {
@@ -1184,7 +1179,7 @@ struct FrameState<'a, 'b> {
 }
 
 fn compute_n_vars(b: &FunctionBytecode) -> Result<usize, InterpreterError> {
-    if b.vars() != JS_NULL {
+    if b.vars() != JSValue::JS_NULL {
         let vars = unsafe { ValueArrayRaw::from_value(b.vars())? };
         Ok(vars.len.saturating_sub(b.arg_count() as usize))
     } else {
@@ -1209,7 +1204,7 @@ fn return_from_frame(
     if !call_flags_val.is_int() {
         return Err(InterpreterError::InvalidValue("call flags"));
     }
-    let call_flags = value_get_int(call_flags_val);
+    let call_flags = call_flags_val.get_int();
     if (call_flags & FRAME_CF_CTOR) != 0 && !val.is_exception() && !val.is_object() {
         val = unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_THIS_OBJ)) };
     }
@@ -1220,7 +1215,7 @@ fn return_from_frame(
     if caller_fp == state.initial_fp {
         if val.is_exception() {
             let thrown = ctx.take_current_exception();
-            let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
+            let thrown = if thrown == JSValue::JS_NULL { JSValue::JS_EXCEPTION } else { thrown };
             return Err(InterpreterError::Thrown(thrown));
         }
         return Ok(ReturnFlow::Done(val));
@@ -1233,7 +1228,7 @@ fn return_from_frame(
     if !pc_offset_val.is_int() {
         return Err(InterpreterError::InvalidValue("cur pc"));
     }
-    let pc_offset = value_get_int(pc_offset_val);
+    let pc_offset = pc_offset_val.get_int();
     if pc_offset < 0 {
         return Err(InterpreterError::InvalidValue("cur pc"));
     }
@@ -1247,7 +1242,7 @@ fn return_from_frame(
     *state.func_ptr = function_bytecode_ptr(func_val)?;
     let b = unsafe { state.func_ptr.as_ref() };
     let byte_code_val = b.byte_code();
-    if byte_code_val == JS_NULL {
+    if byte_code_val == JSValue::JS_NULL {
         return Err(InterpreterError::InvalidBytecode("missing bytecode"));
     }
     let byte_code = unsafe { ByteArrayRaw::from_value(byte_code_val)? };
@@ -1299,9 +1294,9 @@ fn unwind_exception(
         if !call_flags_val.is_int() {
             return Err(InterpreterError::InvalidValue("call flags"));
         }
-        let argc = call_argc(value_get_int(call_flags_val));
+        let argc = call_argc(call_flags_val.get_int());
         let frame_argc = argc.max(b.arg_count() as usize);
-        match return_from_frame(ctx, state, JS_EXCEPTION, frame_argc, true)? {
+        match return_from_frame(ctx, state, JSValue::JS_EXCEPTION, frame_argc, true)? {
             ReturnFlow::Done(_) => {
                 let thrown = ctx.take_current_exception();
                 return Err(InterpreterError::Thrown(thrown));
@@ -1362,9 +1357,9 @@ pub fn call_with_this_flags(
         }
         let mut temp_args = args.to_vec();
         if def.arg_count as usize > temp_args.len() {
-            temp_args.resize(def.arg_count as usize, JS_UNDEFINED);
+            temp_args.resize(def.arg_count as usize, JSValue::JS_UNDEFINED);
         }
-        let result = call_cfunction_def(ctx, &def, this_obj, &temp_args, JS_UNDEFINED);
+        let result = call_cfunction_def(ctx, &def, this_obj, &temp_args, JSValue::JS_UNDEFINED);
         ctx.set_sp(prev_sp);
         if let Ok(val) = result
             && (call_flags & FRAME_CF_CTOR) != 0
@@ -1404,7 +1399,7 @@ pub fn call_with_this_flags(
             }
             let mut temp_args = args.to_vec();
             if def.arg_count as usize > temp_args.len() {
-                temp_args.resize(def.arg_count as usize, JS_UNDEFINED);
+                temp_args.resize(def.arg_count as usize, JSValue::JS_UNDEFINED);
             }
             let result = call_cfunction_def(ctx, &def, this_obj, &temp_args, params);
             ctx.set_sp(prev_sp);
@@ -1427,7 +1422,7 @@ pub fn call_with_this_flags(
         func_ptr.as_ref()
     };
     let byte_code_val = b.byte_code();
-    if byte_code_val == JS_NULL {
+    if byte_code_val == JSValue::JS_NULL {
         return Err(InterpreterError::InvalidBytecode("missing bytecode"));
     }
     let byte_code = unsafe { ByteArrayRaw::from_value(byte_code_val)? };
@@ -1457,16 +1452,16 @@ pub fn call_with_this_flags(
     unsafe {
         // SAFETY: new_sp..stack_top covers total_slots writable slots.
         for idx in 0..n_vars {
-            ptr::write_unaligned(sp.add(idx), JS_UNDEFINED);
+            ptr::write_unaligned(sp.add(idx), JSValue::JS_UNDEFINED);
         }
-        ptr::write_unaligned(sp.add(n_vars), JS_NULL);
-        ptr::write_unaligned(sp.add(n_vars + 1), new_short_int(0));
+        ptr::write_unaligned(sp.add(n_vars), JSValue::JS_NULL);
+        ptr::write_unaligned(sp.add(n_vars + 1), JSValue::new_short_int(0));
         ptr::write_unaligned(fp.offset(FRAME_OFFSET_SAVED_FP), saved_fp);
-        ptr::write_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS), new_short_int(call_flags));
+        ptr::write_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS), JSValue::new_short_int(call_flags));
         ptr::write_unaligned(fp.offset(FRAME_OFFSET_THIS_OBJ), this_obj);
         ptr::write_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ), func);
         for idx in 0..max_args {
-            let arg = args.get(idx).copied().unwrap_or(JS_UNDEFINED);
+            let arg = args.get(idx).copied().unwrap_or(JSValue::JS_UNDEFINED);
             ptr::write_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + idx), arg);
         }
     }
@@ -1489,12 +1484,12 @@ pub fn call_with_this_flags(
             let pc_offset =
                 i32::try_from(pc).map_err(|_| InterpreterError::InvalidBytecode("call"))?;
             unsafe {
-                ptr::write_unaligned(fp.offset(FRAME_OFFSET_CUR_PC), new_short_int(pc_offset));
+                ptr::write_unaligned(fp.offset(FRAME_OFFSET_CUR_PC), JSValue::new_short_int(pc_offset));
             }
             let saved_fp = try_or_break!(encode_stack_ptr(stack_top, fp));
             unsafe {
                 sp = sp.sub(1);
-                ptr::write_unaligned(sp, new_short_int(call_flags));
+                ptr::write_unaligned(sp, JSValue::new_short_int(call_flags));
                 sp = sp.sub(1);
                 ptr::write_unaligned(sp, saved_fp);
             }
@@ -1504,14 +1499,14 @@ pub fn call_with_this_flags(
 
             let func_obj = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ)) };
             let mut cfunc_def: Option<CFunctionDef> = None;
-            let mut cfunc_params = JS_UNDEFINED;
+            let mut cfunc_params = JSValue::JS_UNDEFINED;
             let mut closure_ptr: Option<NonNull<Object>> = None;
 
             if !func_obj.is_ptr() {
-                if value_get_special_tag(func_obj) != JS_TAG_SHORT_FUNC {
+                if func_obj.get_special_tag() != JSValue::JS_TAG_SHORT_FUNC {
                     break Err(InterpreterError::NotAFunction);
                 }
-                let idx = value_get_special_value(func_obj);
+                let idx = func_obj.get_special_value();
                 if idx < 0 {
                     break Err(InterpreterError::InvalidCFunctionIndex(idx as u32));
                 }
@@ -1561,7 +1556,7 @@ pub fn call_with_this_flags(
                         for i in 0..extra {
                             ptr::write_unaligned(
                                 sp.add(FRAME_OFFSET_ARG0 as usize + argc + i),
-                                JS_UNDEFINED,
+                                JSValue::JS_UNDEFINED,
                             );
                         }
                     }
@@ -1589,7 +1584,7 @@ pub fn call_with_this_flags(
                         try_or_break!(return_from_frame(
                             ctx,
                             &mut frame_state,
-                            JS_EXCEPTION,
+                            JSValue::JS_EXCEPTION,
                             pushed_argc,
                             false
                         ))
@@ -1610,7 +1605,7 @@ pub fn call_with_this_flags(
                     }
                     ReturnFlow::Continue { exception: true } => {
                         let thrown = ctx.take_current_exception();
-                        let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
+                        let thrown = if thrown == JSValue::JS_NULL { JSValue::JS_EXCEPTION } else { thrown };
                         let flow = {
                             let mut frame_state = FrameState {
                                 stack_top,
@@ -1662,7 +1657,7 @@ pub fn call_with_this_flags(
                         for i in 0..extra {
                             ptr::write_unaligned(
                                 sp.add(FRAME_OFFSET_ARG0 as usize + argc + i),
-                                JS_UNDEFINED,
+                                JSValue::JS_UNDEFINED,
                             );
                         }
                     }
@@ -1672,17 +1667,17 @@ pub fn call_with_this_flags(
                 }
                 unsafe {
                     sp = sp.sub(1);
-                    ptr::write_unaligned(sp, new_short_int(0));
+                    ptr::write_unaligned(sp, JSValue::new_short_int(0));
                     sp = sp.sub(1);
-                    ptr::write_unaligned(sp, JS_NULL);
+                    ptr::write_unaligned(sp, JSValue::JS_NULL);
                     sp = sp.sub(new_n_vars);
                     for i in 0..new_n_vars {
-                        ptr::write_unaligned(sp.add(i), JS_UNDEFINED);
+                        ptr::write_unaligned(sp.add(i), JSValue::JS_UNDEFINED);
                     }
                 }
                 ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
                 let byte_code_val = b.byte_code();
-                if byte_code_val == JS_NULL {
+                if byte_code_val == JSValue::JS_NULL {
                     break Err(InterpreterError::InvalidBytecode("missing bytecode"));
                 }
                 let byte_code = unsafe { ByteArrayRaw::from_value(byte_code_val) };
@@ -1705,7 +1700,7 @@ pub fn call_with_this_flags(
         if let Ok(pc_offset) = i32::try_from(pc) {
             unsafe {
                 // SAFETY: fp points at the current frame header.
-                ptr::write_unaligned(fp.offset(FRAME_OFFSET_CUR_PC), new_short_int(pc_offset));
+                ptr::write_unaligned(fp.offset(FRAME_OFFSET_CUR_PC), JSValue::new_short_int(pc_offset));
             }
         }
         match opcode {
@@ -1715,7 +1710,7 @@ pub fn call_with_this_flags(
                 if !call_flags_val.is_int() {
                     break Err(InterpreterError::InvalidValue("call flags"));
                 }
-                let argc = call_argc(value_get_int(call_flags_val));
+                let argc = call_argc(call_flags_val.get_int());
                 let frame_argc = argc.max(b.arg_count() as usize);
                 let flow = {
                     let mut frame_state = FrameState {
@@ -1743,7 +1738,7 @@ pub fn call_with_this_flags(
                     }
                     ReturnFlow::Continue { exception: true } => {
                         let thrown = ctx.take_current_exception();
-                        let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
+                        let thrown = if thrown == JSValue::JS_NULL { JSValue::JS_EXCEPTION } else { thrown };
                         let flow = {
                             let mut frame_state = FrameState {
                                 stack_top,
@@ -1769,7 +1764,7 @@ pub fn call_with_this_flags(
                 if !call_flags_val.is_int() {
                     break Err(InterpreterError::InvalidValue("call flags"));
                 }
-                let argc = call_argc(value_get_int(call_flags_val));
+                let argc = call_argc(call_flags_val.get_int());
                 let frame_argc = argc.max(b.arg_count() as usize);
                 let flow = {
                     let mut frame_state = FrameState {
@@ -1785,7 +1780,7 @@ pub fn call_with_this_flags(
                     try_or_break!(return_from_frame(
                         ctx,
                         &mut frame_state,
-                        JS_UNDEFINED,
+                        JSValue::JS_UNDEFINED,
                         frame_argc,
                         true
                     ))
@@ -1797,7 +1792,7 @@ pub fn call_with_this_flags(
                     }
                     ReturnFlow::Continue { exception: true } => {
                         let thrown = ctx.take_current_exception();
-                        let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
+                        let thrown = if thrown == JSValue::JS_NULL { JSValue::JS_EXCEPTION } else { thrown };
                         let flow = {
                             let mut frame_state = FrameState {
                                 stack_top,
@@ -1843,7 +1838,7 @@ pub fn call_with_this_flags(
                 let target = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "catch"));
                 let offset = u32::try_from(target)
                     .map_err(|_| InterpreterError::InvalidBytecode("catch"))?;
-                push(ctx, &mut sp, value_make_special(JS_TAG_CATCH_OFFSET, offset));
+                push(ctx, &mut sp, JSValue::value_make_special(JSValue::JS_TAG_CATCH_OFFSET, offset));
                 pc += 4;
             },
             op if op == crate::opcode::OP_GOSUB.as_u8() => unsafe {
@@ -1851,7 +1846,7 @@ pub fn call_with_this_flags(
                 let return_pc = pc + 4;
                 let return_pc =
                     i32::try_from(return_pc).map_err(|_| InterpreterError::InvalidBytecode("gosub"))?;
-                push(ctx, &mut sp, new_short_int(return_pc));
+                push(ctx, &mut sp, JSValue::new_short_int(return_pc));
                 pc = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "gosub"));
             },
             op if op == crate::opcode::OP_RET.as_u8() => unsafe {
@@ -1859,7 +1854,7 @@ pub fn call_with_this_flags(
                 if !val.is_int() {
                     break Err(InterpreterError::InvalidBytecode("ret"));
                 }
-                let pos = value_get_int(val);
+                let pos = val.get_int();
                 if pos < 0 || (pos as usize) >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("ret"));
                 }
@@ -1957,31 +1952,31 @@ pub fn call_with_this_flags(
                 ptr::write_unaligned(sp, tmp);
             },
             op if op == crate::opcode::OP_PUSH_MINUS1.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(-1));
+                push(ctx, &mut sp, JSValue::new_short_int(-1));
             },
             op if op == crate::opcode::OP_PUSH_0.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(0));
+                push(ctx, &mut sp, JSValue::new_short_int(0));
             },
             op if op == crate::opcode::OP_PUSH_1.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(1));
+                push(ctx, &mut sp, JSValue::new_short_int(1));
             },
             op if op == crate::opcode::OP_PUSH_2.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(2));
+                push(ctx, &mut sp, JSValue::new_short_int(2));
             },
             op if op == crate::opcode::OP_PUSH_3.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(3));
+                push(ctx, &mut sp, JSValue::new_short_int(3));
             },
             op if op == crate::opcode::OP_PUSH_4.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(4));
+                push(ctx, &mut sp, JSValue::new_short_int(4));
             },
             op if op == crate::opcode::OP_PUSH_5.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(5));
+                push(ctx, &mut sp, JSValue::new_short_int(5));
             },
             op if op == crate::opcode::OP_PUSH_6.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(6));
+                push(ctx, &mut sp, JSValue::new_short_int(6));
             },
             op if op == crate::opcode::OP_PUSH_7.as_u8() => unsafe {
-                push(ctx, &mut sp, new_short_int(7));
+                push(ctx, &mut sp, JSValue::new_short_int(7));
             },
             op if op == crate::opcode::OP_PUSH_I8.as_u8() => unsafe {
                 let imm = match byte_slice.get(pc).copied() {
@@ -1989,7 +1984,7 @@ pub fn call_with_this_flags(
                     None => break Err(InterpreterError::InvalidBytecode("push_i8")),
                 };
                 pc += 1;
-                push(ctx, &mut sp, new_short_int(i32::from(imm)));
+                push(ctx, &mut sp, JSValue::new_short_int(i32::from(imm)));
             },
             op if op == crate::opcode::OP_PUSH_I16.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
@@ -1997,7 +1992,7 @@ pub fn call_with_this_flags(
                 }
                 let imm = i16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]);
                 pc += 2;
-                push(ctx, &mut sp, new_short_int(i32::from(imm)));
+                push(ctx, &mut sp, JSValue::new_short_int(i32::from(imm)));
             },
             op if op == crate::opcode::OP_PUSH_CONST.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
@@ -2030,19 +2025,19 @@ pub fn call_with_this_flags(
                     byte_slice[pc + 3],
                 ]);
                 pc += 4;
-                push(ctx, &mut sp, from_bits(raw as JSWord));
+                push(ctx, &mut sp, JSValue::from_bits(raw as JSWord));
             },
             op if op == crate::opcode::OP_UNDEFINED.as_u8() => unsafe {
-                push(ctx, &mut sp, JS_UNDEFINED);
+                push(ctx, &mut sp, JSValue::JS_UNDEFINED);
             },
             op if op == crate::opcode::OP_NULL.as_u8() => unsafe {
-                push(ctx, &mut sp, JS_NULL);
+                push(ctx, &mut sp, JSValue::JS_NULL);
             },
             op if op == crate::opcode::OP_PUSH_FALSE.as_u8() => unsafe {
-                push(ctx, &mut sp, new_bool(0));
+                push(ctx, &mut sp, JSValue::new_bool(0));
             },
             op if op == crate::opcode::OP_PUSH_TRUE.as_u8() => unsafe {
-                push(ctx, &mut sp, new_bool(1));
+                push(ctx, &mut sp, JSValue::new_bool(1));
             },
             op if op == crate::opcode::OP_THIS_FUNC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ));
@@ -2053,13 +2048,13 @@ pub fn call_with_this_flags(
                 if !call_flags_val.is_int() {
                     break Err(InterpreterError::InvalidValue("call flags"));
                 }
-                let argc = call_argc(value_get_int(call_flags_val));
+                let argc = call_argc(call_flags_val.get_int());
                 let array = try_or_break!(ctx.alloc_array(argc));
                 if argc > 0 {
                     let obj_ptr = try_or_break!(object_ptr(array));
                     let data = array_data(obj_ptr);
                     let tab = data.tab();
-                    if tab != JS_NULL {
+                    if tab != JSValue::JS_NULL {
                         let arr = try_or_break!(ValueArrayRaw::from_value(tab));
                         let mut write_error = None;
                         for i in 0..argc {
@@ -2081,11 +2076,11 @@ pub fn call_with_this_flags(
                 if !call_flags_val.is_int() {
                     break Err(InterpreterError::InvalidValue("call flags"));
                 }
-                let call_flags = value_get_int(call_flags_val);
+                let call_flags = call_flags_val.get_int();
                 let val = if (call_flags & FRAME_CF_CTOR) != 0 {
                     ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ))
                 } else {
-                    JS_UNDEFINED
+                    JSValue::JS_UNDEFINED
                 };
                 push(ctx, &mut sp, val);
             },
@@ -2100,7 +2095,7 @@ pub fn call_with_this_flags(
                     let obj_ptr = try_or_break!(object_ptr(array));
                     let data = array_data(obj_ptr);
                     let tab = data.tab();
-                    if tab != JS_NULL {
+                    if tab != JSValue::JS_NULL {
                         let arr = try_or_break!(ValueArrayRaw::from_value(tab));
                         let mut write_error = None;
                         for i in 0..argc {
@@ -2139,7 +2134,7 @@ pub fn call_with_this_flags(
                 let argc = call_argc(call_flags);
                 unsafe {
                     reverse_vals(sp, argc + 1);
-                    push(ctx, &mut sp, JS_UNDEFINED);
+                    push(ctx, &mut sp, JSValue::JS_UNDEFINED);
                 }
                 handle_call!(call_flags);
             },
@@ -2151,7 +2146,7 @@ pub fn call_with_this_flags(
                 let argc = call_argc(call_flags);
                 unsafe {
                     reverse_vals(sp, argc + 1);
-                    push(ctx, &mut sp, JS_UNDEFINED);
+                    push(ctx, &mut sp, JSValue::JS_UNDEFINED);
                 }
                 handle_call!(call_flags);
             },
@@ -2188,9 +2183,9 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let sum = value_get_int(lhs) + value_get_int(rhs);
-                    if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&sum) {
-                        Ok(new_short_int(sum))
+                    let sum = lhs.get_int() + rhs.get_int();
+                    if (JSValue::JS_SHORTINT_MIN..=JSValue::JS_SHORTINT_MAX).contains(&sum) {
+                        Ok(JSValue::new_short_int(sum))
                     } else {
                         add_slow(ctx, lhs, rhs)
                     }
@@ -2198,7 +2193,7 @@ pub fn call_with_this_flags(
                     #[cfg(target_pointer_width = "64")]
                     {
                         if lhs.is_short_float() && rhs.is_short_float() {
-                            let sum = short_float_to_f64(lhs) + short_float_to_f64(rhs);
+                            let sum = lhs.short_float_to_f64() + rhs.short_float_to_f64();
                             Ok(ctx.new_float64(sum)?)
                         } else {
                             add_slow(ctx, lhs, rhs)
@@ -2216,9 +2211,9 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let diff = value_get_int(lhs) - value_get_int(rhs);
-                    if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&diff) {
-                        Ok(new_short_int(diff))
+                    let diff = lhs.get_int() - rhs.get_int();
+                    if (JSValue::JS_SHORTINT_MIN..=JSValue::JS_SHORTINT_MAX).contains(&diff) {
+                        Ok(JSValue::new_short_int(diff))
                     } else {
                         binary_arith_slow(ctx, opcode, lhs, rhs)
                     }
@@ -2226,7 +2221,7 @@ pub fn call_with_this_flags(
                     #[cfg(target_pointer_width = "64")]
                     {
                         if lhs.is_short_float() && rhs.is_short_float() {
-                            let diff = short_float_to_f64(lhs) - short_float_to_f64(rhs);
+                            let diff = lhs.short_float_to_f64() - rhs.short_float_to_f64();
                             Ok(ctx.new_float64(diff)?)
                         } else {
                             binary_arith_slow(ctx, opcode, lhs, rhs)
@@ -2244,11 +2239,11 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let prod = value_get_int(lhs)
-                        .checked_mul(value_get_int(rhs))
-                        .unwrap_or(JS_SHORTINT_MIN - 1);
-                    if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&prod) {
-                        Ok(new_short_int(prod))
+                    let prod = lhs.get_int()
+                        .checked_mul(rhs.get_int())
+                        .unwrap_or(JSValue::JS_SHORTINT_MIN - 1);
+                    if (JSValue::JS_SHORTINT_MIN..=JSValue::JS_SHORTINT_MAX).contains(&prod) {
+                        Ok(JSValue::new_short_int(prod))
                     } else {
                         binary_arith_slow(ctx, opcode, lhs, rhs)
                     }
@@ -2256,7 +2251,7 @@ pub fn call_with_this_flags(
                     #[cfg(target_pointer_width = "64")]
                     {
                         if lhs.is_short_float() && rhs.is_short_float() {
-                            let prod = short_float_to_f64(lhs) * short_float_to_f64(rhs);
+                            let prod = lhs.short_float_to_f64() * rhs.short_float_to_f64();
                             Ok(ctx.new_float64(prod)?)
                         } else {
                             binary_arith_slow(ctx, opcode, lhs, rhs)
@@ -2274,8 +2269,8 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let v1 = value_get_int(lhs);
-                    let v2 = value_get_int(rhs);
+                    let v1 = lhs.get_int();
+                    let v2 = rhs.get_int();
                     Ok(ctx.new_float64((v1 as f64) / (v2 as f64))?)
                 } else {
                     binary_arith_slow(ctx, opcode, lhs, rhs)
@@ -2287,10 +2282,10 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let v1 = value_get_int(lhs);
-                    let v2 = value_get_int(rhs);
+                    let v1 = lhs.get_int();
+                    let v2 = rhs.get_int();
                     if v1 >= 0 && v2 > 0 {
-                        Ok(new_short_int(v1 % v2))
+                        Ok(JSValue::new_short_int(v1 % v2))
                     } else {
                         binary_arith_slow(ctx, opcode, lhs, rhs)
                     }
@@ -2309,13 +2304,13 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_NEG.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if val.is_int() {
-                    let v1 = value_get_int(val);
+                    let v1 = val.get_int();
                     if v1 == 0 {
                         Ok(ctx.minus_zero())
-                    } else if v1 == JS_SHORTINT_MIN {
+                    } else if v1 == JSValue::JS_SHORTINT_MIN {
                         unary_arith_slow(ctx, opcode, val)
                     } else {
-                        Ok(new_short_int(-v1))
+                        Ok(JSValue::new_short_int(-v1))
                     }
                 } else {
                     unary_arith_slow(ctx, opcode, val)
@@ -2336,11 +2331,11 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_INC.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if val.is_int() {
-                    let v1 = value_get_int(val);
-                    if v1 == JS_SHORTINT_MAX {
+                    let v1 = val.get_int();
+                    if v1 == JSValue::JS_SHORTINT_MAX {
                         unary_arith_slow(ctx, opcode, val)
                     } else {
-                        Ok(new_short_int(v1 + 1))
+                        Ok(JSValue::new_short_int(v1 + 1))
                     }
                 } else {
                     unary_arith_slow(ctx, opcode, val)
@@ -2351,11 +2346,11 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_DEC.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if val.is_int() {
-                    let v1 = value_get_int(val);
-                    if v1 == JS_SHORTINT_MIN {
+                    let v1 = val.get_int();
+                    if v1 == JSValue::JS_SHORTINT_MIN {
                         unary_arith_slow(ctx, opcode, val)
                     } else {
-                        Ok(new_short_int(v1 - 1))
+                        Ok(JSValue::new_short_int(v1 - 1))
                     }
                 } else {
                     unary_arith_slow(ctx, opcode, val)
@@ -2366,11 +2361,11 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_POST_INC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 let (old_val, new_val) = if val.is_int() {
-                    let v1 = value_get_int(val);
-                    if v1 == JS_SHORTINT_MAX {
+                    let v1 = val.get_int();
+                    if v1 == JSValue::JS_SHORTINT_MAX {
                         try_or_break!(post_inc_slow(ctx, opcode, val))
                     } else {
-                        (val, new_short_int(v1 + 1))
+                        (val, JSValue::new_short_int(v1 + 1))
                     }
                 } else {
                     try_or_break!(post_inc_slow(ctx, opcode, val))
@@ -2381,11 +2376,11 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_POST_DEC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 let (old_val, new_val) = if val.is_int() {
-                    let v1 = value_get_int(val);
-                    if v1 == JS_SHORTINT_MIN {
+                    let v1 = val.get_int();
+                    if v1 == JSValue::JS_SHORTINT_MIN {
                         try_or_break!(post_inc_slow(ctx, opcode, val))
                     } else {
-                        (val, new_short_int(v1 - 1))
+                        (val, JSValue::new_short_int(v1 - 1))
                     }
                 } else {
                     try_or_break!(post_inc_slow(ctx, opcode, val))
@@ -2395,13 +2390,13 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_LNOT.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
-                let res = new_bool(!try_or_break!(to_bool(val)) as i32);
+                let res = JSValue::new_bool(!try_or_break!(to_bool(val)) as i32);
                 push(ctx, &mut sp, res);
             },
             op if op == crate::opcode::OP_NOT.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if val.is_int() {
-                    Ok(new_short_int(!value_get_int(val)))
+                    Ok(JSValue::new_short_int(!val.get_int()))
                 } else {
                     not_slow(ctx, val)
                 };
@@ -2412,10 +2407,10 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let shift = (value_get_int(rhs) & 0x1f) as u32;
-                    let r = value_get_int(lhs).wrapping_shl(shift);
-                    if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&r) {
-                        Ok(new_short_int(r))
+                    let shift = (rhs.get_int() & 0x1f) as u32;
+                    let r = lhs.get_int().wrapping_shl(shift);
+                    if (JSValue::JS_SHORTINT_MIN..=JSValue::JS_SHORTINT_MAX).contains(&r) {
+                        Ok(JSValue::new_short_int(r))
                     } else {
                         binary_logic_slow(ctx, opcode, lhs, rhs)
                     }
@@ -2429,9 +2424,9 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let shift = (value_get_int(rhs) & 0x1f) as u32;
-                    let r = value_get_int(lhs) >> shift;
-                    Ok(new_short_int(r))
+                    let shift = (rhs.get_int() & 0x1f) as u32;
+                    let r = lhs.get_int() >> shift;
+                    Ok(JSValue::new_short_int(r))
                 } else {
                     binary_logic_slow(ctx, opcode, lhs, rhs)
                 };
@@ -2442,10 +2437,10 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let shift = (value_get_int(rhs) & 0x1f) as u32;
-                    let r = (value_get_int(lhs) as u32) >> shift;
-                    if r <= JS_SHORTINT_MAX as u32 {
-                        Ok(new_short_int(r as i32))
+                    let shift = (rhs.get_int() & 0x1f) as u32;
+                    let r = (lhs.get_int() as u32) >> shift;
+                    if r <= JSValue::JS_SHORTINT_MAX as u32 {
+                        Ok(JSValue::new_short_int(r as i32))
                     } else {
                         binary_logic_slow(ctx, opcode, lhs, rhs)
                     }
@@ -2459,7 +2454,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_short_int(value_get_int(lhs) & value_get_int(rhs)))
+                    Ok(JSValue::new_short_int(lhs.get_int() & rhs.get_int()))
                 } else {
                     binary_logic_slow(ctx, opcode, lhs, rhs)
                 };
@@ -2470,7 +2465,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_short_int(value_get_int(lhs) ^ value_get_int(rhs)))
+                    Ok(JSValue::new_short_int(lhs.get_int() ^ rhs.get_int()))
                 } else {
                     binary_logic_slow(ctx, opcode, lhs, rhs)
                 };
@@ -2481,7 +2476,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_short_int(value_get_int(lhs) | value_get_int(rhs)))
+                    Ok(JSValue::new_short_int(lhs.get_int() | rhs.get_int()))
                 } else {
                     binary_logic_slow(ctx, opcode, lhs, rhs)
                 };
@@ -2492,7 +2487,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_bool((value_get_int(lhs) < value_get_int(rhs)) as i32))
+                    Ok(JSValue::new_bool((lhs.get_int() < rhs.get_int()) as i32))
                 } else {
                     relational_slow(ctx, opcode, lhs, rhs)
                 };
@@ -2503,7 +2498,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_bool((value_get_int(lhs) <= value_get_int(rhs)) as i32))
+                    Ok(JSValue::new_bool((lhs.get_int() <= rhs.get_int()) as i32))
                 } else {
                     relational_slow(ctx, opcode, lhs, rhs)
                 };
@@ -2514,7 +2509,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_bool((value_get_int(lhs) > value_get_int(rhs)) as i32))
+                    Ok(JSValue::new_bool((lhs.get_int() > rhs.get_int()) as i32))
                 } else {
                     relational_slow(ctx, opcode, lhs, rhs)
                 };
@@ -2525,7 +2520,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_bool((value_get_int(lhs) >= value_get_int(rhs)) as i32))
+                    Ok(JSValue::new_bool((lhs.get_int() >= rhs.get_int()) as i32))
                 } else {
                     relational_slow(ctx, opcode, lhs, rhs)
                 };
@@ -2536,7 +2531,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_bool((value_get_int(lhs) == value_get_int(rhs)) as i32))
+                    Ok(JSValue::new_bool((lhs.get_int() == rhs.get_int()) as i32))
                 } else {
                     eq_slow(ctx, lhs, rhs, false)
                 };
@@ -2547,7 +2542,7 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_bool((value_get_int(lhs) != value_get_int(rhs)) as i32))
+                    Ok(JSValue::new_bool((lhs.get_int() != rhs.get_int()) as i32))
                 } else {
                     eq_slow(ctx, lhs, rhs, true)
                 };
@@ -2558,9 +2553,9 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res: Result<JSValue, InterpreterError> = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_bool((value_get_int(lhs) == value_get_int(rhs)) as i32))
+                    Ok(JSValue::new_bool((lhs.get_int() == rhs.get_int()) as i32))
                 } else {
-                    Ok(new_bool(strict_eq(ctx, lhs, rhs)? as i32))
+                    Ok(JSValue::new_bool(strict_eq(ctx, lhs, rhs)? as i32))
                 };
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
@@ -2569,9 +2564,9 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res: Result<JSValue, InterpreterError> = if lhs.is_int() && rhs.is_int() {
-                    Ok(new_bool((value_get_int(lhs) != value_get_int(rhs)) as i32))
+                    Ok(JSValue::new_bool((lhs.get_int() != rhs.get_int()) as i32))
                 } else {
-                    Ok(new_bool((!strict_eq(ctx, lhs, rhs)?) as i32))
+                    Ok(JSValue::new_bool((!strict_eq(ctx, lhs, rhs)?) as i32))
                 };
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
@@ -2591,7 +2586,7 @@ pub fn call_with_this_flags(
                 let has = try_or_break!(
                     crate::property::has_property(ctx, obj, prop).map_err(ConversionError::from)
                 );
-                push(ctx, &mut sp, new_bool(has as i32));
+                push(ctx, &mut sp, JSValue::new_bool(has as i32));
             },
             op if op == crate::opcode::OP_INSTANCEOF.as_u8() => unsafe {
                 let obj = pop(ctx, &mut sp);
@@ -2606,7 +2601,7 @@ pub fn call_with_this_flags(
                     crate::property::get_property(ctx, ctor, proto_key).map_err(ConversionError::from)
                 );
                 let found = try_or_break!(instanceof_check(obj, proto));
-                push(ctx, &mut sp, new_bool(found as i32));
+                push(ctx, &mut sp, JSValue::new_bool(found as i32));
             },
             op if op == crate::opcode::OP_GET_FIELD.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
@@ -2717,7 +2712,7 @@ pub fn call_with_this_flags(
                 let val = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
                 try_or_break!(
-                    crate::property::define_property_getset(ctx, obj, prop, val, JS_UNDEFINED)
+                    crate::property::define_property_getset(ctx, obj, prop, val, JSValue::JS_UNDEFINED)
                         .map_err(ConversionError::from)
                 );
             },
@@ -2732,7 +2727,7 @@ pub fn call_with_this_flags(
                 let val = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
                 try_or_break!(
-                    crate::property::define_property_getset(ctx, obj, prop, JS_UNDEFINED, val)
+                    crate::property::define_property_getset(ctx, obj, prop, JSValue::JS_UNDEFINED, val)
                         .map_err(ConversionError::from)
                 );
             },
@@ -2750,7 +2745,7 @@ pub fn call_with_this_flags(
                 let deleted = try_or_break!(
                     crate::property::delete_property(ctx, obj, prop).map_err(ConversionError::from)
                 );
-                ptr::write_unaligned(sp, new_bool(deleted as i32));
+                ptr::write_unaligned(sp, JSValue::new_bool(deleted as i32));
             },
             op if op == crate::opcode::OP_FOR_IN_START.as_u8()
                 || op == crate::opcode::OP_FOR_OF_START.as_u8() =>
@@ -2960,10 +2955,6 @@ mod tests {
     use crate::context::{ContextConfig, JSContext};
     use crate::enums::{JSObjectClass, JSVarRefKind};
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
-    use crate::jsvalue::{
-        new_short_int, value_from_ptr, value_get_int, value_get_special_value, value_to_ptr,
-        JSValue, JSWord, JS_NULL, JS_UNDEFINED,
-    };
     use crate::object::Object;
     use crate::opcode::{
         OP_ADD, OP_AND, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR, OP_CALL_METHOD,
@@ -3003,7 +2994,7 @@ mod tests {
     ) -> JSValue {
         let byte_code_val = ctx.alloc_byte_array(&bytecode).expect("bytecode");
         let cpool_val = if cpool.is_empty() {
-            JS_NULL
+            JSValue::JS_NULL
         } else {
             let ptr = ctx.alloc_value_array(cpool.len()).expect("cpool");
             unsafe {
@@ -3013,19 +3004,19 @@ mod tests {
                     ptr::write_unaligned(arr.add(idx), *val);
                 }
             }
-            value_from_ptr(ptr)
+            JSValue::from_ptr(ptr)
         };
         let header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let fields = FunctionBytecodeFields {
-            func_name: JS_NULL,
+            func_name: JSValue::JS_NULL,
             byte_code: byte_code_val,
             cpool: cpool_val,
-            vars: JS_NULL,
-            ext_vars: JS_NULL,
+            vars: JSValue::JS_NULL,
+            ext_vars: JSValue::JS_NULL,
             stack_size: 4,
             ext_vars_len: 0,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         let func = ctx
@@ -3037,7 +3028,7 @@ mod tests {
 
     fn alloc_value_array(ctx: &mut JSContext, values: &[JSValue]) -> JSValue {
         if values.is_empty() {
-            return JS_NULL;
+            return JSValue::JS_NULL;
         }
         let ptr = ctx.alloc_value_array(values.len()).expect("value array");
         unsafe {
@@ -3047,7 +3038,7 @@ mod tests {
                 ptr::write_unaligned(arr.add(idx), *val);
             }
         }
-        value_from_ptr(ptr)
+        JSValue::from_ptr(ptr)
     }
 
     fn make_function_bytecode(
@@ -3067,15 +3058,15 @@ mod tests {
         let ext_vars_len = (ext_vars.len() / 2) as u16;
         let header = FunctionBytecodeHeader::new(false, false, false, arg_count, false);
         let fields = FunctionBytecodeFields {
-            func_name: JS_NULL,
+            func_name: JSValue::JS_NULL,
             byte_code: byte_code_val,
             cpool: cpool_val,
             vars: vars_val,
             ext_vars: ext_vars_val,
             stack_size,
             ext_vars_len,
-            filename: JS_NULL,
-            pc2line: JS_NULL,
+            filename: JSValue::JS_NULL,
+            pc2line: JSValue::JS_NULL,
             source_pos: 0,
         };
         ctx.alloc_function_bytecode(header, fields).expect("func")
@@ -3091,7 +3082,7 @@ mod tests {
 
     fn new_array(ctx: &mut JSContext, elements: &[JSValue]) -> JSValue {
         let tab = if elements.is_empty() {
-            JS_NULL
+            JSValue::JS_NULL
         } else {
             let ptr = ctx.alloc_value_array(elements.len()).expect("array tab");
             unsafe {
@@ -3101,13 +3092,13 @@ mod tests {
                     ptr::write_unaligned(arr.add(idx), *val);
                 }
             }
-            value_from_ptr(ptr)
+            JSValue::from_ptr(ptr)
         };
         let proto = ctx.class_proto()[JSObjectClass::Array as usize];
         let array = ctx
             .alloc_object(JSObjectClass::Array, proto, size_of::<ArrayData>())
             .expect("array");
-        let obj_ptr = value_to_ptr::<Object>(array).expect("array ptr");
+        let obj_ptr = array.to_ptr::<Object>().expect("array ptr");
         unsafe {
             // SAFETY: payload points at a writable array data slot.
             let payload = Object::payload_ptr(obj_ptr.as_ptr());
@@ -3118,7 +3109,7 @@ mod tests {
     }
 
     fn object_proto(obj: JSValue) -> JSValue {
-        let obj_ptr = value_to_ptr::<Object>(obj).expect("object ptr");
+        let obj_ptr = obj.to_ptr::<Object>().expect("object ptr");
         unsafe {
             // SAFETY: obj_ptr points at a readable object proto slot.
             ptr::read_unaligned(Object::proto_ptr(obj_ptr.as_ptr()))
@@ -3139,7 +3130,7 @@ mod tests {
             vec![OP_PUSH_1.as_u8(), OP_PUSH_2.as_u8(), OP_ADD.as_u8(), OP_RETURN.as_u8()],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 3);
+        assert_eq!(result.get_int(), 3);
     }
 
     #[test]
@@ -3183,7 +3174,7 @@ mod tests {
             OP_RETURN.as_u8(),
         ];
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
-        assert_eq!(value_get_special_value(result), 1);
+        assert_eq!(result.get_special_value(), 1);
 
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -3202,7 +3193,7 @@ mod tests {
             OP_RETURN.as_u8(),
         ];
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
-        assert_eq!(value_get_special_value(result), 0);
+        assert_eq!(result.get_special_value(), 0);
     }
 
     #[test]
@@ -3227,7 +3218,7 @@ mod tests {
             OP_RETURN.as_u8(),
         ];
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![a, b]);
-        assert_eq!(value_get_special_value(result), 1);
+        assert_eq!(result.get_special_value(), 1);
     }
 
     #[test]
@@ -3244,7 +3235,7 @@ mod tests {
             vec![OP_PUSH_3.as_u8(), OP_PUSH_1.as_u8(), OP_AND.as_u8(), OP_RETURN.as_u8()],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 1);
+        assert_eq!(result.get_int(), 1);
     }
 
     #[test]
@@ -3267,7 +3258,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 1);
+        assert_eq!(result.get_int(), 1);
     }
 
     #[test]
@@ -3289,7 +3280,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 2);
+        assert_eq!(result.get_int(), 2);
     }
 
     #[test]
@@ -3311,7 +3302,7 @@ mod tests {
         bytecode.push(OP_RET.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 3);
+        assert_eq!(result.get_int(), 3);
     }
 
     #[test]
@@ -3333,7 +3324,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 1);
+        assert_eq!(result.get_int(), 1);
     }
 
     #[test]
@@ -3350,7 +3341,7 @@ mod tests {
             vec![OP_PUSH_1.as_u8(), OP_PUSH_2.as_u8(), OP_NIP.as_u8(), OP_RETURN.as_u8()],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 2);
+        assert_eq!(result.get_int(), 2);
 
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -3372,7 +3363,7 @@ mod tests {
             ],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 6);
+        assert_eq!(result.get_int(), 6);
 
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -3393,7 +3384,7 @@ mod tests {
             ],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 5);
+        assert_eq!(result.get_int(), 5);
 
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -3416,7 +3407,7 @@ mod tests {
             ],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 9);
+        assert_eq!(result.get_int(), 9);
 
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -3437,7 +3428,7 @@ mod tests {
             ],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), -2);
+        assert_eq!(result.get_int(), -2);
 
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -3458,7 +3449,7 @@ mod tests {
             ],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 2);
+        assert_eq!(result.get_int(), 2);
 
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -3480,7 +3471,7 @@ mod tests {
             ],
         );
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), -2);
+        assert_eq!(result.get_int(), -2);
     }
 
     #[test]
@@ -3493,10 +3484,10 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"answer").expect("atom");
-        define_property_value(&mut ctx, obj, key, new_short_int(42)).expect("define");
+        define_property_value(&mut ctx, obj, key, JSValue::new_short_int(42)).expect("define");
 
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_CONST.as_u8());
@@ -3507,7 +3498,7 @@ mod tests {
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 42);
+        assert_eq!(result.get_int(), 42);
     }
 
     #[test]
@@ -3520,10 +3511,10 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"foo").expect("atom");
-        define_property_value(&mut ctx, obj, key, new_short_int(7)).expect("define");
+        define_property_value(&mut ctx, obj, key, JSValue::new_short_int(7)).expect("define");
 
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_CONST.as_u8());
@@ -3547,7 +3538,7 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"x").expect("atom");
 
@@ -3565,7 +3556,7 @@ mod tests {
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 5);
+        assert_eq!(result.get_int(), 5);
     }
 
     #[test]
@@ -3578,7 +3569,7 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"y").expect("atom");
 
@@ -3594,7 +3585,7 @@ mod tests {
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 3);
+        assert_eq!(result.get_int(), 3);
     }
 
     #[test]
@@ -3607,7 +3598,7 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"g").expect("atom");
 
@@ -3629,8 +3620,8 @@ mod tests {
         match entry {
             DebugProperty::GetSet { getter, setter } => {
                 assert!(getter.is_int());
-                assert_eq!(value_get_int(getter), 11);
-                assert_eq!(setter, JS_UNDEFINED);
+                assert_eq!(getter.get_int(), 11);
+                assert_eq!(setter, JSValue::JS_UNDEFINED);
             }
             _ => panic!("expected get/set entry"),
         }
@@ -3646,7 +3637,7 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"s").expect("atom");
 
@@ -3667,9 +3658,9 @@ mod tests {
             .expect("property");
         match entry {
             DebugProperty::GetSet { getter, setter } => {
-                assert_eq!(getter, JS_UNDEFINED);
+                assert_eq!(getter, JSValue::JS_UNDEFINED);
                 assert!(setter.is_int());
-                assert_eq!(value_get_int(setter), 22);
+                assert_eq!(setter.get_int(), 22);
             }
             _ => panic!("expected get/set entry"),
         }
@@ -3686,7 +3677,7 @@ mod tests {
         .expect("context init");
         let array = new_array(
             &mut ctx,
-            &[new_short_int(10), new_short_int(20)],
+            &[JSValue::new_short_int(10), JSValue::new_short_int(20)],
         );
 
         let bytecode = vec![
@@ -3700,7 +3691,7 @@ mod tests {
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 20);
+        assert_eq!(result.get_int(), 20);
     }
 
     #[test]
@@ -3712,7 +3703,7 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let array = new_array(&mut ctx, &[new_short_int(7)]);
+        let array = new_array(&mut ctx, &[JSValue::new_short_int(7)]);
 
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3737,7 +3728,7 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let array = new_array(&mut ctx, &[new_short_int(0)]);
+        let array = new_array(&mut ctx, &[JSValue::new_short_int(0)]);
 
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3757,7 +3748,7 @@ mod tests {
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 7);
+        assert_eq!(result.get_int(), 7);
     }
 
     #[test]
@@ -3769,7 +3760,7 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let array = new_array(&mut ctx, &[new_short_int(1), new_short_int(2)]);
+        let array = new_array(&mut ctx, &[JSValue::new_short_int(1), JSValue::new_short_int(2)]);
 
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3781,7 +3772,7 @@ mod tests {
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 2);
+        assert_eq!(result.get_int(), 2);
     }
 
     #[test]
@@ -3804,7 +3795,7 @@ mod tests {
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![val]);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 2);
+        assert_eq!(result.get_int(), 2);
     }
 
     #[test]
@@ -3816,7 +3807,7 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let array = new_array(&mut ctx, &[new_short_int(3)]);
+        let array = new_array(&mut ctx, &[JSValue::new_short_int(3)]);
 
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3841,10 +3832,10 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let proto = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("proto");
 
         let bytecode = vec![
@@ -3873,10 +3864,10 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"del").expect("atom");
-        define_property_value(&mut ctx, obj, key, new_short_int(1)).expect("define");
+        define_property_value(&mut ctx, obj, key, JSValue::new_short_int(1)).expect("define");
 
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3890,7 +3881,7 @@ mod tests {
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
-        assert_eq!(value_get_special_value(result), 1);
+        assert_eq!(result.get_special_value(), 1);
         assert!(!has_property(&ctx, obj, key).expect("has"));
     }
 
@@ -3915,7 +3906,7 @@ mod tests {
 
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 1);
+        assert_eq!(result.get_int(), 1);
     }
 
     #[test]
@@ -3927,7 +3918,7 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let array = new_array(&mut ctx, &[new_short_int(7)]);
+        let array = new_array(&mut ctx, &[JSValue::new_short_int(7)]);
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
@@ -3942,7 +3933,7 @@ mod tests {
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 7);
+        assert_eq!(result.get_int(), 7);
     }
 
     #[test]
@@ -3955,10 +3946,10 @@ mod tests {
         })
         .expect("context init");
         let obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
         let key = ctx.intern_string(b"k").expect("key");
-        define_property_value(&mut ctx, obj, key, new_short_int(1)).expect("define");
+        define_property_value(&mut ctx, obj, key, JSValue::new_short_int(1)).expect("define");
 
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_CONST.as_u8());
@@ -4031,9 +4022,9 @@ mod tests {
             4,
         );
         let closure = ctx.alloc_closure(func, 0).expect("closure");
-        let result = call(&mut ctx, closure, &[new_short_int(7)]).expect("call");
+        let result = call(&mut ctx, closure, &[JSValue::new_short_int(7)]).expect("call");
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 1);
+        assert_eq!(result.get_int(), 1);
     }
 
     #[test]
@@ -4081,7 +4072,7 @@ mod tests {
         );
         let inner_closure = ctx.alloc_closure(inner_func, 0).expect("closure");
         let result = call(&mut ctx, inner_closure, &[]).expect("call");
-        assert_eq!(result, JS_UNDEFINED);
+        assert_eq!(result, JSValue::JS_UNDEFINED);
 
         let mut outer_code = Vec::new();
         outer_code.push(OP_FCLOSURE.as_u8());
@@ -4155,7 +4146,7 @@ mod tests {
         let caller_closure = ctx.alloc_closure(caller_func, 0).expect("closure");
         let result = call(&mut ctx, caller_closure, &[]).expect("call");
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 3);
+        assert_eq!(result.get_int(), 3);
     }
 
     #[test]
@@ -4179,7 +4170,7 @@ mod tests {
         );
         let callee_closure = ctx.alloc_closure(callee_func, 0).expect("closure");
         let this_obj = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("object");
 
         let mut caller_code = Vec::new();
@@ -4203,7 +4194,7 @@ mod tests {
         let caller_closure = ctx.alloc_closure(caller_func, 0).expect("closure");
         let result = call(&mut ctx, caller_closure, &[]).expect("call");
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 5);
+        assert_eq!(result.get_int(), 5);
     }
 
     #[test]
@@ -4227,7 +4218,7 @@ mod tests {
         );
         let callee_closure = ctx.alloc_closure(callee_func, 0).expect("closure");
         let proto = ctx
-            .alloc_object(JSObjectClass::Object, JS_NULL, 0)
+            .alloc_object(JSObjectClass::Object, JSValue::JS_NULL, 0)
             .expect("proto");
         let proto_key = ctx.intern_string(b"prototype").expect("atom");
         define_property_value(&mut ctx, callee_closure, proto_key, proto).expect("define");
@@ -4263,7 +4254,7 @@ mod tests {
         .expect("context init");
         let name = ctx.intern_string(b"x").expect("atom");
         let decl = (JSVarRefKind::Arg as i32) << 16;
-        let ext_vars = vec![name, new_short_int(decl)];
+        let ext_vars = vec![name, JSValue::new_short_int(decl)];
 
         let mut inner_code = Vec::new();
         inner_code.push(OP_GET_VAR_REF.as_u8());
@@ -4300,15 +4291,15 @@ mod tests {
         );
         let outer_closure = ctx.alloc_closure(outer_func, 0).expect("closure");
         let inner_closure =
-            call(&mut ctx, outer_closure, &[new_short_int(10)]).expect("call");
+            call(&mut ctx, outer_closure, &[JSValue::new_short_int(10)]).expect("call");
 
         let result = call(&mut ctx, inner_closure, &[]).expect("call");
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 11);
+        assert_eq!(result.get_int(), 11);
 
         let result = call(&mut ctx, inner_closure, &[]).expect("call");
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 12);
+        assert_eq!(result.get_int(), 12);
     }
 
     #[test]
@@ -4322,7 +4313,7 @@ mod tests {
         .expect("context init");
         let name = ctx.intern_string(b"missing").expect("atom");
         let decl = (JSVarRefKind::Global as i32) << 16;
-        let ext_vars = vec![name, new_short_int(decl)];
+        let ext_vars = vec![name, JSValue::new_short_int(decl)];
 
         let mut code = Vec::new();
         code.push(OP_PUSH_1.as_u8());
@@ -4343,7 +4334,7 @@ mod tests {
         let closure = create_closure(&mut ctx, func, None).expect("closure");
         let result = call(&mut ctx, closure, &[]).expect("call");
         assert!(result.is_int());
-        assert_eq!(value_get_int(result), 1);
+        assert_eq!(result.get_int(), 1);
     }
 
     #[test]
@@ -4357,7 +4348,7 @@ mod tests {
         .expect("context init");
         let name = ctx.intern_string(b"missing").expect("atom");
         let decl = (JSVarRefKind::Global as i32) << 16;
-        let ext_vars = vec![name, new_short_int(decl)];
+        let ext_vars = vec![name, JSValue::new_short_int(decl)];
 
         let mut code = Vec::new();
         code.push(OP_GET_VAR_REF.as_u8());
