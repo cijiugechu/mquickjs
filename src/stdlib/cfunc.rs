@@ -122,7 +122,9 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_string_slice" => BuiltinCFunction::Generic(builtins::js_string_slice),
             "js_string_substring" => BuiltinCFunction::Generic(builtins::js_string_substring),
             "js_string_concat" => BuiltinCFunction::Generic(builtins::js_string_concat),
+            "js_string_match" => BuiltinCFunction::Generic(builtins::js_string_match),
             "js_string_split" => BuiltinCFunction::Generic(builtins::js_string_split),
+            "js_string_search" => BuiltinCFunction::Generic(builtins::js_string_search),
             // Array
             "js_array_get_length" => BuiltinCFunction::Generic(builtins::js_array_get_length),
             "js_array_set_length" => BuiltinCFunction::Generic(builtins::js_array_set_length),

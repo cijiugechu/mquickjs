@@ -2,7 +2,7 @@
 
 use crate::context::JSContext;
 use crate::conversion;
-use crate::cutils::{float64_as_uint64, uint64_as_float64};
+use crate::cutils::{float64_as_uint64, get_u16, uint64_as_float64};
 use crate::dtoa::{
     js_atod, js_dtoa, AtodFlags, DtoaFlags, JS_ATOD_ACCEPT_BIN_OCT, JS_ATOD_INT_ONLY,
     JS_DTOA_EXP_DISABLED, JS_DTOA_EXP_ENABLED, JS_DTOA_FORMAT_FIXED, JS_DTOA_FORMAT_FRAC,
@@ -18,14 +18,17 @@ use crate::jsvalue::{
 #[cfg(target_pointer_width = "64")]
 use crate::jsvalue::{is_short_float, short_float_to_f64};
 use crate::memblock::{MbHeader, MTag};
-use crate::object::{Object, ObjectHeader};
+use crate::object::{Object, ObjectHeader, RegExp};
+use crate::parser::regexp_flags::{LRE_FLAG_GLOBAL, LRE_FLAG_STICKY};
 use crate::property::{
     define_property_getset, define_property_value, find_own_property_exposed, get_property,
     has_property, object_keys,
 };
+use crate::regexp::{regexp_exec, RegExpError, RegExpExecMode};
 use crate::string::runtime::string_view;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
+use core::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 
@@ -1398,6 +1401,99 @@ fn string_compare_at(
     true
 }
 
+fn is_regexp_object(val: JSValue) -> bool {
+    if !is_ptr(val) {
+        return false;
+    }
+    let Some(obj_ptr) = value_to_ptr::<Object>(val) else {
+        return false;
+    };
+    let header_word = unsafe {
+        // SAFETY: obj_ptr points to a readable object header.
+        ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = ObjectHeader::from_word(header_word);
+    header.tag() == MTag::Object && header.class_id() == JSObjectClass::RegExp as u8
+}
+
+fn regexp_object_ptr(val: JSValue) -> Result<NonNull<Object>, RegExpError> {
+    let ptr = value_to_ptr::<Object>(val).ok_or(RegExpError::TypeError("not a regular expression"))?;
+    let header_word = unsafe {
+        // SAFETY: ptr points to a readable object header.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = ObjectHeader::from_word(header_word);
+    if header.tag() != MTag::Object || header.class_id() != JSObjectClass::RegExp as u8 {
+        return Err(RegExpError::TypeError("not a regular expression"));
+    }
+    Ok(ptr)
+}
+
+fn regexp_payload_ptr(obj_ptr: NonNull<Object>) -> *mut RegExp {
+    unsafe {
+        // SAFETY: obj_ptr points to a RegExp object payload.
+        let payload = Object::payload_ptr(obj_ptr.as_ptr());
+        ptr::addr_of_mut!((*payload).regexp)
+    }
+}
+
+fn regexp_flags(val: JSValue) -> Result<u32, RegExpError> {
+    let obj_ptr = regexp_object_ptr(val)?;
+    let re_ptr = regexp_payload_ptr(obj_ptr);
+    let byte_code = unsafe {
+        // SAFETY: re_ptr points to a valid RegExp with a byte_code slot.
+        ptr::read_unaligned(RegExp::byte_code_ptr(re_ptr))
+    };
+    let byte_ptr = value_to_ptr::<u8>(byte_code).ok_or(RegExpError::InvalidValue("byte array"))?;
+    let header_word = unsafe {
+        // SAFETY: byte_ptr points to a readable memblock header.
+        ptr::read_unaligned(byte_ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = MbHeader::from_word(header_word);
+    if header.tag() != MTag::ByteArray {
+        return Err(RegExpError::InvalidValue("byte array"));
+    }
+    let size = ByteArrayHeader::from(header).size() as usize;
+    if size < 2 {
+        return Err(RegExpError::InvalidBytecode("header"));
+    }
+    let payload = unsafe {
+        // SAFETY: payload follows the byte array header and spans `size` bytes.
+        byte_ptr.as_ptr().add(size_of::<JSWord>())
+    };
+    let bytes = unsafe {
+        // SAFETY: payload covers `size` bytes of byte array storage.
+        slice::from_raw_parts(payload, size)
+    };
+    Ok(get_u16(&bytes[0..2]) as u32)
+}
+
+fn regexp_last_index(val: JSValue) -> Result<i32, RegExpError> {
+    let obj_ptr = regexp_object_ptr(val)?;
+    let re_ptr = regexp_payload_ptr(obj_ptr);
+    Ok(unsafe {
+        // SAFETY: re_ptr points to a valid RegExp with a last_index slot.
+        ptr::read_unaligned(RegExp::last_index_ptr(re_ptr))
+    })
+}
+
+fn regexp_set_last_index(val: JSValue, last_index: i32) -> Result<(), RegExpError> {
+    let obj_ptr = regexp_object_ptr(val)?;
+    let re_ptr = regexp_payload_ptr(obj_ptr);
+    unsafe {
+        // SAFETY: re_ptr points to a valid RegExp with a last_index slot.
+        ptr::write_unaligned(RegExp::last_index_ptr(re_ptr), last_index);
+    }
+    Ok(())
+}
+
+fn handle_regexp_error(ctx: &mut JSContext, err: RegExpError) -> JSValue {
+    match err {
+        RegExpError::TypeError(msg) => ctx.throw_type_error(msg),
+        _ => JS_EXCEPTION,
+    }
+}
+
 pub fn js_string_toLowerCase(
     ctx: &mut JSContext,
     this_val: JSValue,
@@ -1538,20 +1634,138 @@ pub fn js_string_split(
         return arr;
     }
 
-    // TODO: Handle RegExp separators
-    // For now, only handle string separators
-    let sep_str = match conversion::to_string(ctx, sep) {
-        Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
-    };
-
     let input_len = ctx.string_len(s) as i32;
-    let sep_len = ctx.string_len(sep_str) as i32;
-
     let arr = match ctx.alloc_array(0) {
         Ok(a) => a,
         Err(_) => return JS_EXCEPTION,
     };
+
+    if is_regexp_object(sep) {
+        let re_flags = match regexp_flags(sep) {
+            Ok(flags) => flags,
+            Err(err) => return handle_regexp_error(ctx, err),
+        };
+        let index_key = match ctx.intern_string(b"index") {
+            Ok(key) => key,
+            Err(_) => return JS_EXCEPTION,
+        };
+
+        let mut count = 0u32;
+        let mut p = 0i32;
+
+        if input_len == 0 {
+            if let Err(err) = regexp_set_last_index(sep, 0) {
+                return handle_regexp_error(ctx, err);
+            }
+            let z = match regexp_exec(ctx, sep, s, RegExpExecMode::ForceGlobal) {
+                Ok(val) => val,
+                Err(err) => return handle_regexp_error(ctx, err),
+            };
+            if z != JS_NULL {
+                return arr;
+            }
+            let _ = crate::property::set_property(ctx, arr, new_short_int(0), s);
+            let _ = ctx.array_set_length(arr, 1);
+            return arr;
+        }
+
+        let mut q = 0i32;
+        while q < input_len {
+            if let Err(err) = regexp_set_last_index(sep, q) {
+                return handle_regexp_error(ctx, err);
+            }
+            let z = match regexp_exec(ctx, sep, s, RegExpExecMode::ForceGlobal) {
+                Ok(val) => val,
+                Err(err) => return handle_regexp_error(ctx, err),
+            };
+            if z == JS_NULL {
+                if (re_flags & LRE_FLAG_STICKY) == 0 {
+                    break;
+                }
+                let c = ctx.string_getcp(s, q as u32, true);
+                let advance = if c >= 0x10000 { 2 } else { 1 };
+                q += advance;
+                continue;
+            }
+
+            if (re_flags & LRE_FLAG_STICKY) == 0 {
+                let idx_val = match get_property(ctx, z, index_key) {
+                    Ok(v) => v,
+                    Err(_) => return JS_EXCEPTION,
+                };
+                let idx = match conversion::to_int32(ctx, idx_val) {
+                    Ok(v) => v,
+                    Err(_) => return JS_EXCEPTION,
+                };
+                q = idx;
+            }
+
+            let mut e = match regexp_last_index(sep) {
+                Ok(v) => v,
+                Err(err) => return handle_regexp_error(ctx, err),
+            };
+            if e > input_len {
+                e = input_len;
+            }
+
+            if e == p {
+                let c = ctx.string_getcp(s, q as u32, true);
+                let advance = if c >= 0x10000 { 2 } else { 1 };
+                q += advance;
+                continue;
+            }
+
+            let sub = match ctx.sub_string(s, p as u32, q as u32) {
+                Ok(sub) => sub,
+                Err(_) => return JS_EXCEPTION,
+            };
+            let _ = crate::property::set_property(ctx, arr, new_short_int(count as i32), sub);
+            count += 1;
+            let _ = ctx.array_set_length(arr, count);
+            if count >= limit {
+                return arr;
+            }
+
+            let captures_len = match get_array_info(z) {
+                Some((_, len)) => len,
+                None => return JS_EXCEPTION,
+            };
+            for i in 1..captures_len {
+                let capture = match get_property(ctx, z, new_short_int(i as i32)) {
+                    Ok(val) => val,
+                    Err(_) => return JS_EXCEPTION,
+                };
+                let _ = crate::property::set_property(
+                    ctx,
+                    arr,
+                    new_short_int(count as i32),
+                    capture,
+                );
+                count += 1;
+                let _ = ctx.array_set_length(arr, count);
+                if count >= limit {
+                    return arr;
+                }
+            }
+
+            q = e;
+            p = e;
+        }
+
+        let sub = match ctx.sub_string(s, p as u32, input_len as u32) {
+            Ok(sub) => sub,
+            Err(_) => return JS_EXCEPTION,
+        };
+        let _ = crate::property::set_property(ctx, arr, new_short_int(count as i32), sub);
+        let _ = ctx.array_set_length(arr, count + 1);
+        return arr;
+    }
+
+    let sep_str = match conversion::to_string(ctx, sep) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+    let sep_len = ctx.string_len(sep_str) as i32;
 
     // Empty string with non-empty separator
     if input_len == 0 {
@@ -1620,13 +1834,7 @@ pub fn js_string_replace(
 
     let search_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
     let replace_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
-
-    // TODO: Handle RegExp search
-    // For now, only handle string search
-    let search = match conversion::to_string(ctx, search_arg) {
-        Ok(s) => s,
-        Err(_) => return JS_EXCEPTION,
-    };
+    let is_regexp = is_regexp_object(search_arg);
 
     // Functional replace not supported
     if conversion::is_function(replace_arg) {
@@ -1639,12 +1847,106 @@ pub fn js_string_replace(
     };
 
     let input_len = ctx.string_len(s) as i32;
-    let search_len = ctx.string_len(search) as i32;
-
     let mut result = Vec::new();
     let mut end_of_last_match = 0i32;
-    let mut is_first = true;
 
+    if is_regexp {
+        let re_flags = match regexp_flags(search_arg) {
+            Ok(flags) => flags,
+            Err(err) => return handle_regexp_error(ctx, err),
+        };
+        let index_key = match ctx.intern_string(b"index") {
+            Ok(key) => key,
+            Err(_) => return JS_EXCEPTION,
+        };
+
+        let mut last_index = if (re_flags & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) == 0 {
+            0
+        } else {
+            match regexp_last_index(search_arg) {
+                Ok(idx) => idx.max(0),
+                Err(err) => return handle_regexp_error(ctx, err),
+            }
+        };
+        if (re_flags & LRE_FLAG_GLOBAL) != 0 {
+            if let Err(err) = regexp_set_last_index(search_arg, 0) {
+                return handle_regexp_error(ctx, err);
+            }
+            last_index = 0;
+        }
+
+        loop {
+            if let Err(err) = regexp_set_last_index(search_arg, last_index) {
+                return handle_regexp_error(ctx, err);
+            }
+            let exec_val = match regexp_exec(ctx, search_arg, s, RegExpExecMode::Exec) {
+                Ok(val) => val,
+                Err(err) => return handle_regexp_error(ctx, err),
+            };
+            if exec_val == JS_NULL {
+                break;
+            }
+
+            let index_val = match get_property(ctx, exec_val, index_key) {
+                Ok(val) => val,
+                Err(_) => return JS_EXCEPTION,
+            };
+            let start = match conversion::to_int32(ctx, index_val) {
+                Ok(val) => val,
+                Err(_) => return JS_EXCEPTION,
+            };
+            let match_val = match get_property(ctx, exec_val, new_short_int(0)) {
+                Ok(val) => val,
+                Err(_) => return JS_EXCEPTION,
+            };
+            let match_len = ctx.string_len(match_val) as i32;
+            let end = start + match_len;
+
+            append_utf16_range(ctx, &mut result, s, end_of_last_match, start);
+
+            let captures_len = match get_array_info(exec_val) {
+                Some((_, len)) => len,
+                None => return JS_EXCEPTION,
+            };
+            append_replacement(
+                ctx,
+                &mut result,
+                s,
+                replace,
+                start,
+                end,
+                Some((exec_val, captures_len)),
+            );
+
+            end_of_last_match = end;
+
+            if (re_flags & LRE_FLAG_GLOBAL) == 0 {
+                if (re_flags & LRE_FLAG_STICKY) != 0 {
+                    let _ = regexp_set_last_index(search_arg, end);
+                }
+                break;
+            }
+
+            let mut next_index = end;
+            if end == start {
+                let c = ctx.string_getcp(s, end as u32, true);
+                let advance = if c >= 0x10000 { 2 } else { 1 };
+                next_index = end + advance;
+            }
+            last_index = next_index;
+        }
+
+        append_utf16_range(ctx, &mut result, s, end_of_last_match, input_len);
+        return ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION);
+    }
+
+    let search = match conversion::to_string(ctx, search_arg) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+    let search_len = ctx.string_len(search) as i32;
+
+    let mut is_first = true;
     loop {
         let pos = if search_len == 0 {
             if is_first {
@@ -1667,15 +1969,18 @@ pub fn js_string_replace(
         }
 
         // Append substring before match
-        for i in end_of_last_match..pos {
-            let c = ctx.string_getc(s, i as u32) as u32;
-            let mut buf = [0u8; 4];
-            let len = crate::cutils::unicode_to_utf8(&mut buf, c);
-            result.extend_from_slice(&buf[..len]);
-        }
+        append_utf16_range(ctx, &mut result, s, end_of_last_match, pos);
 
         // Process replacement string
-        append_replacement(ctx, &mut result, s, search, replace, pos, pos + search_len);
+        append_replacement(
+            ctx,
+            &mut result,
+            s,
+            replace,
+            pos,
+            pos + search_len,
+            None,
+        );
 
         end_of_last_match = pos + search_len;
         is_first = false;
@@ -1686,24 +1991,108 @@ pub fn js_string_replace(
     }
 
     // Append tail
-    for i in end_of_last_match..input_len {
-        let c = ctx.string_getc(s, i as u32) as u32;
+    append_utf16_range(ctx, &mut result, s, end_of_last_match, input_len);
+
+    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+}
+
+pub fn js_string_match(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let regexp = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let flags = match regexp_flags(regexp) {
+        Ok(flags) => flags,
+        Err(err) => return handle_regexp_error(ctx, err),
+    };
+
+    if (flags & LRE_FLAG_GLOBAL) == 0 {
+        return match regexp_exec(ctx, regexp, this_val, RegExpExecMode::Exec) {
+            Ok(val) => val,
+            Err(err) => handle_regexp_error(ctx, err),
+        };
+    }
+
+    if let Err(err) = regexp_set_last_index(regexp, 0) {
+        return handle_regexp_error(ctx, err);
+    }
+
+    let mut result = JS_NULL;
+    let mut count = 0u32;
+    loop {
+        let exec_val = match regexp_exec(ctx, regexp, this_val, RegExpExecMode::Exec) {
+            Ok(val) => val,
+            Err(err) => return handle_regexp_error(ctx, err),
+        };
+        if exec_val == JS_NULL {
+            break;
+        }
+        if result == JS_NULL {
+            result = ctx.alloc_array(1).unwrap_or(JS_EXCEPTION);
+            if result == JS_EXCEPTION {
+                return JS_EXCEPTION;
+            }
+        }
+        let capture = match get_property(ctx, exec_val, new_short_int(0)) {
+            Ok(val) => val,
+            Err(_) => return JS_EXCEPTION,
+        };
+        if crate::property::set_property(ctx, result, new_short_int(count as i32), capture).is_err()
+        {
+            return JS_EXCEPTION;
+        }
+        count += 1;
+        let _ = ctx.array_set_length(result, count);
+    }
+
+    result
+}
+
+pub fn js_string_search(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let regexp = args.first().copied().unwrap_or(JS_UNDEFINED);
+    match regexp_exec(ctx, regexp, this_val, RegExpExecMode::Search) {
+        Ok(val) => val,
+        Err(err) => handle_regexp_error(ctx, err),
+    }
+}
+
+fn append_utf16_range(
+    ctx: &mut JSContext,
+    result: &mut Vec<u8>,
+    input: JSValue,
+    start: i32,
+    end: i32,
+) {
+    for i in start..end {
+        let c = ctx.string_getc(input, i as u32) as u32;
         let mut buf = [0u8; 4];
         let len = crate::cutils::unicode_to_utf8(&mut buf, c);
         result.extend_from_slice(&buf[..len]);
     }
+}
 
-    ctx.new_string_len(&result).unwrap_or(JS_EXCEPTION)
+fn append_string_bytes(result: &mut Vec<u8>, val: JSValue) -> bool {
+    let mut scratch = [0u8; 5];
+    let Some(view) = string_view(val, &mut scratch) else {
+        return false;
+    };
+    result.extend_from_slice(view.bytes());
+    true
 }
 
 fn append_replacement(
     ctx: &mut JSContext,
     result: &mut Vec<u8>,
     input: JSValue,
-    _search: JSValue,
     replace: JSValue,
     match_start: i32,
     match_end: i32,
+    captures: Option<(JSValue, u32)>,
 ) {
     let replace_len = ctx.string_len(replace) as i32;
     let input_len = ctx.string_len(input) as i32;
@@ -1732,37 +2121,52 @@ fn append_replacement(
                 i += 1;
             }
             b'&' => {
-                // Append the matched substring
-                for j in match_start..match_end {
-                    let ch = ctx.string_getc(input, j as u32) as u32;
-                    let mut buf = [0u8; 4];
-                    let len = crate::cutils::unicode_to_utf8(&mut buf, ch);
-                    result.extend_from_slice(&buf[..len]);
-                }
+                append_utf16_range(ctx, result, input, match_start, match_end);
                 i += 1;
             }
             b'`' => {
-                // Append substring before match
-                for j in 0..match_start {
-                    let ch = ctx.string_getc(input, j as u32) as u32;
-                    let mut buf = [0u8; 4];
-                    let len = crate::cutils::unicode_to_utf8(&mut buf, ch);
-                    result.extend_from_slice(&buf[..len]);
-                }
+                append_utf16_range(ctx, result, input, 0, match_start);
                 i += 1;
             }
             b'\'' => {
-                // Append substring after match
-                for j in match_end..input_len {
-                    let ch = ctx.string_getc(input, j as u32) as u32;
-                    let mut buf = [0u8; 4];
-                    let len = crate::cutils::unicode_to_utf8(&mut buf, ch);
-                    result.extend_from_slice(&buf[..len]);
-                }
+                append_utf16_range(ctx, result, input, match_end, input_len);
                 i += 1;
             }
+            b'0'..=b'9' => {
+                let mut k = (c2 as u8 - b'0') as u32;
+                let mut j = i + 1;
+                let mut second_digit = None;
+                if j < replace_len {
+                    let c3 = ctx.string_getc(replace, j as u32);
+                    if (b'0'..=b'9').contains(&(c3 as u8)) {
+                        k = k * 10 + (c3 as u8 - b'0') as u32;
+                        second_digit = Some(c3 as u8);
+                        j += 1;
+                    }
+                }
+                let mut replaced = false;
+                if let Some((captures_val, captures_len)) = captures {
+                    if k >= 1 && k < captures_len {
+                        if let Ok(cap) = get_property(ctx, captures_val, new_short_int(k as i32)) {
+                            if !is_undefined(cap) {
+                                let _ = append_string_bytes(result, cap);
+                            }
+                        }
+                        replaced = true;
+                    }
+                }
+                if replaced {
+                    i = j;
+                } else {
+                    result.push(b'$');
+                    result.push(c2 as u8);
+                    if let Some(digit) = second_digit {
+                        result.push(digit);
+                    }
+                    i = j;
+                }
+            }
             _ => {
-                // Unrecognized, keep the $
                 result.push(b'$');
             }
         }
@@ -3303,8 +3707,10 @@ fn is_error(val: JSValue) -> bool {
 mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
-    use crate::jsvalue::JSWord;
+    use crate::jsvalue::{JSWord, JS_EXCEPTION};
     use crate::object::{Object, ObjectHeader};
+    use crate::parser::regexp::compile_regexp;
+    use crate::parser::regexp_flags::LRE_FLAG_GLOBAL;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
     use core::ptr;
 
@@ -3329,6 +3735,21 @@ mod tests {
         let obj_ptr = value_to_ptr::<Object>(val).expect("object ptr");
         let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
         ObjectHeader::from_word(header_word).class_id()
+    }
+
+    fn make_regexp(ctx: &mut JSContext, pattern: &[u8], flags: u32) -> JSValue {
+        let source = ctx.new_string_len(pattern).expect("pattern string");
+        let bytecode = compile_regexp(pattern, flags).expect("regexp compile");
+        let bytecode_val = ctx
+            .alloc_byte_array(bytecode.bytes())
+            .expect("bytecode array");
+        crate::regexp::new_regexp_object(ctx, source, bytecode_val).expect("regexp object")
+    }
+
+    fn assert_string_bytes(val: JSValue, expected: &[u8]) {
+        let mut scratch = [0u8; 5];
+        let view = string_view(val, &mut scratch).expect("string view");
+        assert_eq!(view.bytes(), expected);
     }
 
     #[test]
@@ -3400,6 +3821,177 @@ mod tests {
 
         let clz = js_math_clz32(&mut ctx, JS_UNDEFINED, &[new_short_int(1)]);
         assert_eq!(value_get_int(clz), 31);
+    }
+
+    #[test]
+    fn string_regexp_match_and_search() {
+        let mut ctx = new_context();
+        let input = ctx.new_string("abbbc").expect("input string");
+        let re = make_regexp(&mut ctx, b"b+", 0);
+        let match_val = js_string_match(&mut ctx, input, &[re]);
+        let first = get_property(&mut ctx, match_val, new_short_int(0)).expect("match[0]");
+        assert_string_bytes(first, b"bbb");
+
+        let input_global = ctx.new_string("abcaaad").expect("input string");
+        let re_global = make_regexp(&mut ctx, b"a+", LRE_FLAG_GLOBAL);
+        let matches = js_string_match(&mut ctx, input_global, &[re_global]);
+        let len = get_array_info(matches).expect("match array").1;
+        assert_eq!(len, 2);
+        let m0 = get_property(&mut ctx, matches, new_short_int(0)).expect("match[0]");
+        let m1 = get_property(&mut ctx, matches, new_short_int(1)).expect("match[1]");
+        assert_string_bytes(m0, b"a");
+        assert_string_bytes(m1, b"aaa");
+
+        let input_search = ctx.new_string("abc").expect("input string");
+        let re_b = make_regexp(&mut ctx, b"b", 0);
+        let search = js_string_search(&mut ctx, input_search, &[re_b]);
+        assert_eq!(value_get_int(search), 1);
+
+        let re_d = make_regexp(&mut ctx, b"d", 0);
+        let search = js_string_search(&mut ctx, input_search, &[re_d]);
+        assert_eq!(value_get_int(search), -1);
+    }
+
+    #[test]
+    fn string_regexp_replace() {
+        let mut ctx = new_context();
+        let input = ctx.new_string("abbbbcbbd").expect("input string");
+        let re = make_regexp(&mut ctx, b"b+", 0);
+
+        let mut euro = [0u8; 4];
+        let euro_len = crate::cutils::unicode_to_utf8(&mut euro, 0x20ac);
+        let mut replace_bytes = Vec::new();
+        replace_bytes.extend_from_slice(&euro[..euro_len]);
+        replace_bytes.extend_from_slice(b"$&");
+        let replace = ctx.new_string_len(&replace_bytes).expect("replace string");
+
+        let out = js_string_replace(&mut ctx, input, &[re, replace], 0);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"a");
+        expected.extend_from_slice(&euro[..euro_len]);
+        expected.extend_from_slice(b"bbbbcbbd");
+        assert_string_bytes(out, &expected);
+
+        let input_global = ctx.new_string("abbbbcbbd").expect("input string");
+        let re_global = make_regexp(&mut ctx, b"b+", LRE_FLAG_GLOBAL);
+        let out = js_string_replace(&mut ctx, input_global, &[re_global, replace], 0);
+        let mut expected_global = Vec::new();
+        expected_global.extend_from_slice(b"a");
+        expected_global.extend_from_slice(&euro[..euro_len]);
+        expected_global.extend_from_slice(b"bbbbc");
+        expected_global.extend_from_slice(&euro[..euro_len]);
+        expected_global.extend_from_slice(b"bbd");
+        assert_string_bytes(out, &expected_global);
+
+        let input_caps = ctx.new_string("abbbbccccd").expect("input string");
+        let re_caps = make_regexp(&mut ctx, b"(b+)(c+)", LRE_FLAG_GLOBAL);
+        let replace_caps = ctx.new_string("_$1_$2_").expect("replace string");
+        let out = js_string_replace(&mut ctx, input_caps, &[re_caps, replace_caps], 0);
+        assert_string_bytes(out, b"a_bbbb_cccc_d");
+
+        let input_ctx = ctx.new_string("abbbbcd").expect("input string");
+        let re_ctx = make_regexp(&mut ctx, b"b+", LRE_FLAG_GLOBAL);
+        let replace_ctx = ctx.new_string("_$`_$&_$'_").expect("replace string");
+        let out = js_string_replace(&mut ctx, input_ctx, &[re_ctx, replace_ctx], 0);
+        assert_string_bytes(out, b"a_a_bbbb_cd_cd");
+    }
+
+    #[test]
+    fn string_regexp_split() {
+        let mut ctx = new_context();
+        let input = ctx.new_string("abc").expect("input string");
+        let re = make_regexp(&mut ctx, b"b", 0);
+        let out = js_string_split(&mut ctx, input, &[re]);
+        if !is_ptr(out) {
+            panic!(
+                "split returned non-pointer tag {}",
+                value_get_special_tag(out)
+            );
+        }
+        let len = match get_array_info(out) {
+            Some((_, len)) => len,
+            None => {
+                let ptr = value_to_ptr::<u8>(out).expect("split ptr");
+                let header_word =
+                    unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
+                let header = MbHeader::from_word(header_word);
+                let class_id = if header.tag() == MTag::Object {
+                    ObjectHeader::from_word(header_word).class_id()
+                } else {
+                    0
+                };
+                panic!("split returned tag {:?} class {}", header.tag(), class_id);
+            }
+        };
+        assert_eq!(len, 2);
+        let a0 = get_property(&mut ctx, out, new_short_int(0)).expect("split[0]");
+        let a1 = get_property(&mut ctx, out, new_short_int(1)).expect("split[1]");
+        assert_string_bytes(a0, b"a");
+        assert_string_bytes(a1, b"c");
+
+        let input_empty = ctx.new_string("ab").expect("input string");
+        let re_empty = make_regexp(&mut ctx, b"a*", LRE_FLAG_GLOBAL);
+        let out = js_string_split(&mut ctx, input_empty, &[re_empty]);
+        let len = get_array_info(out).expect("split array a*").1;
+        assert_eq!(len, 2);
+        let b0 = get_property(&mut ctx, out, new_short_int(0)).expect("split[0]");
+        let b1 = get_property(&mut ctx, out, new_short_int(1)).expect("split[1]");
+        assert_string_bytes(b0, b"");
+        assert_string_bytes(b1, b"b");
+
+        let input_lazy = ctx.new_string("ab").expect("input string");
+        let re_lazy = make_regexp(&mut ctx, b"a*?", LRE_FLAG_GLOBAL);
+        let out = js_string_split(&mut ctx, input_lazy, &[re_lazy]);
+        let len = get_array_info(out).expect("split array a*?").1;
+        assert_eq!(len, 2);
+        let c0 = get_property(&mut ctx, out, new_short_int(0)).expect("split[0]");
+        let c1 = get_property(&mut ctx, out, new_short_int(1)).expect("split[1]");
+        assert_string_bytes(c0, b"a");
+        assert_string_bytes(c1, b"b");
+
+        let input_tags =
+            ctx.new_string("A<B>bold</B>and<CODE>coded</CODE>")
+                .expect("input string");
+        let tag_pattern = b"<(\\/)?([^<>]+)>";
+        let re_tags = make_regexp(&mut ctx, tag_pattern, 0);
+        let out = js_string_split(&mut ctx, input_tags, &[re_tags]);
+        if out == JS_EXCEPTION {
+            panic!("split tags returned exception");
+        }
+        if !is_ptr(out) {
+            panic!(
+                "split tags returned non-pointer tag {}",
+                value_get_special_tag(out)
+            );
+        }
+        let len = get_array_info(out).expect("split array tags").1;
+        assert_eq!(len, 13);
+        let d0 = get_property(&mut ctx, out, new_short_int(0)).expect("split[0]");
+        let d1 = get_property(&mut ctx, out, new_short_int(1)).expect("split[1]");
+        let d2 = get_property(&mut ctx, out, new_short_int(2)).expect("split[2]");
+        let d3 = get_property(&mut ctx, out, new_short_int(3)).expect("split[3]");
+        let d4 = get_property(&mut ctx, out, new_short_int(4)).expect("split[4]");
+        let d5 = get_property(&mut ctx, out, new_short_int(5)).expect("split[5]");
+        let d6 = get_property(&mut ctx, out, new_short_int(6)).expect("split[6]");
+        let d7 = get_property(&mut ctx, out, new_short_int(7)).expect("split[7]");
+        let d8 = get_property(&mut ctx, out, new_short_int(8)).expect("split[8]");
+        let d9 = get_property(&mut ctx, out, new_short_int(9)).expect("split[9]");
+        let d10 = get_property(&mut ctx, out, new_short_int(10)).expect("split[10]");
+        let d11 = get_property(&mut ctx, out, new_short_int(11)).expect("split[11]");
+        let d12 = get_property(&mut ctx, out, new_short_int(12)).expect("split[12]");
+        assert_string_bytes(d0, b"A");
+        assert_string_bytes(d1, b"");
+        assert_string_bytes(d2, b"B");
+        assert_string_bytes(d3, b"bold");
+        assert_string_bytes(d4, b"/");
+        assert_string_bytes(d5, b"B");
+        assert_string_bytes(d6, b"and");
+        assert_string_bytes(d7, b"");
+        assert_string_bytes(d8, b"CODE");
+        assert_string_bytes(d9, b"coded");
+        assert_string_bytes(d10, b"/");
+        assert_string_bytes(d11, b"CODE");
+        assert_string_bytes(d12, b"");
     }
 
     #[test]

@@ -620,6 +620,7 @@ impl<'a> RegExpParser<'a> {
         last_atom_start: usize,
         last_capture_count: u8,
     ) -> Result<(), RegExpError> {
+        let mut last_atom_start = last_atom_start;
         let mut p = self.buf_pos;
         let c = self.byte_at(p);
         let (quant_min, quant_max) = match c {
@@ -691,6 +692,7 @@ impl<'a> RegExpParser<'a> {
                 self.bytecode.write_u8(last_atom_start, opcode_u8(REOP_SAVE_RESET));
                 self.bytecode.write_u8(last_atom_start + 1, last_capture_count);
                 self.bytecode.write_u8(last_atom_start + 2, self.capture_count - 1);
+                last_atom_start += 3;
             }
             if quant_max == 0 {
                 self.bytecode.truncate(last_atom_start);

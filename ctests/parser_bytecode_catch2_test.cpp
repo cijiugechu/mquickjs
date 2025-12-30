@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -213,6 +214,25 @@ static const JSByteArray *function_bytecode(const JSFunctionBytecode *func)
     return byte_array;
 }
 
+static std::string bytes_to_hex(const uint8_t *buf, size_t len)
+{
+    static const char kHexDigits[] = "0123456789abcdef";
+    std::string out;
+    if (len == 0) {
+        return out;
+    }
+    out.reserve(len * 3 - 1);
+    for (size_t i = 0; i < len; i++) {
+        if (i > 0) {
+            out.push_back(' ');
+        }
+        uint8_t byte = buf[i];
+        out.push_back(kHexDigits[byte >> 4]);
+        out.push_back(kHexDigits[byte & 0x0f]);
+    }
+    return out;
+}
+
 
 TEST_CASE("parser emits bytecode from JS source", "[parser][bytecode]")
 {
@@ -402,4 +422,34 @@ function test_do_while()
     REQUIRE(ops == expected_do_while);
 
     free_program(prog);
+}
+
+TEST_CASE("parser emits regexp bytecode for tag pattern", "[parser][regexp][bytecode]")
+{
+    const char *pattern = "<(\\/)?([^<>]+)>";
+    constexpr size_t kMemSize = 4 * 1024 * 1024;
+    void *mem = std::malloc(kMemSize);
+    REQUIRE(mem != nullptr);
+
+    JSContext *ctx = JS_NewContext2(mem, kMemSize, &js_stdlib, 1);
+    REQUIRE(ctx != nullptr);
+
+    const int re_flags = 0;
+    JSValue val = JS_Parse(ctx,
+                           pattern,
+                           std::strlen(pattern),
+                           "<regexp>",
+                           JS_EVAL_REGEXP | (re_flags << JS_EVAL_REGEXP_FLAGS_SHIFT));
+    REQUIRE(!JS_IsException(val));
+    REQUIRE(JS_IsPtr(val));
+
+    auto *byte_array = static_cast<JSByteArray *>(JS_VALUE_TO_PTR(val));
+    REQUIRE(byte_array->mtag == JS_MTAG_BYTE_ARRAY);
+    REQUIRE(byte_array->size > 0);
+
+    std::string hex = bytes_to_hex(byte_array->buf, static_cast<size_t>(byte_array->size));
+    std::fprintf(stdout, "regexp bytecode (%s): %s\n", pattern, hex.c_str());
+
+    JS_FreeContext(ctx);
+    std::free(mem);
 }

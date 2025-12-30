@@ -108,10 +108,11 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Extended `src/builtins.rs` with Object builtins (constructor, hasOwnProperty, toString, defineProperty, getPrototypeOf, setPrototypeOf, create, keys), Function builtins (constructor, call, apply, bind, toString, get/set prototype, get_length_name), String builtins (constructor, length, slice, substring, charAt, charCodeAt, codePointAt, fromCharCode, fromCodePoint, concat, indexOf, lastIndexOf, toLowerCase, toUpperCase, trim, trimStart, trimEnd, split, replace, replaceAll), Array builtins (constructor, length, push, pop, shift, unshift, join, toString, isArray, reverse, concat, indexOf, lastIndexOf, slice, splice, every, some, forEach, map, filter, reduce, reduceRight, sort), and JSON builtins (parse, stringify).
 - Added full TypedArray/ArrayBuffer builtins in `src/builtins.rs` (constructors, length/byteLength/byteOffset/buffer getters, subarray, element get/set with per-type coercion) with unit tests.
 - Created integration test framework in `tests/integration_tests.rs` with JSON parsing and global object tests; wired `src/stdlib/cfunc.rs` to dispatch all new builtins.
+- Added regexp-aware String helpers (`match`, `search`, RegExp-aware `split`/`replace`) in `src/builtins.rs` and wired stdlib entries in `src/stdlib/cfunc.rs`; aligned regexp quantifier capture reset ordering with C and added a C Catch2 bytecode dump test for the tag regexp in `ctests/parser_bytecode_catch2_test.cpp`.
 
 ## Known gaps (non-CLI/REPL)
 
-- RegExp builtins are missing (RegExp constructor/prototype: lastIndex/source/flags, exec/test); String regexp helpers are missing (`match`, `search`, and the RegExp path for `split`/`replace`).
+- RegExp builtins are missing (RegExp constructor/prototype: lastIndex/source/flags, exec/test).
 - Boolean builtin missing (`js_boolean_constructor`), and `JS_ToObject` does not box primitives yet.
 - Date builtin partial: only `Date.now`; constructor/prototype methods are missing.
 - Global `eval` builtin not wired (`js_global_eval`).

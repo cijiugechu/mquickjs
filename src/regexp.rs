@@ -1135,7 +1135,9 @@ fn lre_exec(
                     return Ok(false);
                 }
             }
-            _ => return Err(RegExpError::InvalidBytecode("opcode")),
+            _ => {
+                return Err(RegExpError::InvalidBytecode("opcode"));
+            }
         }
     }
 }
