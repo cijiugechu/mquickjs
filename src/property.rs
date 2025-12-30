@@ -8,8 +8,8 @@ use crate::conversion;
 use crate::enums::{JSObjectClass, JSPropType};
 use crate::interpreter::{call_with_this, InterpreterError};
 use crate::jsvalue::{
-    from_bits, is_exception, is_int, new_short_int, raw_bits, value_from_ptr, value_get_int,
-    value_to_ptr, JSValue, JSWord, JSW, JS_NULL, JS_UNDEFINED, JS_UNINITIALIZED,
+    from_bits, new_short_int, raw_bits, value_from_ptr, value_get_int, value_to_ptr, JSValue,
+    JSWord, JSW, JS_NULL, JS_UNDEFINED, JS_UNINITIALIZED,
 };
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
@@ -187,7 +187,7 @@ impl PropertyList {
 
     fn prop_count(&self) -> usize {
         let val = self.array.read(0);
-        debug_assert!(is_int(val));
+        debug_assert!(val.is_int());
         let count = value_get_int(val);
         debug_assert!(count >= 0);
         count as usize
@@ -201,7 +201,7 @@ impl PropertyList {
 
     fn hash_mask(&self) -> usize {
         let val = self.array.read(1);
-        debug_assert!(is_int(val));
+        debug_assert!(val.is_int());
         let mask = value_get_int(val);
         debug_assert!(mask >= 0);
         mask as usize
@@ -580,7 +580,7 @@ fn typed_array_set_element(
 }
 
 fn key_to_string(ctx: &mut JSContext, key: JSValue) -> Result<JSValue, PropertyError> {
-    if is_int(key) {
+    if key.is_int() {
         let text = value_get_int(key).to_string();
         return ctx.new_string(&text).map_err(|_| PropertyError::OutOfMemory);
     }
@@ -607,7 +607,7 @@ fn is_numeric_property(prop: JSValue) -> bool {
 }
 
 fn prop_index_from_value(prop: JSValue) -> Option<u32> {
-    if !is_int(prop) {
+    if !prop.is_int() {
         return None;
     }
     let idx = value_get_int(prop);
@@ -1013,7 +1013,7 @@ fn call_getset_getter(
     }
     let value = call_with_this(ctx, getter, receiver, &[])
         .map_err(PropertyError::Interpreter)?;
-    if is_exception(value) {
+    if value.is_exception() {
         return Err(PropertyError::Interpreter(InterpreterError::Thrown(value)));
     }
     Ok(value)
@@ -1030,7 +1030,7 @@ fn call_getset_setter(
     let args = [value];
     let result = call_with_this(ctx, setter, receiver, &args)
         .map_err(PropertyError::Interpreter)?;
-    if is_exception(result) {
+    if result.is_exception() {
         return Err(PropertyError::Interpreter(InterpreterError::Thrown(result)));
     }
     Ok(())
@@ -1640,9 +1640,7 @@ pub(crate) fn debug_property(
 mod tests {
     use super::*;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
-    use crate::jsvalue::{
-        is_bool, value_get_special_value, value_make_special, JS_TAG_SHORT_FUNC,
-    };
+    use crate::jsvalue::{value_get_special_value, value_make_special, JS_TAG_SHORT_FUNC};
     use core::mem::{align_of, size_of};
 
     fn new_ctx() -> JSContext {
@@ -1802,7 +1800,7 @@ mod tests {
         define_property_getset(&mut ctx, obj, key, getter, JS_UNDEFINED).expect("define");
 
         let got = get_property(&mut ctx, obj, key).expect("get");
-        assert!(is_bool(got));
+        assert!(got.is_bool());
         assert_eq!(value_get_special_value(got), 1);
     }
 

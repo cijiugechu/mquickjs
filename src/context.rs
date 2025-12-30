@@ -14,10 +14,10 @@ use crate::gc_ref::{GcRef, GcRefState};
 use crate::gc_runtime::{gc_collect, GcRuntimeRoots};
 use crate::heap::{mblock_size, HeapLayout, JS_MIN_CRITICAL_FREE_SIZE, JS_MIN_FREE_SIZE, JS_STACK_SLACK};
 use crate::jsvalue::{
-    from_bits, is_int, is_ptr, new_short_int, raw_bits, value_from_ptr, value_get_int,
-    value_get_special_tag, value_get_special_value, value_make_special, value_to_ptr, JSValue,
-    JSWord, JSW, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_PTR, JS_TAG_SHORT_FUNC,
-    JS_TAG_STRING_CHAR, JS_UNDEFINED,
+    from_bits, new_short_int, raw_bits, value_from_ptr, value_get_int, value_get_special_tag,
+    value_get_special_value, value_make_special, value_to_ptr, JSValue, JSWord, JSW, JS_NULL,
+    JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_PTR, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR,
+    JS_UNDEFINED,
 };
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::memblock::{Float64Header, MbHeader, MTag};
@@ -303,7 +303,7 @@ impl RomClassView {
     const PARENT_CLASS_OFFSET: usize = size_of::<JSWord>() * 4;
 
     fn from_value(rom_table: &RomTable, val: JSValue) -> Result<Self, ContextError> {
-        if !is_ptr(val) {
+        if !val.is_ptr() {
             return Err(ContextError::InvalidRomClassValue);
         }
         let tagged = raw_bits(val) as usize;
@@ -1162,7 +1162,7 @@ impl JSContext {
     }
 
     fn decode_rom_atom(&mut self, rom_table: &RomTable, val: JSValue) -> Result<JSValue, ContextError> {
-        if !is_ptr(val) {
+        if !val.is_ptr() {
             return Ok(val);
         }
         let tagged = raw_bits(val) as usize;
@@ -1250,7 +1250,7 @@ impl JSContext {
         for pair in entries.chunks_exact(2) {
             let name = self.resolve_rom_atom_value(pair[0])?;
             let mut val = pair[1];
-            if is_ptr(val) {
+            if val.is_ptr() {
                 let tagged = raw_bits(val) as usize;
                 let addr = tagged & !((JSW as usize) - 1);
                 if addr >= rom_base && addr < rom_base + rom_len {
@@ -1351,7 +1351,7 @@ impl JSContext {
     }
 
     pub(crate) fn resolve_rom_atom_value(&mut self, val: JSValue) -> Result<JSValue, ContextError> {
-        if !is_ptr(val) {
+        if !val.is_ptr() {
             return Ok(val);
         }
         let tagged = raw_bits(val) as usize;
@@ -1818,7 +1818,7 @@ impl JSContext {
                         .string_from_value(bytecode.filename())
                         .unwrap_or_else(|| "<unknown>".to_string());
                     let pc_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_CUR_PC)) };
-                    let pc = if is_int(pc_val) {
+                    let pc = if pc_val.is_int() {
                         let pc = value_get_int(pc_val);
                         pc.saturating_sub(1) as u32
                     } else {
@@ -1877,7 +1877,7 @@ impl JSContext {
     }
 
     fn is_error_object(&self, val: JSValue) -> bool {
-        if !is_ptr(val) {
+        if !val.is_ptr() {
             return false;
         }
         let Some(obj_ptr) = value_to_ptr::<Object>(val) else {
@@ -1889,7 +1889,7 @@ impl JSContext {
     }
 
     fn backtrace_func_info(&self, func_obj: JSValue) -> (String, Option<FunctionBytecode>) {
-        if !is_ptr(func_obj) {
+        if !func_obj.is_ptr() {
             if value_get_special_tag(func_obj) == JS_TAG_SHORT_FUNC {
                 let idx = value_get_special_value(func_obj);
                 if idx >= 0 && let Some(def) = self.c_function(idx as usize) {
@@ -2175,7 +2175,7 @@ fn push_backtrace_line(buf: &mut String, line: &str) -> bool {
 }
 
 fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Option<*mut JSValue> {
-    if !is_int(val) {
+    if !val.is_int() {
         return None;
     }
     let offset = value_get_int(val);
@@ -2423,8 +2423,8 @@ mod tests {
     use crate::cutils::unicode_to_utf8;
     use crate::exception::JsFormatArg;
     use crate::jsvalue::{
-        is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value,
-        value_to_ptr, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR, JS_EXCEPTION,
+        value_get_int, value_get_special_tag, value_get_special_value, value_to_ptr,
+        JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR, JS_EXCEPTION,
     };
     use crate::memblock::Float64Header;
     use crate::object::{Object, ObjectUserData};
@@ -2459,11 +2459,11 @@ mod tests {
 
         let class_proto = ctx.class_proto();
         assert_eq!(class_proto.len() as u32, MQUICKJS_STDLIB_IMAGE.class_count);
-        assert!(is_ptr(class_proto[JSObjectClass::Object as usize]));
-        assert!(is_ptr(class_proto[JSObjectClass::Closure as usize]));
+        assert!(class_proto[JSObjectClass::Object as usize].is_ptr());
+        assert!(class_proto[JSObjectClass::Closure as usize].is_ptr());
 
-        assert!(is_ptr(ctx.global_obj()));
-        assert!(is_ptr(ctx.minus_zero()));
+        assert!(ctx.global_obj().is_ptr());
+        assert!(ctx.minus_zero().is_ptr());
     }
 
     #[test]
@@ -2545,7 +2545,7 @@ mod tests {
         };
         for i in 0..3 {
             let val = unsafe { ptr::read_unaligned(arr.add(i)) };
-            assert!(is_int(val));
+            assert!(val.is_int());
             assert_eq!(value_get_int(val), 0);
         }
     }
@@ -2585,7 +2585,7 @@ mod tests {
         .expect("context init");
 
         let val = ctx.new_float64(42.0).expect("alloc");
-        assert!(is_int(val));
+        assert!(val.is_int());
         assert_eq!(value_get_int(val), 42);
     }
 
@@ -2600,7 +2600,7 @@ mod tests {
         .expect("context init");
 
         let val = ctx.new_float64(1.0e300).expect("alloc");
-        assert!(is_ptr(val));
+        assert!(val.is_ptr());
     }
 
     #[test]
@@ -2631,7 +2631,7 @@ mod tests {
         .expect("context init");
 
         let val = ctx.new_float64(1.5).expect("alloc");
-        assert!(crate::jsvalue::is_short_float(val));
+        assert!(val.is_short_float());
     }
 
     #[test]
@@ -2656,7 +2656,7 @@ mod tests {
         assert_eq!(value_get_special_value(char_val), b'a' as i32);
 
         let string_val = ctx.new_string_len(b"ab").expect("string");
-        assert!(is_ptr(string_val));
+        assert!(string_val.is_ptr());
         let ptr = value_to_ptr::<u8>(string_val).expect("string ptr");
         let header_word = unsafe {
             // SAFETY: ptr points to a readable String header.
@@ -2733,8 +2733,8 @@ mod tests {
 
         let left = ctx.sub_string_utf8(emoji, start, mid).expect("left");
         let right = ctx.sub_string_utf8(emoji, mid, end).expect("right");
-        assert!(is_ptr(left));
-        assert!(is_ptr(right));
+        assert!(left.is_ptr());
+        assert!(right.is_ptr());
 
         let mut hi = [0u8; 4];
         let hi_len = unicode_to_utf8(&mut hi, 0xd83d);

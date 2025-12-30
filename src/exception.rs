@@ -1,6 +1,6 @@
 use crate::jsvalue::{
-    is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value, JSValue,
-    JS_TAG_BOOL, JS_TAG_NULL, JS_TAG_UNDEFINED, JS_TAG_UNINITIALIZED,
+    value_get_int, value_get_special_tag, value_get_special_value, JSValue, JS_TAG_BOOL,
+    JS_TAG_NULL, JS_TAG_UNDEFINED, JS_TAG_UNINITIALIZED,
 };
 use crate::string::runtime::string_view;
 
@@ -293,14 +293,14 @@ fn format_js_value(val: JSValue) -> Vec<u8> {
     if let Some(view) = string_view(val, &mut scratch) {
         return view.bytes().to_vec();
     }
-    if is_int(val) {
+    if val.is_int() {
         return value_get_int(val).to_string().into_bytes();
     }
     #[cfg(target_pointer_width = "64")]
-    if crate::jsvalue::is_short_float(val) {
+    if val.is_short_float() {
         return b"[short_float]".to_vec();
     }
-    if !is_ptr(val) {
+    if !val.is_ptr() {
         let tag = value_get_special_tag(val);
         return match tag {
             JS_TAG_NULL => b"null".to_vec(),

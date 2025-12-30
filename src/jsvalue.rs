@@ -88,37 +88,39 @@ pub const fn new_bool(val: i32) -> JSValue {
     value_make_special(JS_TAG_BOOL, (val != 0) as u32)
 }
 
-pub fn is_int(v: JSValue) -> bool {
-    (raw_bits(v) & 1) == JS_TAG_INT
-}
+impl JSValue {
+    pub fn is_int(&self) -> bool {
+        (raw_bits(*self) & 1) == JS_TAG_INT
+    }
 
-pub fn is_ptr(v: JSValue) -> bool {
-    (raw_bits(v) & (JSW - 1)) == JS_TAG_PTR
-}
+    pub fn is_ptr(&self) -> bool {
+        (raw_bits(*self) & (JSW - 1)) == JS_TAG_PTR
+    }
 
-#[cfg(target_pointer_width = "64")]
-pub fn is_short_float(v: JSValue) -> bool {
-    (raw_bits(v) & (JSW - 1)) == JS_TAG_SHORT_FLOAT
-}
+    #[cfg(target_pointer_width = "64")]
+    pub fn is_short_float(&self) -> bool {
+        (raw_bits(*self) & (JSW - 1)) == JS_TAG_SHORT_FLOAT
+    }
 
-pub fn is_bool(v: JSValue) -> bool {
-    value_get_special_tag(v) == JS_TAG_BOOL
-}
+    pub fn is_bool(&self) -> bool {
+        value_get_special_tag(*self) == JS_TAG_BOOL
+    }
 
-pub fn is_null(v: JSValue) -> bool {
-    raw_bits(v) == raw_bits(JS_NULL)
-}
+    pub fn is_null(&self) -> bool {
+        raw_bits(*self) == raw_bits(JS_NULL)
+    }
 
-pub fn is_undefined(v: JSValue) -> bool {
-    raw_bits(v) == raw_bits(JS_UNDEFINED)
-}
+    pub fn is_undefined(&self) -> bool {
+        raw_bits(*self) == raw_bits(JS_UNDEFINED)
+    }
 
-pub fn is_uninitialized(v: JSValue) -> bool {
-    raw_bits(v) == raw_bits(JS_UNINITIALIZED)
-}
+    pub fn is_uninitialized(&self) -> bool {
+        raw_bits(*self) == raw_bits(JS_UNINITIALIZED)
+    }
 
-pub fn is_exception(v: JSValue) -> bool {
-    raw_bits(v) == raw_bits(JS_EXCEPTION)
+    pub fn is_exception(&self) -> bool {
+        raw_bits(*self) == raw_bits(JS_EXCEPTION)
+    }
 }
 
 pub fn value_from_ptr<T>(ptr: NonNull<T>) -> JSValue {
@@ -170,17 +172,17 @@ mod tests {
 
     #[test]
     fn bool_values_match_tags() {
-        assert!(is_bool(JS_FALSE));
-        assert!(is_bool(JS_TRUE));
+        assert!(JS_FALSE.is_bool());
+        assert!(JS_TRUE.is_bool());
         assert_eq!(value_get_special_value(JS_FALSE), 0);
         assert_eq!(value_get_special_value(JS_TRUE), 1);
     }
 
     #[test]
     fn null_undefined_uninitialized() {
-        assert!(is_null(JS_NULL));
-        assert!(is_undefined(JS_UNDEFINED));
-        assert!(is_uninitialized(JS_UNINITIALIZED));
+        assert!(JS_NULL.is_null());
+        assert!(JS_UNDEFINED.is_undefined());
+        assert!(JS_UNINITIALIZED.is_uninitialized());
     }
 
 }

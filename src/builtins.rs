@@ -11,12 +11,12 @@ use crate::dtoa::{
 use crate::enums::JSObjectClass;
 use crate::js_libm;
 use crate::jsvalue::{
-    is_bool, is_int, is_null, is_ptr, is_undefined, new_bool, new_short_int, value_get_int,
-    value_get_special_tag, value_get_special_value, value_to_ptr, JSValue, JSWord, JS_EXCEPTION,
-    JS_NULL, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR, JS_UNDEFINED,
+    new_bool, new_short_int, value_get_int, value_get_special_tag, value_get_special_value,
+    value_to_ptr, JSValue, JSWord, JS_EXCEPTION, JS_NULL, JS_TAG_SHORT_FUNC, JS_TAG_STRING_CHAR,
+    JS_UNDEFINED,
 };
 #[cfg(target_pointer_width = "64")]
-use crate::jsvalue::{is_short_float, short_float_to_f64};
+use crate::jsvalue::short_float_to_f64;
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader, PrimitiveValue, RegExp};
 use crate::parser::regexp_flags::{LRE_FLAG_GLOBAL, LRE_FLAG_STICKY};
@@ -80,18 +80,18 @@ fn parse_number_bytes(bytes: &[u8], radix: u32, flags: AtodFlags, to_string: boo
 }
 
 fn js_to_bool(val: JSValue) -> bool {
-    if is_int(val) {
+    if val.is_int() {
         return value_get_int(val) != 0;
     }
     #[cfg(target_pointer_width = "64")]
-    if is_short_float(val) {
+    if val.is_short_float() {
         let num = short_float_to_f64(val);
         return !num.is_nan() && num != 0.0;
     }
-    if is_bool(val) {
+    if val.is_bool() {
         return value_get_special_value(val) != 0;
     }
-    if is_null(val) || is_undefined(val) {
+    if val.is_null() || val.is_undefined() {
         return false;
     }
     if value_get_special_tag(val) == JS_TAG_SHORT_FUNC {
@@ -104,7 +104,7 @@ fn js_to_bool(val: JSValue) -> bool {
     if let Some(num) = read_float64(val) {
         return !num.is_nan() && num != 0.0;
     }
-    if is_ptr(val) {
+    if val.is_ptr() {
         return true;
     }
     false
@@ -119,17 +119,17 @@ fn to_number_from_string(val: JSValue, flags: AtodFlags, to_string: bool) -> f64
 }
 
 fn to_number(val: JSValue) -> f64 {
-    if is_int(val) {
+    if val.is_int() {
         return f64::from(value_get_int(val));
     }
     #[cfg(target_pointer_width = "64")]
-    if is_short_float(val) {
+    if val.is_short_float() {
         return short_float_to_f64(val);
     }
     if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
         return to_number_from_string(val, JS_ATOD_ACCEPT_BIN_OCT, true);
     }
-    if is_ptr(val) {
+    if val.is_ptr() {
         if let Some(value) = read_float64(val) {
             return value;
         }
@@ -138,10 +138,10 @@ fn to_number(val: JSValue) -> f64 {
             return to_number_from_string(val, JS_ATOD_ACCEPT_BIN_OCT, true);
         }
     }
-    if is_bool(val) || is_null(val) {
+    if val.is_bool() || val.is_null() {
         return f64::from(value_get_special_value(val));
     }
-    if is_undefined(val) {
+    if val.is_undefined() {
         return f64::NAN;
     }
     f64::NAN
@@ -191,10 +191,10 @@ fn to_string_value(ctx: &mut JSContext, val: JSValue) -> JSValue {
     if string_view(val, &mut scratch).is_some() {
         return val;
     }
-    let mut is_number = is_int(val) || read_float64(val).is_some();
+    let mut is_number = val.is_int() || read_float64(val).is_some();
     #[cfg(target_pointer_width = "64")]
     {
-        if is_short_float(val) {
+        if val.is_short_float() {
             is_number = true;
         }
     }
@@ -206,16 +206,16 @@ fn to_string_value(ctx: &mut JSContext, val: JSValue) -> JSValue {
         };
         return alloc_string(ctx, &out);
     }
-    if is_bool(val) {
+    if val.is_bool() {
         if value_get_special_value(val) != 0 {
             return alloc_string(ctx, "true");
         }
         return alloc_string(ctx, "false");
     }
-    if is_null(val) {
+    if val.is_null() {
         return alloc_string(ctx, "null");
     }
-    if is_undefined(val) {
+    if val.is_undefined() {
         return alloc_string(ctx, "undefined");
     }
     JS_EXCEPTION
@@ -266,7 +266,7 @@ pub fn js_number_toString(ctx: &mut JSContext, this_val: JSValue, args: &[JSValu
         return JS_EXCEPTION;
     }
     let d = to_number(this_val);
-    let radix = if args.is_empty() || is_undefined(args[0]) {
+    let radix = if args.is_empty() || args[0].is_undefined() {
         10
     } else {
         to_int32_sat(args[0])
@@ -330,7 +330,7 @@ pub fn js_number_toPrecision(
         return JS_EXCEPTION;
     }
     let d = to_number(this_val);
-    let (p, flags) = if args.is_empty() || is_undefined(args[0]) {
+    let (p, flags) = if args.is_empty() || args[0].is_undefined() {
         (0, JS_DTOA_FORMAT_FREE)
     } else {
         let p = to_int32_sat(args[0]);
@@ -399,7 +399,7 @@ pub fn js_math_min_max(
     if args.is_empty() {
         return alloc_number(ctx, if is_max { f64::NEG_INFINITY } else { f64::INFINITY });
     }
-    if args.iter().all(|val| is_int(*val)) {
+    if args.iter().all(|val| val.is_int()) {
         let mut r = value_get_int(args[0]);
         for val in &args[1..] {
             let a = value_get_int(*val);
@@ -511,14 +511,14 @@ pub fn js_global_isFinite(_ctx: &mut JSContext, _this_val: JSValue, args: &[JSVa
 }
 
 fn is_number_value(val: JSValue) -> bool {
-    if is_int(val) {
+    if val.is_int() {
         return true;
     }
     #[cfg(target_pointer_width = "64")]
-    if is_short_float(val) {
+    if val.is_short_float() {
         return true;
     }
-    if is_ptr(val) {
+    if val.is_ptr() {
         let ptr = match value_to_ptr::<u8>(val) {
             Some(ptr) => ptr,
             None => return false,
@@ -596,14 +596,14 @@ pub fn js_object_toString(
 }
 
 fn object_to_string_internal(ctx: &mut JSContext, val: JSValue) -> JSValue {
-    let type_name = if is_int(val) {
+    let type_name = if val.is_int() {
         "Number"
     } else {
         #[cfg(target_pointer_width = "64")]
-        if is_short_float(val) {
+        if val.is_short_float() {
             return alloc_string(ctx, "[object Number]");
         }
-        if !is_ptr(val) {
+        if !val.is_ptr() {
             match value_get_special_tag(val) {
                 tag if tag == crate::jsvalue::JS_TAG_NULL => "Null",
                 tag if tag == crate::jsvalue::JS_TAG_UNDEFINED => "Undefined",
@@ -796,7 +796,7 @@ pub fn js_object_create(
     if proto != JS_NULL && !proto.is_object() {
         return JS_EXCEPTION;
     }
-    if args.len() >= 2 && !is_undefined(args[1]) {
+    if args.len() >= 2 && !args[1].is_undefined() {
         // Additional properties not supported.
         return JS_EXCEPTION;
     }
@@ -1001,7 +1001,7 @@ pub fn js_function_toString(
 }
 
 fn get_function_name(ctx: &mut JSContext, func: JSValue) -> Result<JSValue, ()> {
-    if !is_ptr(func) {
+    if !func.is_ptr() {
         if value_get_special_tag(func) != JS_TAG_SHORT_FUNC {
             return Err(());
         }
@@ -1056,7 +1056,7 @@ pub fn js_function_get_prototype(
     this_val: JSValue,
     _args: &[JSValue],
 ) -> JSValue {
-    if !is_ptr(this_val) {
+    if !this_val.is_ptr() {
         if value_get_special_tag(this_val) != JS_TAG_SHORT_FUNC {
             return JS_EXCEPTION;
         }
@@ -1126,7 +1126,7 @@ pub fn js_function_get_length_name(
     // magic: 0 = length, 1 = name
     let is_name = magic != 0;
 
-    if !is_ptr(this_val) {
+    if !this_val.is_ptr() {
         if value_get_special_tag(this_val) != JS_TAG_SHORT_FUNC {
             return JS_EXCEPTION;
         }
@@ -1308,7 +1308,7 @@ pub fn js_string_slice(
         Ok(i) => i,
         Err(_) => return JS_EXCEPTION,
     };
-    let end = if args.len() > 1 && !is_undefined(args[1]) {
+    let end = if args.len() > 1 && !args[1].is_undefined() {
         match to_int32_clamp_neg(ctx, args[1], len) {
             Ok(i) => i,
             Err(_) => return JS_EXCEPTION,
@@ -1335,7 +1335,7 @@ pub fn js_string_substring(
         Ok(i) => i,
         Err(_) => return JS_EXCEPTION,
     };
-    let b = if args.len() > 1 && !is_undefined(args[1]) {
+    let b = if args.len() > 1 && !args[1].is_undefined() {
         match to_int32_clamp(ctx, args[1], 0, len) {
             Ok(i) => i,
             Err(_) => return JS_EXCEPTION,
@@ -1468,7 +1468,7 @@ fn string_compare_at(
 }
 
 fn is_regexp_object(val: JSValue) -> bool {
-    if !is_ptr(val) {
+    if !val.is_ptr() {
         return false;
     }
     let Some(obj_ptr) = value_to_ptr::<Object>(val) else {
@@ -1608,7 +1608,7 @@ pub fn js_regexp_constructor(
 
     // Parse flags if provided
     let flags_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
-    let re_flags = if is_undefined(flags_arg) {
+    let re_flags = if flags_arg.is_undefined() {
         0u32
     } else {
         let flags_str = match to_string(ctx, flags_arg) {
@@ -1836,7 +1836,7 @@ pub fn js_string_split(
         Err(_) => return JS_EXCEPTION,
     };
 
-    let limit = if args.len() > 1 && !is_undefined(args[1]) {
+    let limit = if args.len() > 1 && !args[1].is_undefined() {
         match conversion::to_uint32(ctx, args[1]) {
             Ok(l) => l,
             Err(_) => return JS_EXCEPTION,
@@ -1852,7 +1852,7 @@ pub fn js_string_split(
     let sep = args.first().copied().unwrap_or(JS_UNDEFINED);
 
     // If separator is undefined, return array with original string
-    if is_undefined(sep) {
+    if sep.is_undefined() {
         let arr = match ctx.alloc_array(1) {
             Ok(a) => a,
             Err(_) => return JS_EXCEPTION,
@@ -2375,7 +2375,7 @@ fn append_replacement(
                 if let Some((captures_val, captures_len)) = captures
                     && k >= 1 && k < captures_len {
                         if let Ok(cap) = get_property(ctx, captures_val, new_short_int(k as i32))
-                            && !is_undefined(cap) {
+                            && !cap.is_undefined() {
                                 let _ = append_string_bytes(result, cap);
                             }
                         replaced = true;
@@ -2407,7 +2407,7 @@ fn to_string_check_object(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, 
 }
 
 fn to_int32_with_ctx(ctx: &mut JSContext, val: JSValue) -> Result<i32, ()> {
-    if is_int(val) {
+    if val.is_int() {
         return Ok(value_get_int(val));
     }
     let n = conversion::to_number(ctx, val).map_err(|_| ())?;
@@ -2657,7 +2657,7 @@ pub fn js_array_join(
         }
     };
 
-    let sep = if !args.is_empty() && !is_undefined(args[0]) {
+    let sep = if !args.is_empty() && !args[0].is_undefined() {
         match conversion::to_string(ctx, args[0]) {
             Ok(s) => s,
             Err(_) => return JS_EXCEPTION,
@@ -2683,7 +2683,7 @@ pub fn js_array_join(
             Ok(v) => v,
             Err(_) => JS_UNDEFINED,
         };
-        if !is_undefined(val) && !is_null(val) {
+        if !val.is_undefined() && !val.is_null() {
             let s = match conversion::to_string(ctx, val) {
                 Ok(s) => s,
                 Err(_) => continue,
@@ -2869,7 +2869,7 @@ pub fn js_array_slice(
         Err(_) => return JS_EXCEPTION,
     };
 
-    let end = if args.len() > 1 && !is_undefined(args[1]) {
+    let end = if args.len() > 1 && !args[1].is_undefined() {
         match to_int32_clamp_neg(ctx, args[1], len as i32) {
             Ok(n) => n as u32,
             Err(_) => return JS_EXCEPTION,
@@ -3240,13 +3240,13 @@ pub fn js_array_sort(
 }
 
 fn to_bool(val: JSValue) -> bool {
-    if is_int(val) {
+    if val.is_int() {
         return value_get_int(val) != 0;
     }
-    if is_bool(val) {
+    if val.is_bool() {
         return value_get_special_value(val) != 0;
     }
-    if is_undefined(val) || is_null(val) {
+    if val.is_undefined() || val.is_null() {
         return false;
     }
     // Objects/strings/numbers are truthy (simplified)
@@ -3256,7 +3256,7 @@ fn to_bool(val: JSValue) -> bool {
 // Helper functions for array operations
 
 fn get_array_info(val: JSValue) -> Option<(JSValue, u32)> {
-    if !is_ptr(val) {
+    if !val.is_ptr() {
         return None;
     }
     let obj_ptr = value_to_ptr::<Object>(val)?;
@@ -3298,7 +3298,7 @@ pub fn js_error_constructor(
     };
 
     // Set message
-    let message = if !args.is_empty() && !is_undefined(args[0]) {
+    let message = if !args.is_empty() && !args[0].is_undefined() {
         match conversion::to_string(ctx, args[0]) {
             Ok(s) => s,
             Err(_) => return JS_EXCEPTION,
@@ -3334,7 +3334,7 @@ pub fn js_error_toString(
         Err(_) => return JS_EXCEPTION,
     };
     let name = match crate::property::get_property(ctx, this_val, name_key) {
-        Ok(v) if !is_undefined(v) => match conversion::to_string(ctx, v) {
+        Ok(v) if !v.is_undefined() => match conversion::to_string(ctx, v) {
             Ok(s) => s,
             Err(_) => return JS_EXCEPTION,
         },
@@ -3511,16 +3511,16 @@ impl<'a> JsonStringifyState<'a> {
             value = primitive;
         }
 
-        if is_undefined(value) || value.is_function() {
+        if value.is_undefined() || value.is_function() {
             return Ok(false);
         }
 
-        if is_null(value) {
+        if value.is_null() {
             out.extend_from_slice(b"null");
             return Ok(true);
         }
 
-        if is_bool(value) {
+        if value.is_bool() {
             if value_get_special_value(value) != 0 {
                 out.extend_from_slice(b"true");
             } else {
@@ -3748,11 +3748,11 @@ fn index_key_string(ctx: &mut JSContext, index: u32) -> Result<JSValue, ()> {
 }
 
 fn number_to_f64(val: JSValue) -> Option<f64> {
-    if is_int(val) {
+    if val.is_int() {
         return Some(f64::from(value_get_int(val)));
     }
     #[cfg(target_pointer_width = "64")]
-    if is_short_float(val) {
+    if val.is_short_float() {
         return Some(short_float_to_f64(val));
     }
     read_float64(val)
@@ -3835,7 +3835,7 @@ use crate::typed_array::TypedArray;
 const TYPED_ARRAY_SIZE_LOG2: [u8; 9] = [0, 0, 0, 1, 1, 2, 2, 2, 3];
 
 fn to_index(ctx: &mut JSContext, val: JSValue) -> Result<u64, ()> {
-    if is_undefined(val) {
+    if val.is_undefined() {
         return Ok(0);
     }
     let n = conversion::to_number(ctx, val).map_err(|_| ())?;
@@ -4100,7 +4100,7 @@ pub fn js_typed_array_subarray(
 }
 
 fn is_error(val: JSValue) -> bool {
-    if !is_ptr(val) {
+    if !val.is_ptr() {
         return false;
     }
     let obj_ptr = match value_to_ptr::<Object>(val) {
@@ -4121,8 +4121,8 @@ mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
     use crate::jsvalue::{
-        is_bool, new_short_int, value_get_special_value, JSWord, JS_EXCEPTION, JS_FALSE,
-        JS_TRUE, JS_UNDEFINED,
+        new_short_int, value_get_special_value, JSWord, JS_EXCEPTION, JS_FALSE, JS_TRUE,
+        JS_UNDEFINED,
     };
     use crate::object::{Object, ObjectHeader};
     use crate::parser::regexp::compile_regexp;
@@ -4233,7 +4233,7 @@ mod tests {
         .expect("context init");
 
         let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[]);
-        assert!(is_bool(out));
+        assert!(out.is_bool());
         assert_eq!(value_get_special_value(out), 0);
 
         let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[JS_TRUE]);
@@ -4385,7 +4385,7 @@ mod tests {
         let input = ctx.new_string("abc").expect("input string");
         let re = make_regexp(&mut ctx, b"b", 0);
         let out = js_string_split(&mut ctx, input, &[re]);
-        if !is_ptr(out) {
+        if !out.is_ptr() {
             panic!(
                 "split returned non-pointer tag {}",
                 value_get_special_tag(out)
@@ -4441,7 +4441,7 @@ mod tests {
         if out == JS_EXCEPTION {
             panic!("split tags returned exception");
         }
-        if !is_ptr(out) {
+        if !out.is_ptr() {
             panic!(
                 "split tags returned non-pointer tag {}",
                 value_get_special_tag(out)
@@ -4914,7 +4914,7 @@ mod tests {
         
         // Initial lastIndex should be 0
         let idx = js_regexp_get_lastIndex(&mut ctx, re, &[]);
-        assert!(is_int(idx));
+        assert!(idx.is_int());
         assert_eq!(value_get_int(idx), 0);
         
         // Set lastIndex to 5
@@ -4966,7 +4966,7 @@ mod tests {
         // Check the index property
         let index_key = ctx.intern_string(b"index").unwrap();
         let index = get_property(&mut ctx, result, index_key).unwrap();
-        assert!(is_int(index));
+        assert!(index.is_int());
         assert_eq!(value_get_int(index), 1); // 'a' is at position 1 in "cat"
     }
 

@@ -666,17 +666,17 @@ pub fn js_get_error_str(ctx: &mut JSContext) -> String {
 
 /// Check if a value is undefined.
 pub fn js_is_undefined(val: JSValue) -> bool {
-    crate::jsvalue::is_undefined(val)
+    val.is_undefined()
 }
 
 /// Check if a value is null.
 pub fn js_is_null(val: JSValue) -> bool {
-    crate::jsvalue::is_null(val)
+    val.is_null()
 }
 
 /// Check if a value is a boolean.
 pub fn js_is_bool(val: JSValue) -> bool {
-    crate::jsvalue::is_bool(val)
+    val.is_bool()
 }
 
 /// Check if a value is a number.
@@ -709,7 +709,7 @@ pub fn js_is_error(val: JSValue) -> bool {
 
 /// Check if a value is an exception marker.
 pub fn js_is_exception(val: JSValue) -> bool {
-    crate::jsvalue::is_exception(val)
+    val.is_exception()
 }
 
 /// Check if a buffer contains a bytecode header.

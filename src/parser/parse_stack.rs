@@ -90,7 +90,7 @@ impl<'a> ParseStack<'a> {
 
     pub fn pop_int(&mut self) -> i32 {
         let val = self.pop();
-        debug_assert!(crate::jsvalue::is_int(val));
+        debug_assert!(val.is_int());
         value_get_int(val)
     }
 }

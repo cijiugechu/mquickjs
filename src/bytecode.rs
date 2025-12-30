@@ -14,7 +14,7 @@ use crate::gc_runtime::GcRuntimeRoots;
 #[cfg(target_pointer_width = "64")]
 use crate::heap::{mblock_tag, thread_block, thread_pointer, HeapLayout, RootVisitor};
 #[cfg(target_pointer_width = "64")]
-use crate::jsvalue::{from_bits, is_short_float, raw_bits, short_float_to_f64, value_from_ptr, JS_TAG_PTR};
+use crate::jsvalue::{from_bits, raw_bits, short_float_to_f64, value_from_ptr, JS_TAG_PTR};
 #[cfg(target_pointer_width = "64")]
 use crate::containers::ByteArrayHeader;
 #[cfg(target_pointer_width = "64")]
@@ -391,7 +391,7 @@ fn expand_short_floats(heap: &mut HeapLayout) -> Result<(), BytecodePrepareError
                         // SAFETY: `slot` points within the value array.
                         *slot
                     };
-                    if is_short_float(val) {
+                    if val.is_short_float() {
                         let float = short_float_to_f64(val);
                         let size = size_of::<JSWord>() + size_of::<f64>();
                         let float_ptr = heap
@@ -941,7 +941,7 @@ mod tests {
 
         let arr_ptr = unsafe { array_ptr.as_ptr().add(size_of::<JSWord>()).cast::<JSValue>() };
         let val = unsafe { *arr_ptr };
-        assert!(crate::jsvalue::is_ptr(val));
+        assert!(val.is_ptr());
         let ptr = crate::jsvalue::value_to_ptr::<u8>(val).expect("float64 pointer");
         let payload = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *const f64 };
         let stored = unsafe { ptr::read_unaligned(payload) };

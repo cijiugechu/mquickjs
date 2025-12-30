@@ -1,7 +1,7 @@
 use crate::containers::{ByteArrayHeader, StringHeader, ValueArrayHeader, VarRefHeader};
 use crate::enums::JSObjectClass;
 use crate::function_bytecode::FunctionBytecode;
-use crate::jsvalue::{is_ptr, value_from_ptr, value_to_ptr, JSValue, JSWord, JSW};
+use crate::jsvalue::{value_from_ptr, value_to_ptr, JSValue, JSWord, JSW};
 use crate::memblock::{FreeBlockHeader, MTag, MbHeader};
 use crate::object::{Object, ObjectHeader, PrimitiveValue, RegExp};
 use core::mem::size_of;
@@ -288,7 +288,7 @@ pub unsafe fn mblock_size(ptr: NonNull<u8>) -> usize {
 /// `pval` must be a valid pointer to a JSValue slot; non-heap pointers are ignored.
 pub unsafe fn thread_pointer(heap: &HeapLayout, pval: *mut JSValue) {
     let val = unsafe { *pval };
-    if !is_ptr(val) {
+    if !val.is_ptr() {
         return;
     }
     let ptr = match value_to_ptr::<u8>(val) {

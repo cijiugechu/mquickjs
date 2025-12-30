@@ -3,7 +3,7 @@
 use crate::containers::StringHeader;
 use crate::cutils::unicode_to_utf8;
 use crate::jsvalue::{
-    is_ptr, value_get_special_tag, value_get_special_value, value_to_ptr, JSValue, JSWord,
+    value_get_special_tag, value_get_special_value, value_to_ptr, JSValue, JSWord,
     JS_TAG_STRING_CHAR,
 };
 use crate::memblock::{MbHeader, MTag};
@@ -44,7 +44,7 @@ pub(crate) fn string_view<'a>(val: JSValue, scratch: &'a mut [u8; 5]) -> Option<
             is_ascii: codepoint <= 0x7f,
         });
     }
-    if !is_ptr(val) {
+    if !val.is_ptr() {
         return None;
     }
     let ptr = value_to_ptr::<u8>(val)?;

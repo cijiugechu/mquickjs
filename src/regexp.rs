@@ -6,8 +6,7 @@ use crate::cutils::{get_u16, get_u32, utf8_get};
 use crate::enums::JSObjectClass;
 use crate::heap::JS_STACK_SLACK;
 use crate::jsvalue::{
-    is_int, new_short_int, value_get_int, value_to_ptr, JSValue, JSWord, JSW, JS_FALSE, JS_NULL,
-    JS_TRUE,
+    new_short_int, value_get_int, value_to_ptr, JSValue, JSWord, JSW, JS_FALSE, JS_NULL, JS_TRUE,
 };
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader, RegExp};
@@ -445,7 +444,7 @@ fn encode_stack_ptr(stack_top: *mut JSValue, ptr: *mut JSValue) -> Result<JSValu
 }
 
 fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Result<*mut JSValue, RegExpError> {
-    if !is_int(val) {
+    if !val.is_int() {
         return Err(RegExpError::InvalidValue("stack ptr"));
     }
     let offset = value_get_int(val);
@@ -461,7 +460,7 @@ fn encode_pc_state(pc: usize, state: ReExecState) -> JSValue {
 }
 
 fn decode_pc_state(val: JSValue) -> Result<(usize, ReExecState), RegExpError> {
-    if !is_int(val) {
+    if !val.is_int() {
         return Err(RegExpError::InvalidValue("state"));
     }
     let raw = value_get_int(val);
@@ -508,7 +507,7 @@ fn lre_exec(
             while *sp < *bp {
                 let idx = unsafe { ptr::read_unaligned(*sp) };
                 let prev = unsafe { ptr::read_unaligned((*sp).add(1)) };
-                if !is_int(idx) || !is_int(prev) {
+                if !idx.is_int() || !prev.is_int() {
                     return Err(RegExpError::InvalidValue("capture restore"));
                 }
                 let idx = value_get_int(idx);
@@ -522,7 +521,7 @@ fn lre_exec(
             let cptr_val = unsafe { ptr::read_unaligned((*sp).add(1)) };
             let bp_val = unsafe { ptr::read_unaligned((*sp).add(2)) };
             let (pc_offset, state) = decode_pc_state(state_val)?;
-            if !is_int(cptr_val) {
+            if !cptr_val.is_int() {
                 return Err(RegExpError::InvalidValue("cptr"));
             }
             let cptr_offset = value_get_int(cptr_val);
@@ -557,7 +556,7 @@ fn lre_exec(
                     let cptr_val = unsafe { ptr::read_unaligned(sp.add(1)) };
                     let bp_val = unsafe { ptr::read_unaligned(sp.add(2)) };
                     let (pc_offset, state) = decode_pc_state(state_val)?;
-                    if !is_int(cptr_val) {
+                    if !cptr_val.is_int() {
                         return Err(RegExpError::InvalidValue("cptr"));
                     }
                     let cptr_offset = value_get_int(cptr_val);
@@ -598,7 +597,7 @@ fn lre_exec(
                     while sp < bp {
                         let idx = unsafe { ptr::read_unaligned(sp) };
                         let prev = unsafe { ptr::read_unaligned(sp.add(1)) };
-                        if !is_int(idx) || !is_int(prev) {
+                        if !idx.is_int() || !prev.is_int() {
                             return Err(RegExpError::InvalidValue("capture restore"));
                         }
                         let idx = value_get_int(idx);
@@ -612,7 +611,7 @@ fn lre_exec(
                     let cptr_val = unsafe { ptr::read_unaligned(sp.add(1)) };
                     let bp_val = unsafe { ptr::read_unaligned(sp.add(2)) };
                     let (pc_offset, state) = decode_pc_state(state_val)?;
-                    if !is_int(cptr_val) {
+                    if !cptr_val.is_int() {
                         return Err(RegExpError::InvalidValue("cptr"));
                     }
                     let cptr_offset = value_get_int(cptr_val);
@@ -1173,7 +1172,7 @@ fn save_capture_check(
     loop {
         if sp1 < *bp {
             let saved_idx = unsafe { ptr::read_unaligned(sp1) };
-            if !is_int(saved_idx) {
+            if !saved_idx.is_int() {
                 return Err(RegExpError::InvalidValue("capture index"));
             }
             if value_get_int(saved_idx) == idx as i32 {
@@ -1222,7 +1221,7 @@ mod tests {
         let index_key = ctx.intern_string(b"index").expect("index");
         let input_key = ctx.intern_string(b"input").expect("input key");
         let index_val = get_property(&mut ctx, result, index_key).expect("index prop");
-        assert!(is_int(index_val));
+        assert!(index_val.is_int());
         assert_eq!(value_get_int(index_val), 1);
         let input_val = get_property(&mut ctx, result, input_key).expect("input prop");
         let mut scratch = [0u8; 5];

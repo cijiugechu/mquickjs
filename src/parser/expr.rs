@@ -7,9 +7,8 @@ use crate::cutils::{get_u16, put_u16};
 use crate::enums::JSVarRefKind;
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::jsvalue::{
-    is_int, is_ptr, value_get_int, value_get_special_tag, value_get_special_value, value_from_ptr,
-    value_to_ptr, JSValue, JSWord, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT,
-    JS_TAG_SPECIAL_BITS,
+    value_get_int, value_get_special_tag, value_get_special_value, value_from_ptr, value_to_ptr,
+    JSValue, JSWord, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_INT, JS_TAG_SPECIAL_BITS,
 };
 use crate::opcode::{
     OpCode, OP_ADD, OP_AND, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR,
@@ -139,7 +138,7 @@ fn encode_short_int(val: i32) -> u32 {
 }
 
 fn encode_jsvalue(val: JSValue) -> u32 {
-    if is_int(val) {
+    if val.is_int() {
         return encode_short_int(value_get_int(val));
     }
     let tag = value_get_special_tag(val) as u32;
@@ -158,7 +157,7 @@ fn value_bytes(val: JSValue) -> Result<Vec<u8>, ParserError> {
 fn is_short_float_value(val: JSValue) -> bool {
     #[cfg(target_pointer_width = "64")]
     {
-        crate::jsvalue::is_short_float(val)
+        val.is_short_float()
     }
     #[cfg(target_pointer_width = "32")]
     {
@@ -1858,7 +1857,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn emit_push_const(&mut self, val: JSValue) -> Result<(), ParserError> {
-        if is_ptr(val) || is_short_float_value(val) {
+        if val.is_ptr() || is_short_float_value(val) {
             let idx = self.cpool_add(val)?;
             self.emitter.emit_op(OP_PUSH_CONST);
             self.emitter.emit_u16(idx);

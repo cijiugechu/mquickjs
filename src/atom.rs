@@ -2,13 +2,7 @@ use crate::containers::StringHeader;
 use crate::cutils::{unicode_to_utf8, utf8_get};
 use crate::dtoa::{js_atod, js_dtoa, AtodFlags, JS_DTOA_FORMAT_FREE};
 use crate::jsvalue::{
-    is_ptr,
-    raw_bits,
-    value_get_special_tag,
-    value_get_special_value,
-    value_to_ptr,
-    JSValue,
-    JSWord,
+    raw_bits, value_get_special_tag, value_get_special_value, value_to_ptr, JSValue, JSWord,
     JS_TAG_STRING_CHAR,
 };
 use crate::memblock::{MbHeader, MTag};
@@ -54,7 +48,7 @@ impl AtomTables {
     }
 
     pub fn make_unique_string(&mut self, val: JSValue) -> JSValue {
-        if !is_ptr(val) {
+        if !val.is_ptr() {
             return val;
         }
         let ptr = match value_to_ptr::<u8>(val) {
@@ -90,7 +84,7 @@ impl AtomTables {
         if value_get_special_tag(val) == JS_TAG_STRING_CHAR {
             return Some(val);
         }
-        if !is_ptr(val) {
+        if !val.is_ptr() {
             return None;
         }
         let raw = raw_bits(val);
@@ -209,7 +203,7 @@ fn is_numeric_string(bytes: &[u8], is_ascii: bool) -> bool {
 }
 
 fn string_bytes(val: JSValue, scratch: &mut [u8; STRING_CHAR_BUF_LEN]) -> Option<&[u8]> {
-    if is_ptr(val) {
+    if val.is_ptr() {
         let ptr = value_to_ptr::<u8>(val)?;
         let header = string_header(ptr)?;
         let bytes = string_bytes_from_ptr(ptr, header);

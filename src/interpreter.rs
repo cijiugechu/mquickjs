@@ -9,11 +9,10 @@ use crate::function_bytecode::FunctionBytecode;
 use crate::heap::JS_STACK_SLACK;
 use crate::js_libm::{js_fmod, js_pow};
 use crate::jsvalue::{
-    from_bits, is_bool, is_exception, is_int, is_null, is_ptr, is_short_float, is_undefined,
-    is_uninitialized, new_bool, new_short_int, short_float_to_f64, value_get_int,
-    value_from_ptr, value_get_special_tag, value_get_special_value, value_make_special,
-    value_to_ptr, JSValue, JSWord, JSW, JS_EXCEPTION, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN,
-    JS_TAG_CATCH_OFFSET, JS_TAG_SHORT_FUNC, JS_UNDEFINED, JS_UNINITIALIZED,
+    from_bits, new_bool, new_short_int, short_float_to_f64, value_get_int, value_from_ptr,
+    value_get_special_tag, value_get_special_value, value_make_special, value_to_ptr, JSValue,
+    JSWord, JSW, JS_EXCEPTION, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_CATCH_OFFSET,
+    JS_TAG_SHORT_FUNC, JS_UNDEFINED, JS_UNINITIALIZED,
 };
 use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
 use crate::object::{Object, ObjectHeader};
@@ -233,7 +232,7 @@ fn for_of_next(
     };
     let target = unsafe { iter.read(0)? };
     let idx_val = unsafe { iter.read(1)? };
-    if !is_int(idx_val) {
+    if !idx_val.is_int() {
         return Err(InterpreterError::InvalidValue("for_of index"));
     }
     let idx = value_get_int(idx_val);
@@ -347,16 +346,16 @@ fn cfunction_data(
 }
 
 fn value_to_f64(val: JSValue) -> Result<f64, InterpreterError> {
-    if is_int(val) {
+    if val.is_int() {
         return Ok(f64::from(value_get_int(val)));
     }
     #[cfg(target_pointer_width = "64")]
     {
-        if is_short_float(val) {
+        if val.is_short_float() {
             return Ok(short_float_to_f64(val));
         }
     }
-    if is_ptr(val) {
+    if val.is_ptr() {
         let ptr = value_to_ptr::<u8>(val).ok_or(InterpreterError::TypeError("float ptr"))?;
         let header_word = unsafe {
             // SAFETY: ptr points at a readable memblock header.
@@ -376,13 +375,13 @@ fn value_to_f64(val: JSValue) -> Result<f64, InterpreterError> {
 }
 
 fn to_bool(val: JSValue) -> Result<bool, InterpreterError> {
-    if is_bool(val) {
+    if val.is_bool() {
         return Ok(value_get_special_value(val) != 0);
     }
-    if is_null(val) || is_undefined(val) {
+    if val.is_null() || val.is_undefined() {
         return Ok(false);
     }
-    if is_int(val) {
+    if val.is_int() {
         return Ok(value_get_int(val) != 0);
     }
     if let Ok(num) = value_to_f64(val) {
@@ -473,7 +472,7 @@ fn encode_stack_ptr(stack_top: *mut JSValue, sp: *mut JSValue) -> Result<JSValue
 }
 
 fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Result<*mut JSValue, InterpreterError> {
-    if !is_int(val) {
+    if !val.is_int() {
         return Err(InterpreterError::InvalidValue("saved fp"));
     }
     let offset = value_get_int(val) as isize;
@@ -711,14 +710,14 @@ enum EqTag {
 }
 
 fn eq_tag(val: JSValue) -> EqTag {
-    if is_int(val) {
+    if val.is_int() {
         return EqTag::Number;
     }
     #[cfg(target_pointer_width = "64")]
-    if is_short_float(val) {
+    if val.is_short_float() {
         return EqTag::Number;
     }
-    if is_ptr(val) {
+    if val.is_ptr() {
         return match mtag_from_value(val) {
             Some(MTag::Float64) => EqTag::Number,
             Some(MTag::String) => EqTag::String,
@@ -784,11 +783,11 @@ fn typeof_value(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, Interprete
         "number"
     } else if val.is_string() {
         "string"
-    } else if is_bool(val) {
+    } else if val.is_bool() {
         "boolean"
     } else if val.is_function() {
         "function"
-    } else if val.is_object() || is_null(val) {
+    } else if val.is_object() || val.is_null() {
         "object"
     } else {
         "undefined"
@@ -1046,7 +1045,7 @@ fn add_global_var(
         }
         if define_flag {
             let current = var_ref_get(value)?;
-            if is_uninitialized(current) {
+            if current.is_uninitialized() {
                 var_ref_set(value, JS_UNDEFINED)?;
             }
         }
@@ -1090,7 +1089,7 @@ pub(crate) fn create_closure(
     for idx in 0..ext_len {
         let name = unsafe { ext_vars.read(2 * idx)? };
         let decl_val = unsafe { ext_vars.read(2 * idx + 1)? };
-        if !is_int(decl_val) {
+        if !decl_val.is_int() {
             return Err(InterpreterError::InvalidValue("ext var decl"));
         }
         let decl = value_get_int(decl_val);
@@ -1207,11 +1206,11 @@ fn return_from_frame(
     }
     let call_flags_val =
         unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_CALL_FLAGS)) };
-    if !is_int(call_flags_val) {
+    if !call_flags_val.is_int() {
         return Err(InterpreterError::InvalidValue("call flags"));
     }
     let call_flags = value_get_int(call_flags_val);
-    if (call_flags & FRAME_CF_CTOR) != 0 && !is_exception(val) && !val.is_object() {
+    if (call_flags & FRAME_CF_CTOR) != 0 && !val.is_exception() && !val.is_object() {
         val = unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_THIS_OBJ)) };
     }
     *state.sp = unsafe { (*state.fp).add(FRAME_OFFSET_ARG0 as usize + frame_argc) };
@@ -1219,7 +1218,7 @@ fn return_from_frame(
         unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_SAVED_FP)) };
     let caller_fp = decode_stack_ptr(state.stack_top, saved_fp_val)?;
     if caller_fp == state.initial_fp {
-        if is_exception(val) {
+        if val.is_exception() {
             let thrown = ctx.take_current_exception();
             let thrown = if thrown == JS_NULL { JS_EXCEPTION } else { thrown };
             return Err(InterpreterError::Thrown(thrown));
@@ -1231,7 +1230,7 @@ fn return_from_frame(
     ctx.set_sp(NonNull::new(*state.sp).expect("stack pointer"));
     let pc_offset_val =
         unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_CUR_PC)) };
-    if !is_int(pc_offset_val) {
+    if !pc_offset_val.is_int() {
         return Err(InterpreterError::InvalidValue("cur pc"));
     }
     let pc_offset = value_get_int(pc_offset_val);
@@ -1259,7 +1258,7 @@ fn return_from_frame(
         unsafe { core::slice::from_raw_parts(byte_code.buf().as_ptr(), byte_code.len()) };
     *state.n_vars = compute_n_vars(b)?;
     *state.pc = pc_offset as usize;
-    if is_exception(val) {
+    if val.is_exception() {
         return Ok(ReturnFlow::Continue { exception: true });
     }
     if (call_flags & FRAME_CF_POP_RET) == 0 {
@@ -1297,7 +1296,7 @@ fn unwind_exception(
         let b = unsafe { state.func_ptr.as_ref() };
         let call_flags_val =
             unsafe { ptr::read_unaligned((*state.fp).offset(FRAME_OFFSET_CALL_FLAGS)) };
-        if !is_int(call_flags_val) {
+        if !call_flags_val.is_int() {
             return Err(InterpreterError::InvalidValue("call flags"));
         }
         let argc = call_argc(value_get_int(call_flags_val));
@@ -1369,14 +1368,14 @@ pub fn call_with_this_flags(
         ctx.set_sp(prev_sp);
         if let Ok(val) = result
             && (call_flags & FRAME_CF_CTOR) != 0
-            && !is_exception(val)
+            && !val.is_exception()
             && !val.is_object()
         {
             return Ok(this_obj);
         }
         return result;
     }
-    if !is_ptr(func) {
+    if !func.is_ptr() {
         return Err(InterpreterError::NotAFunction);
     }
     let obj_ptr = match object_ptr(func) {
@@ -1508,7 +1507,7 @@ pub fn call_with_this_flags(
             let mut cfunc_params = JS_UNDEFINED;
             let mut closure_ptr: Option<NonNull<Object>> = None;
 
-            if !is_ptr(func_obj) {
+            if !func_obj.is_ptr() {
                 if value_get_special_tag(func_obj) != JS_TAG_SHORT_FUNC {
                     break Err(InterpreterError::NotAFunction);
                 }
@@ -1586,7 +1585,7 @@ pub fn call_with_this_flags(
                         byte_slice: &mut byte_slice,
                         n_vars: &mut n_vars,
                     };
-                    if is_exception(val) {
+                    if val.is_exception() {
                         try_or_break!(return_from_frame(
                             ctx,
                             &mut frame_state,
@@ -1713,7 +1712,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_RETURN.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
-                if !is_int(call_flags_val) {
+                if !call_flags_val.is_int() {
                     break Err(InterpreterError::InvalidValue("call flags"));
                 }
                 let argc = call_argc(value_get_int(call_flags_val));
@@ -1767,7 +1766,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_RETURN_UNDEF.as_u8() => {
                 let call_flags_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS)) };
-                if !is_int(call_flags_val) {
+                if !call_flags_val.is_int() {
                     break Err(InterpreterError::InvalidValue("call flags"));
                 }
                 let argc = call_argc(value_get_int(call_flags_val));
@@ -1857,7 +1856,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_RET.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
-                if !is_int(val) {
+                if !val.is_int() {
                     break Err(InterpreterError::InvalidBytecode("ret"));
                 }
                 let pos = value_get_int(val);
@@ -2051,7 +2050,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_ARGUMENTS.as_u8() => unsafe {
                 let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
-                if !is_int(call_flags_val) {
+                if !call_flags_val.is_int() {
                     break Err(InterpreterError::InvalidValue("call flags"));
                 }
                 let argc = call_argc(value_get_int(call_flags_val));
@@ -2079,7 +2078,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_NEW_TARGET.as_u8() => unsafe {
                 let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
-                if !is_int(call_flags_val) {
+                if !call_flags_val.is_int() {
                     break Err(InterpreterError::InvalidValue("call flags"));
                 }
                 let call_flags = value_get_int(call_flags_val);
@@ -2188,7 +2187,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_ADD.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     let sum = value_get_int(lhs) + value_get_int(rhs);
                     if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&sum) {
                         Ok(new_short_int(sum))
@@ -2198,7 +2197,7 @@ pub fn call_with_this_flags(
                 } else {
                     #[cfg(target_pointer_width = "64")]
                     {
-                        if is_short_float(lhs) && is_short_float(rhs) {
+                        if lhs.is_short_float() && rhs.is_short_float() {
                             let sum = short_float_to_f64(lhs) + short_float_to_f64(rhs);
                             Ok(ctx.new_float64(sum)?)
                         } else {
@@ -2216,7 +2215,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_SUB.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     let diff = value_get_int(lhs) - value_get_int(rhs);
                     if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&diff) {
                         Ok(new_short_int(diff))
@@ -2226,7 +2225,7 @@ pub fn call_with_this_flags(
                 } else {
                     #[cfg(target_pointer_width = "64")]
                     {
-                        if is_short_float(lhs) && is_short_float(rhs) {
+                        if lhs.is_short_float() && rhs.is_short_float() {
                             let diff = short_float_to_f64(lhs) - short_float_to_f64(rhs);
                             Ok(ctx.new_float64(diff)?)
                         } else {
@@ -2244,7 +2243,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_MUL.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     let prod = value_get_int(lhs)
                         .checked_mul(value_get_int(rhs))
                         .unwrap_or(JS_SHORTINT_MIN - 1);
@@ -2256,7 +2255,7 @@ pub fn call_with_this_flags(
                 } else {
                     #[cfg(target_pointer_width = "64")]
                     {
-                        if is_short_float(lhs) && is_short_float(rhs) {
+                        if lhs.is_short_float() && rhs.is_short_float() {
                             let prod = short_float_to_f64(lhs) * short_float_to_f64(rhs);
                             Ok(ctx.new_float64(prod)?)
                         } else {
@@ -2274,7 +2273,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_DIV.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     let v1 = value_get_int(lhs);
                     let v2 = value_get_int(rhs);
                     Ok(ctx.new_float64((v1 as f64) / (v2 as f64))?)
@@ -2287,7 +2286,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_MOD.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     let v1 = value_get_int(lhs);
                     let v2 = value_get_int(rhs);
                     if v1 >= 0 && v2 > 0 {
@@ -2309,7 +2308,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_NEG.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
-                let res = if is_int(val) {
+                let res = if val.is_int() {
                     let v1 = value_get_int(val);
                     if v1 == 0 {
                         Ok(ctx.minus_zero())
@@ -2336,7 +2335,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_INC.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
-                let res = if is_int(val) {
+                let res = if val.is_int() {
                     let v1 = value_get_int(val);
                     if v1 == JS_SHORTINT_MAX {
                         unary_arith_slow(ctx, opcode, val)
@@ -2351,7 +2350,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_DEC.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
-                let res = if is_int(val) {
+                let res = if val.is_int() {
                     let v1 = value_get_int(val);
                     if v1 == JS_SHORTINT_MIN {
                         unary_arith_slow(ctx, opcode, val)
@@ -2366,7 +2365,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_POST_INC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
-                let (old_val, new_val) = if is_int(val) {
+                let (old_val, new_val) = if val.is_int() {
                     let v1 = value_get_int(val);
                     if v1 == JS_SHORTINT_MAX {
                         try_or_break!(post_inc_slow(ctx, opcode, val))
@@ -2381,7 +2380,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_POST_DEC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
-                let (old_val, new_val) = if is_int(val) {
+                let (old_val, new_val) = if val.is_int() {
                     let v1 = value_get_int(val);
                     if v1 == JS_SHORTINT_MIN {
                         try_or_break!(post_inc_slow(ctx, opcode, val))
@@ -2401,7 +2400,7 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_NOT.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
-                let res = if is_int(val) {
+                let res = if val.is_int() {
                     Ok(new_short_int(!value_get_int(val)))
                 } else {
                     not_slow(ctx, val)
@@ -2412,7 +2411,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_SHL.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     let shift = (value_get_int(rhs) & 0x1f) as u32;
                     let r = value_get_int(lhs).wrapping_shl(shift);
                     if (JS_SHORTINT_MIN..=JS_SHORTINT_MAX).contains(&r) {
@@ -2429,7 +2428,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_SAR.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     let shift = (value_get_int(rhs) & 0x1f) as u32;
                     let r = value_get_int(lhs) >> shift;
                     Ok(new_short_int(r))
@@ -2442,7 +2441,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_SHR.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     let shift = (value_get_int(rhs) & 0x1f) as u32;
                     let r = (value_get_int(lhs) as u32) >> shift;
                     if r <= JS_SHORTINT_MAX as u32 {
@@ -2459,7 +2458,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_AND.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_short_int(value_get_int(lhs) & value_get_int(rhs)))
                 } else {
                     binary_logic_slow(ctx, opcode, lhs, rhs)
@@ -2470,7 +2469,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_XOR.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_short_int(value_get_int(lhs) ^ value_get_int(rhs)))
                 } else {
                     binary_logic_slow(ctx, opcode, lhs, rhs)
@@ -2481,7 +2480,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_OR.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_short_int(value_get_int(lhs) | value_get_int(rhs)))
                 } else {
                     binary_logic_slow(ctx, opcode, lhs, rhs)
@@ -2492,7 +2491,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_LT.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_bool((value_get_int(lhs) < value_get_int(rhs)) as i32))
                 } else {
                     relational_slow(ctx, opcode, lhs, rhs)
@@ -2503,7 +2502,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_LTE.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_bool((value_get_int(lhs) <= value_get_int(rhs)) as i32))
                 } else {
                     relational_slow(ctx, opcode, lhs, rhs)
@@ -2514,7 +2513,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_GT.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_bool((value_get_int(lhs) > value_get_int(rhs)) as i32))
                 } else {
                     relational_slow(ctx, opcode, lhs, rhs)
@@ -2525,7 +2524,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_GTE.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_bool((value_get_int(lhs) >= value_get_int(rhs)) as i32))
                 } else {
                     relational_slow(ctx, opcode, lhs, rhs)
@@ -2536,7 +2535,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_EQ.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_bool((value_get_int(lhs) == value_get_int(rhs)) as i32))
                 } else {
                     eq_slow(ctx, lhs, rhs, false)
@@ -2547,7 +2546,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_NEQ.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res = if is_int(lhs) && is_int(rhs) {
+                let res = if lhs.is_int() && rhs.is_int() {
                     Ok(new_bool((value_get_int(lhs) != value_get_int(rhs)) as i32))
                 } else {
                     eq_slow(ctx, lhs, rhs, true)
@@ -2558,7 +2557,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_STRICT_EQ.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res: Result<JSValue, InterpreterError> = if is_int(lhs) && is_int(rhs) {
+                let res: Result<JSValue, InterpreterError> = if lhs.is_int() && rhs.is_int() {
                     Ok(new_bool((value_get_int(lhs) == value_get_int(rhs)) as i32))
                 } else {
                     Ok(new_bool(strict_eq(ctx, lhs, rhs)? as i32))
@@ -2569,7 +2568,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_STRICT_NEQ.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
-                let res: Result<JSValue, InterpreterError> = if is_int(lhs) && is_int(rhs) {
+                let res: Result<JSValue, InterpreterError> = if lhs.is_int() && rhs.is_int() {
                     Ok(new_bool((value_get_int(lhs) != value_get_int(rhs)) as i32))
                 } else {
                     Ok(new_bool((!strict_eq(ctx, lhs, rhs)?) as i32))
@@ -2740,7 +2739,7 @@ pub fn call_with_this_flags(
             op if op == crate::opcode::OP_SET_PROTO.as_u8() => unsafe {
                 let proto = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
-                if proto.is_object() || is_null(proto) {
+                if proto.is_object() || proto.is_null() {
                     try_or_break!(set_prototype_internal(obj, proto));
                 }
             },
@@ -2907,7 +2906,7 @@ pub fn call_with_this_flags(
                     ptr::read_unaligned(var_refs.add(idx))
                 };
                 let val = try_or_break!(var_ref_get(var_ref));
-                if is_uninitialized(val) && op == crate::opcode::OP_GET_VAR_REF.as_u8() {
+                if val.is_uninitialized() && op == crate::opcode::OP_GET_VAR_REF.as_u8() {
                     break Err(InterpreterError::ReferenceError("varref uninitialized"));
                 }
                 push(ctx, &mut sp, val);
@@ -2938,7 +2937,7 @@ pub fn call_with_this_flags(
                     ptr::read_unaligned(var_refs.add(idx))
                 };
                 let current = try_or_break!(var_ref_get(var_ref));
-                if is_uninitialized(current) && op == crate::opcode::OP_PUT_VAR_REF.as_u8() {
+                if current.is_uninitialized() && op == crate::opcode::OP_PUT_VAR_REF.as_u8() {
                     break Err(InterpreterError::ReferenceError("varref uninitialized"));
                 }
                 let val = pop(ctx, &mut sp);
@@ -2962,7 +2961,7 @@ mod tests {
     use crate::enums::{JSObjectClass, JSVarRefKind};
     use crate::function_bytecode::{FunctionBytecodeFields, FunctionBytecodeHeader};
     use crate::jsvalue::{
-        is_int, new_short_int, value_from_ptr, value_get_int, value_get_special_value, value_to_ptr,
+        new_short_int, value_from_ptr, value_get_int, value_get_special_value, value_to_ptr,
         JSValue, JSWord, JS_NULL, JS_UNDEFINED,
     };
     use crate::object::Object;
@@ -3139,7 +3138,7 @@ mod tests {
             &mut ctx,
             vec![OP_PUSH_1.as_u8(), OP_PUSH_2.as_u8(), OP_ADD.as_u8(), OP_RETURN.as_u8()],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 3);
     }
 
@@ -3244,7 +3243,7 @@ mod tests {
             &mut ctx,
             vec![OP_PUSH_3.as_u8(), OP_PUSH_1.as_u8(), OP_AND.as_u8(), OP_RETURN.as_u8()],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 1);
     }
 
@@ -3267,7 +3266,7 @@ mod tests {
         bytecode.push(OP_PUSH_2.as_u8());
         bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 1);
     }
 
@@ -3289,7 +3288,7 @@ mod tests {
         bytecode.push(OP_PUSH_2.as_u8());
         bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 2);
     }
 
@@ -3311,7 +3310,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
         bytecode.push(OP_RET.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 3);
     }
 
@@ -3333,7 +3332,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
         bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 1);
     }
 
@@ -3350,7 +3349,7 @@ mod tests {
             &mut ctx,
             vec![OP_PUSH_1.as_u8(), OP_PUSH_2.as_u8(), OP_NIP.as_u8(), OP_RETURN.as_u8()],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 2);
 
         let mut ctx = JSContext::new(ContextConfig {
@@ -3372,7 +3371,7 @@ mod tests {
                 OP_RETURN.as_u8(),
             ],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 6);
 
         let mut ctx = JSContext::new(ContextConfig {
@@ -3393,7 +3392,7 @@ mod tests {
                 OP_RETURN.as_u8(),
             ],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 5);
 
         let mut ctx = JSContext::new(ContextConfig {
@@ -3416,7 +3415,7 @@ mod tests {
                 OP_RETURN.as_u8(),
             ],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 9);
 
         let mut ctx = JSContext::new(ContextConfig {
@@ -3437,7 +3436,7 @@ mod tests {
                 OP_RETURN.as_u8(),
             ],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), -2);
 
         let mut ctx = JSContext::new(ContextConfig {
@@ -3458,7 +3457,7 @@ mod tests {
                 OP_RETURN.as_u8(),
             ],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 2);
 
         let mut ctx = JSContext::new(ContextConfig {
@@ -3480,7 +3479,7 @@ mod tests {
                 OP_RETURN.as_u8(),
             ],
         );
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), -2);
     }
 
@@ -3507,7 +3506,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 42);
     }
 
@@ -3565,7 +3564,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 5);
     }
 
@@ -3594,7 +3593,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 3);
     }
 
@@ -3629,7 +3628,7 @@ mod tests {
             .expect("property");
         match entry {
             DebugProperty::GetSet { getter, setter } => {
-                assert!(is_int(getter));
+                assert!(getter.is_int());
                 assert_eq!(value_get_int(getter), 11);
                 assert_eq!(setter, JS_UNDEFINED);
             }
@@ -3669,7 +3668,7 @@ mod tests {
         match entry {
             DebugProperty::GetSet { getter, setter } => {
                 assert_eq!(getter, JS_UNDEFINED);
-                assert!(is_int(setter));
+                assert!(setter.is_int());
                 assert_eq!(value_get_int(setter), 22);
             }
             _ => panic!("expected get/set entry"),
@@ -3700,7 +3699,7 @@ mod tests {
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 20);
     }
 
@@ -3757,7 +3756,7 @@ mod tests {
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 7);
     }
 
@@ -3781,7 +3780,7 @@ mod tests {
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 2);
     }
 
@@ -3804,7 +3803,7 @@ mod tests {
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![val]);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 2);
     }
 
@@ -3915,7 +3914,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode(&mut ctx, bytecode);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 1);
     }
 
@@ -3942,7 +3941,7 @@ mod tests {
         bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 7);
     }
 
@@ -4033,7 +4032,7 @@ mod tests {
         );
         let closure = ctx.alloc_closure(func, 0).expect("closure");
         let result = call(&mut ctx, closure, &[new_short_int(7)]).expect("call");
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 1);
     }
 
@@ -4155,7 +4154,7 @@ mod tests {
         );
         let caller_closure = ctx.alloc_closure(caller_func, 0).expect("closure");
         let result = call(&mut ctx, caller_closure, &[]).expect("call");
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 3);
     }
 
@@ -4203,7 +4202,7 @@ mod tests {
         );
         let caller_closure = ctx.alloc_closure(caller_func, 0).expect("closure");
         let result = call(&mut ctx, caller_closure, &[]).expect("call");
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 5);
     }
 
@@ -4304,11 +4303,11 @@ mod tests {
             call(&mut ctx, outer_closure, &[new_short_int(10)]).expect("call");
 
         let result = call(&mut ctx, inner_closure, &[]).expect("call");
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 11);
 
         let result = call(&mut ctx, inner_closure, &[]).expect("call");
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 12);
     }
 
@@ -4343,7 +4342,7 @@ mod tests {
         );
         let closure = create_closure(&mut ctx, func, None).expect("closure");
         let result = call(&mut ctx, closure, &[]).expect("call");
-        assert!(is_int(result));
+        assert!(result.is_int());
         assert_eq!(value_get_int(result), 1);
     }
 

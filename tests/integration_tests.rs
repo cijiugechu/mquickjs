@@ -9,7 +9,7 @@ use mquickjs::api::{
 };
 use mquickjs::capi_defs::{JS_EVAL_JSON, JS_EVAL_RETVAL};
 use mquickjs::context::{ContextConfig, JSContext};
-use mquickjs::jsvalue::{is_bool, value_get_special_value, JS_EXCEPTION};
+use mquickjs::jsvalue::{value_get_special_value, JS_EXCEPTION};
 use mquickjs::stdlib::MQUICKJS_STDLIB_IMAGE;
 
 fn new_context() -> JSContext {
@@ -36,7 +36,7 @@ fn test_json_parse_basic() {
     
     let result = js_eval(&mut ctx, b"true", JS_EVAL_JSON);
     assert!(!js_is_exception(result));
-    assert!(is_bool(result));
+    assert!(result.is_bool());
     assert_eq!(value_get_special_value(result), 1);
     
     let result = js_eval(&mut ctx, b"42", JS_EVAL_JSON);
@@ -162,7 +162,7 @@ fn eval_js(ctx: &mut JSContext, code: &[u8]) -> mquickjs::jsvalue::JSValue {
 #[allow(dead_code)]
 fn eval_js_bool(ctx: &mut JSContext, code: &[u8]) -> bool {
     let result = eval_js(ctx, code);
-    if is_bool(result) {
+    if result.is_bool() {
         value_get_special_value(result) != 0
     } else if js_is_number(result) {
         js_to_number(ctx, result) != 0.0
@@ -180,7 +180,7 @@ fn eval_js_number(ctx: &mut JSContext, code: &[u8]) -> f64 {
 fn assert_js_true(ctx: &mut JSContext, code: &[u8]) {
     let result = js_eval(ctx, code, JS_EVAL_RETVAL);
     assert!(!js_is_exception(result));
-    assert!(is_bool(result));
+    assert!(result.is_bool());
     assert_eq!(value_get_special_value(result), 1);
 }
 

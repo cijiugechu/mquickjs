@@ -1,4 +1,4 @@
-use crate::jsvalue::{is_null, JSValue};
+use crate::jsvalue::JSValue;
 use crate::opcode::{
     OP_DROP, OP_GOSUB, OP_GOTO, OP_NIP, OP_RETURN, OP_RETURN_UNDEF, OP_UNDEFINED,
 };
@@ -178,7 +178,7 @@ pub fn emit_break(
     source_pos: SourcePos,
 ) -> Result<(), ControlFlowError> {
     for entry in break_stack.entries.iter_mut().rev() {
-        let is_match = (is_null(label_name) && !is_labelled_stmt(entry))
+        let is_match = (label_name.is_null() && !is_labelled_stmt(entry))
             || entry.label_name() == label_name;
         if is_match {
             let target = if is_cont {
@@ -202,7 +202,7 @@ pub fn emit_break(
         }
     }
 
-    if is_null(label_name) {
+    if label_name.is_null() {
         let message = if is_cont {
             ERR_CONTINUE_OUTSIDE_LOOP
         } else {
