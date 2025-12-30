@@ -192,6 +192,9 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
         },
         BuiltinProto::Constructor => match func_name {
             "js_number_constructor" => BuiltinCFunction::Constructor(builtins::js_number_constructor),
+            "js_boolean_constructor" => {
+                BuiltinCFunction::Constructor(builtins::js_boolean_constructor)
+            }
             "js_object_constructor" => BuiltinCFunction::Constructor(builtins::js_object_constructor),
             "js_function_constructor" => {
                 BuiltinCFunction::Constructor(builtins::js_function_constructor)

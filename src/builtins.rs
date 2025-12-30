@@ -80,6 +80,37 @@ fn parse_number_bytes(bytes: &[u8], radix: u32, flags: AtodFlags, to_string: boo
     parsed.value
 }
 
+fn js_to_bool(val: JSValue) -> bool {
+    if is_int(val) {
+        return value_get_int(val) != 0;
+    }
+    #[cfg(target_pointer_width = "64")]
+    if is_short_float(val) {
+        let num = short_float_to_f64(val);
+        return !num.is_nan() && num != 0.0;
+    }
+    if is_bool(val) {
+        return value_get_special_value(val) != 0;
+    }
+    if is_null(val) || is_undefined(val) {
+        return false;
+    }
+    if value_get_special_tag(val) == JS_TAG_SHORT_FUNC {
+        return true;
+    }
+    let mut scratch = [0u8; 5];
+    if let Some(view) = string_view(val, &mut scratch) {
+        return !view.bytes().is_empty();
+    }
+    if let Some(num) = read_float64(val) {
+        return !num.is_nan() && num != 0.0;
+    }
+    if is_ptr(val) {
+        return true;
+    }
+    false
+}
+
 fn to_number_from_string(val: JSValue, flags: AtodFlags, to_string: bool) -> f64 {
     let mut scratch = [0u8; 5];
     let Some(view) = string_view(val, &mut scratch) else {
@@ -348,6 +379,15 @@ pub fn js_number_parseFloat(ctx: &mut JSContext, _this_val: JSValue, args: &[JSV
     };
     let value = parse_number_bytes(view.bytes(), 10, AtodFlags::empty(), false);
     alloc_number(ctx, value)
+}
+
+pub fn js_boolean_constructor(
+    _ctx: &mut JSContext,
+    _this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let val = args.first().copied().unwrap_or(JS_UNDEFINED);
+    new_bool(js_to_bool(val) as i32)
 }
 
 pub fn js_math_min_max(
@@ -3705,7 +3745,10 @@ fn is_error(val: JSValue) -> bool {
 mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
-    use crate::jsvalue::{JSWord, JS_EXCEPTION};
+    use crate::jsvalue::{
+        is_bool, new_short_int, value_get_special_value, JSWord, JS_EXCEPTION, JS_FALSE,
+        JS_TRUE, JS_UNDEFINED,
+    };
     use crate::object::{Object, ObjectHeader};
     use crate::parser::regexp::compile_regexp;
     use crate::parser::regexp_flags::LRE_FLAG_GLOBAL;
@@ -3799,6 +3842,40 @@ mod tests {
         let inf = ctx.new_string("Infinity").unwrap();
         let out = js_number_parseFloat(&mut ctx, JS_UNDEFINED, &[inf]);
         assert!(to_number(out).is_infinite());
+    }
+
+    #[test]
+    fn boolean_constructor_matches_c() {
+        let mut ctx = new_context();
+
+        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[]);
+        assert!(is_bool(out));
+        assert_eq!(value_get_special_value(out), 0);
+
+        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[JS_TRUE]);
+        assert_eq!(value_get_special_value(out), 1);
+
+        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[JS_FALSE]);
+        assert_eq!(value_get_special_value(out), 0);
+
+        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[new_short_int(0)]);
+        assert_eq!(value_get_special_value(out), 0);
+
+        let empty = ctx.new_string("").unwrap();
+        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[empty]);
+        assert_eq!(value_get_special_value(out), 0);
+
+        let nonempty = ctx.new_string("0").unwrap();
+        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[nonempty]);
+        assert_eq!(value_get_special_value(out), 1);
+
+        let nan = ctx.new_float64(f64::NAN).unwrap();
+        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[nan]);
+        assert_eq!(value_get_special_value(out), 0);
+
+        let obj = ctx.alloc_object_default().unwrap();
+        let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[obj]);
+        assert_eq!(value_get_special_value(out), 1);
     }
 
     #[test]
