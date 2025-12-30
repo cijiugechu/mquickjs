@@ -100,18 +100,14 @@ mod tests {
         view.bytes().to_vec()
     }
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
+    fn parse_name(input: &str) -> (ParseProp, Vec<u8>, i32) {
+        let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
             finalizers: &[],
         })
-        .expect("context init")
-    }
-
-    fn parse_name(input: &str) -> (ParseProp, Vec<u8>, i32) {
-        let mut ctx = new_context();
+        .expect("context init");
         let mut state = ParseState::new(input.as_bytes(), &mut ctx);
         state.next_token().expect("next token");
         let (prop, name) = parse_property_name(&mut state).expect("property name");

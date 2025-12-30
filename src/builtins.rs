@@ -31,7 +31,6 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-
 fn alloc_number(ctx: &mut JSContext, value: f64) -> JSValue {
     ctx.new_float64(value).unwrap_or(JS_EXCEPTION)
 }
@@ -4131,16 +4130,6 @@ mod tests {
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
     use core::ptr;
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
-            image: &MQUICKJS_STDLIB_IMAGE,
-            memory_size: 32 * 1024,
-            prepare_compilation: false,
-            finalizers: &[],
-        })
-        .expect("context init")
-    }
-
     fn string_from_value(val: JSValue) -> String {
         let mut scratch = [0u8; 5];
         let view = string_view(val, &mut scratch).expect("string view");
@@ -4172,7 +4161,13 @@ mod tests {
 
     #[test]
     fn number_formatting_matches_c() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let value = ctx.new_float64(25.0).expect("number");
         let exp = js_number_toExponential(&mut ctx, value, &[]);
         assert_eq!(string_from_value(exp), "2.5e+1");
@@ -4199,7 +4194,13 @@ mod tests {
 
     #[test]
     fn number_parse_int_float_matches_c() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let val = ctx.new_string("  123r").unwrap();
         let out = js_number_parseInt(&mut ctx, JS_UNDEFINED, &[val]);
         assert_eq!(to_number(out), 123.0);
@@ -4223,7 +4224,13 @@ mod tests {
 
     #[test]
     fn boolean_constructor_matches_c() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
 
         let out = js_boolean_constructor(&mut ctx, JS_UNDEFINED, &[]);
         assert!(is_bool(out));
@@ -4257,7 +4264,13 @@ mod tests {
 
     #[test]
     fn math_helpers_match_c() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let min = js_math_min_max(&mut ctx, JS_UNDEFINED, &[new_short_int(3), new_short_int(1)], 0);
         assert_eq!(value_get_int(min), 1);
 
@@ -4277,7 +4290,13 @@ mod tests {
 
     #[test]
     fn string_regexp_match_and_search() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let input = ctx.new_string("abbbc").expect("input string");
         let re = make_regexp(&mut ctx, b"b+", 0);
         let match_val = js_string_match(&mut ctx, input, &[re]);
@@ -4306,7 +4325,13 @@ mod tests {
 
     #[test]
     fn string_regexp_replace() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let input = ctx.new_string("abbbbcbbd").expect("input string");
         let re = make_regexp(&mut ctx, b"b+", 0);
 
@@ -4350,7 +4375,13 @@ mod tests {
 
     #[test]
     fn string_regexp_split() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let input = ctx.new_string("abc").expect("input string");
         let re = make_regexp(&mut ctx, b"b", 0);
         let out = js_string_split(&mut ctx, input, &[re]);
@@ -4448,7 +4479,13 @@ mod tests {
 
     #[test]
     fn global_nan_finite_checks() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let nan = js_global_isNaN(&mut ctx, JS_UNDEFINED, &[JS_UNDEFINED]);
         assert!(value_get_special_value(nan) != 0);
         let finite = js_global_isFinite(&mut ctx, JS_UNDEFINED, &[new_short_int(1)]);
@@ -4460,7 +4497,13 @@ mod tests {
 
     #[test]
     fn error_constructor_sets_message_and_stack() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let msg = ctx.new_string("boom").expect("msg");
         let err = js_error_constructor(&mut ctx, JS_UNDEFINED, &[msg], JSObjectClass::TypeError as i32);
         assert!(is_error(err));
@@ -4473,7 +4516,13 @@ mod tests {
 
     #[test]
     fn build_backtrace_records_location_only() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let proto = ctx.class_proto()[JSObjectClass::Error as usize];
         let err = ctx.alloc_error(proto).expect("error");
         let msg = ctx.new_string("nope").expect("msg");
@@ -4491,14 +4540,26 @@ mod tests {
     #[cfg(all(test, not(miri)))]
     // MIRI: unsupported operation: `clock_gettime` with `REALTIME` clocks not available when isolation is enabled
     fn date_now_returns_number() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let val = js_date_now(&mut ctx, JS_UNDEFINED, &[]);
         assert!(to_number(val) >= 0.0);
     }
 
     #[test]
     fn date_constructor_throws_type_error() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let val = js_date_constructor(&mut ctx, JS_UNDEFINED, &[]);
         assert_eq!(val, JS_EXCEPTION);
         let err = ctx.take_current_exception();
@@ -4522,7 +4583,13 @@ mod tests {
 
     #[test]
     fn array_buffer_constructor_creates_buffer() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let ab = js_array_buffer_constructor(&mut ctx, JS_UNDEFINED, &[new_short_int(16)]);
         assert_ne!(ab, JS_EXCEPTION);
         
@@ -4534,7 +4601,13 @@ mod tests {
     #[test]
     fn typed_array_constructor_from_length() {
         use crate::enums::JSObjectClass;
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         // Create Uint8Array with length 4
         let ta = js_typed_array_constructor(
@@ -4559,7 +4632,13 @@ mod tests {
         use crate::enums::JSObjectClass;
         use crate::property::{get_property, set_property};
         
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         // Create Uint8Array with length 4
         let ta = js_typed_array_constructor(
@@ -4595,7 +4674,13 @@ mod tests {
         use crate::enums::JSObjectClass;
         use crate::property::{get_property, set_property};
         
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         // Create Uint8Array
         let ta = js_typed_array_constructor(
@@ -4617,7 +4702,13 @@ mod tests {
         use crate::enums::JSObjectClass;
         use crate::property::{get_property, set_property};
         
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         // Create Int8Array
         let ta = js_typed_array_constructor(
@@ -4639,7 +4730,13 @@ mod tests {
         use crate::enums::JSObjectClass;
         use crate::property::{get_property, set_property};
         
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         // Create Uint8ClampedArray
         let ta = js_typed_array_constructor(
@@ -4666,7 +4763,13 @@ mod tests {
         use crate::enums::JSObjectClass;
         use crate::property::{get_property, set_property};
         
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         // Create Int32Array
         let ta = js_typed_array_constructor(
@@ -4692,7 +4795,13 @@ mod tests {
         use crate::enums::JSObjectClass;
         use crate::property::{get_property, set_property};
         
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         // Create Uint8Array with 4 elements
         let ta = js_typed_array_constructor(
@@ -4730,7 +4839,13 @@ mod tests {
         use crate::enums::JSObjectClass;
         use crate::property::{get_property, set_property};
         
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         // Create ArrayBuffer with 16 bytes
         let ab = js_array_buffer_constructor(&mut ctx, JS_UNDEFINED, &[new_short_int(16)]);
@@ -4761,7 +4876,13 @@ mod tests {
 
     #[test]
     fn regexp_constructor_creates_working_regexp() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         let pattern = ctx.new_string("a+").unwrap();
         let flags = ctx.new_string("g").unwrap();
@@ -4778,7 +4899,13 @@ mod tests {
 
     #[test]
     fn regexp_lastindex_getter_setter() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         let pattern = ctx.new_string("x").unwrap();
         let flags = ctx.new_string("g").unwrap();
@@ -4815,7 +4942,13 @@ mod tests {
     fn regexp_exec_returns_match_array() {
         use crate::property::get_property;
         
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         let pattern = ctx.new_string("a").unwrap();
         let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern]);
@@ -4839,7 +4972,13 @@ mod tests {
 
     #[test]
     fn regexp_test_returns_boolean() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         let pattern = ctx.new_string("x").unwrap();
         let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern]);
@@ -4858,7 +4997,13 @@ mod tests {
 
     #[test]
     fn regexp_global_updates_lastindex() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         
         let pattern = ctx.new_string("a").unwrap();
         let flags = ctx.new_string("g").unwrap();

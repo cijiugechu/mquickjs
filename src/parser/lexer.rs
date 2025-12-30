@@ -1026,16 +1026,6 @@ mod tests {
         view.bytes().to_vec()
     }
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
-            image: &MQUICKJS_STDLIB_IMAGE,
-            memory_size: 16 * 1024,
-            prepare_compilation: false,
-            finalizers: &[],
-        })
-        .expect("context init")
-    }
-
     fn new_state<'a>(input: &'a [u8], ctx: &mut JSContext) -> ParseState<'a> {
         ParseState::new(input, ctx)
     }
@@ -1098,7 +1088,13 @@ mod tests {
 
     #[test]
     fn parse_identifier_keywords() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"if yield foo", &mut ctx);
         state.next_token().unwrap();
         assert_eq!(state.token().val(), TOK_IF);
@@ -1110,7 +1106,13 @@ mod tests {
 
     #[test]
     fn parse_identifier_interns() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"foo foo", &mut ctx);
         state.next_token().unwrap();
         let first = state.token().value();
@@ -1121,7 +1123,13 @@ mod tests {
 
     #[test]
     fn parse_string_surrogate_pair_merges() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(br#""\uD83D\uDE00""#, &mut ctx);
         state.next_token().unwrap();
         let token = state.token();
@@ -1132,7 +1140,13 @@ mod tests {
 
     #[test]
     fn parse_string_invalid_escape_errors() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(br#""\xZ1""#, &mut ctx);
         let err = state.next_token().unwrap_err();
         assert_eq!(err.message(), ERR_INVALID_ESCAPE);
@@ -1140,7 +1154,13 @@ mod tests {
 
     #[test]
     fn parse_regexp_token_basic() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"/ab+c/gi", &mut ctx);
         state.next_token().unwrap();
         let token = state.token();
@@ -1157,7 +1177,13 @@ mod tests {
 
     #[test]
     fn parse_regexp_invalid_flags_errors() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"/a/gg", &mut ctx);
         let err = state.next_token().unwrap_err();
         assert_eq!(err.message(), ERR_INVALID_REGEXP_FLAGS);
@@ -1165,7 +1191,13 @@ mod tests {
 
     #[test]
     fn next_token_skips_line_comment_and_sets_got_lf() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"//x\n1", &mut ctx);
         state.next_token().unwrap();
         assert_eq!(state.token().val(), TOK_NUMBER);
@@ -1174,7 +1206,13 @@ mod tests {
 
     #[test]
     fn block_comment_does_not_set_got_lf() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"/*x\n*/1", &mut ctx);
         state.next_token().unwrap();
         assert_eq!(state.token().val(), TOK_NUMBER);
@@ -1183,7 +1221,13 @@ mod tests {
 
     #[test]
     fn regexp_disallowed_after_ident() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"a / b", &mut ctx);
         state.next_token().unwrap();
         assert_eq!(state.token().val(), TOK_IDENT);
@@ -1193,7 +1237,13 @@ mod tests {
 
     #[test]
     fn number_leading_zero_is_invalid() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"012", &mut ctx);
         let err = state.next_token().unwrap_err();
         assert_eq!(err.message(), ERR_INVALID_NUMBER);
@@ -1201,7 +1251,13 @@ mod tests {
 
     #[test]
     fn parse_number_hex_literal() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"0x10", &mut ctx);
         state.next_token().unwrap();
         let token = state.token();
@@ -1214,7 +1270,13 @@ mod tests {
 
     #[test]
     fn skip_parens_sets_bits_and_advances_token() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"(arguments; foo) bar", &mut ctx);
         state.next_token().unwrap();
         let bits = state.skip_parens(None).unwrap();
@@ -1228,7 +1290,13 @@ mod tests {
 
     #[test]
     fn skip_parens_detects_func_name() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"foo (foo)", &mut ctx);
         state.next_token().unwrap();
         let func_name = state.token().value();
@@ -1240,7 +1308,13 @@ mod tests {
 
     #[test]
     fn skip_parens_token_restores_state() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"(a + b) c", &mut ctx);
         state.next_token().unwrap();
         let pos = state.get_pos();
@@ -1252,7 +1326,13 @@ mod tests {
 
     #[test]
     fn parse_pos_roundtrip_restores_token() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"foo + bar", &mut ctx);
         state.next_token().unwrap();
         let first = state.token();
@@ -1269,13 +1349,25 @@ mod tests {
 
     #[test]
     fn seek_token_regexp_disambiguates_slash() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"/a/", &mut ctx);
         let pos = ParsePos::new(false, true, 0);
         state.seek_token(pos).unwrap();
         assert_eq!(state.token().val(), TOK_REGEXP);
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut state = new_state(b"/a/", &mut ctx);
         let pos = ParsePos::new(false, false, 0);
         state.seek_token(pos).unwrap();

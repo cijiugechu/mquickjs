@@ -3175,18 +3175,14 @@ mod tests {
         ops
     }
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
+    fn parse_ops(input: &str) -> Vec<OpCode> {
+        let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
             finalizers: &[],
         })
-        .expect("context init")
-    }
-
-    fn parse_ops(input: &str) -> Vec<OpCode> {
-        let mut ctx = new_context();
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, input.as_bytes());
         parser.attach_parse_state();
         parser.parse_expression(0).expect("parse");
@@ -3194,7 +3190,13 @@ mod tests {
     }
 
     fn parse_statement_ops(input: &str) -> Vec<OpCode> {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, input.as_bytes());
         parser.attach_parse_state();
         parser.parse_statement().expect("parse");
@@ -3261,7 +3263,13 @@ mod tests {
 
     #[test]
     fn expr_assignment_emits_put_loc() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, b"x=1");
         parser.attach_parse_state();
         parser.add_local_var("x").expect("var");
@@ -3299,7 +3307,13 @@ mod tests {
 
     #[test]
     fn program_function_decl_hoists() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, b"function foo(){}");
         parser.attach_parse_state();
         parser.parse_program().expect("parse");
@@ -3327,7 +3341,13 @@ mod tests {
 
     #[test]
     fn program_named_function_expr_binds_name() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, b"var f = function foo(){ foo; };");
         parser.attach_parse_state();
         parser.parse_program().expect("parse");
@@ -3351,7 +3371,13 @@ mod tests {
 
     #[test]
     fn program_arguments_usage_sets_flag() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, b"function foo(){ arguments; }");
         parser.attach_parse_state();
         parser.parse_program().expect("parse");
@@ -3375,7 +3401,13 @@ mod tests {
 
     #[test]
     fn program_object_getter_emits_define_getter() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, b"({ get foo() { return 1; } });");
         parser.attach_parse_state();
         parser.parse_program().expect("parse");
@@ -3386,7 +3418,13 @@ mod tests {
 
     #[test]
     fn eval_program_var_assignment_matches_c_bytecode() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, b"var x = 1; x = x + 2;");
         parser.attach_parse_state();
         parser
@@ -3450,7 +3488,13 @@ function test_do_while()
 }
 "#;
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut parser = ExprParser::new(&mut ctx, source);
         parser.attach_parse_state();
         parser

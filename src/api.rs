@@ -935,36 +935,28 @@ mod tests {
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
     use crate::jsvalue::{value_from_ptr, JS_SHORTINT_MAX, JSW};
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
+    #[test]
+    fn eval_json_null() {
+        let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 64 * 1024,
             prepare_compilation: true,
             finalizers: &[],
         })
-        .expect("context init")
-    }
-
-    fn new_context_no_compile() -> JSContext {
-        JSContext::new(ContextConfig {
-            image: &MQUICKJS_STDLIB_IMAGE,
-            memory_size: 64 * 1024,
-            prepare_compilation: false,
-            finalizers: &[],
-        })
-        .expect("context init")
-    }
-
-    #[test]
-    fn eval_json_null() {
-        let mut ctx = new_context();
+        .expect("context init");
         let result = js_eval(&mut ctx, b"null", JS_EVAL_JSON);
         assert!(js_is_null(result));
     }
 
     #[test]
     fn eval_json_number() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = js_eval(&mut ctx, b"42", JS_EVAL_JSON);
         assert!(js_is_number(result));
         assert_eq!(js_to_number(&mut ctx, result), 42.0);
@@ -972,28 +964,52 @@ mod tests {
 
     #[test]
     fn eval_json_string() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = js_eval(&mut ctx, b"\"hello\"", JS_EVAL_JSON);
         assert!(js_is_string(result));
     }
 
     #[test]
     fn eval_json_array() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = js_eval(&mut ctx, b"[1, 2, 3]", JS_EVAL_JSON);
         assert!(js_is_object(result));
     }
 
     #[test]
     fn eval_json_object() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = js_eval(&mut ctx, b"{\"a\": 1}", JS_EVAL_JSON);
         assert!(js_is_object(result));
     }
 
     #[test]
     fn new_object_and_property() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = js_new_object(&mut ctx);
         assert!(js_is_object(obj));
 
@@ -1006,28 +1022,52 @@ mod tests {
 
     #[test]
     fn new_array() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let arr = js_new_array(&mut ctx, 3);
         assert!(js_is_object(arr));
     }
 
     #[test]
     fn new_string() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let s = js_new_string(&mut ctx, "hello");
         assert!(js_is_string(s));
     }
 
     #[test]
     fn global_object_exists() {
-        let ctx = new_context();
+        let ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let global = js_get_global_object(&ctx);
         assert!(js_is_object(global));
     }
 
     #[test]
     fn new_numbers_roundtrip() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let val = js_new_int32(&mut ctx, -5);
         assert_eq!(js_to_int32(&mut ctx, val), -5);
 
@@ -1044,7 +1084,13 @@ mod tests {
 
     #[test]
     fn user_object_opaque_roundtrip() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let proto = ctx.class_proto()[JSObjectClass::Object as usize];
         let obj = ctx
             .alloc_object(JSObjectClass::Object, proto, size_of::<ObjectUserData>())
@@ -1068,7 +1114,13 @@ mod tests {
 
     #[test]
     fn is_error_detects_error_object() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
         let _ = js_throw_type_error(&mut ctx, "boom");
         let err = ctx.current_exception();
         assert!(js_is_error(err));
@@ -1077,7 +1129,13 @@ mod tests {
 
     #[test]
     fn load_bytecode_registers_rom_table() {
-        let mut ctx = new_context_no_compile();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         assert_eq!(ctx.n_rom_atom_tables(), 1);
 
         let header_bytes = size_of::<BytecodeHeader>();

@@ -525,16 +525,6 @@ mod tests {
     use crate::property::define_property_value;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
-            image: &MQUICKJS_STDLIB_IMAGE,
-            memory_size: 32 * 1024,
-            prepare_compilation: false,
-            finalizers: &[],
-        })
-        .expect("context init")
-    }
-
     fn make_const_func(ctx: &mut JSContext, value_op: u8) -> JSValue {
         let bytecode = vec![value_op, OP_RETURN.as_u8()];
         let byte_code_val = ctx.alloc_byte_array(&bytecode).expect("bytecode");
@@ -557,7 +547,13 @@ mod tests {
 
     #[test]
     fn to_number_parses_strings() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let val = ctx.new_string("  123 ").expect("string");
         let num = to_number(&mut ctx, val).expect("number");
         assert_eq!(num, 123.0);
@@ -572,7 +568,13 @@ mod tests {
 
     #[test]
     fn to_property_key_parses_short_ints() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let numeric = ctx.new_string("42").expect("string");
         let key = to_property_key(&mut ctx, numeric).expect("key");
         assert!(is_int(key));
@@ -585,7 +587,13 @@ mod tests {
 
     #[test]
     fn to_primitive_uses_value_of() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, ctx.class_proto()[JSObjectClass::Object as usize], 0)
             .expect("object");

@@ -106,26 +106,28 @@ mod tests {
     use crate::parser::regexp_flags::LRE_FLAG_STICKY;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
+    #[test]
+    fn parse_source_program_has_column_flag() {
+        let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
             finalizers: &[],
         })
-        .expect("context init")
-    }
-
-    #[test]
-    fn parse_source_program_has_column_flag() {
-        let mut ctx = new_context();
+        .expect("context init");
         let output = parse_source(&mut ctx, b"1", 0).expect("parse");
         let ParseOutput::Program(parser) = output else {
             panic!("expected program");
         };
         assert!(parser.has_column());
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let output = parse_source(&mut ctx, b"1", JS_EVAL_STRIP_COL).expect("parse");
         let ParseOutput::Program(parser) = output else {
             panic!("expected program");
@@ -136,7 +138,13 @@ mod tests {
     #[test]
     fn parse_source_program_error_line_col() {
         let input = b"var x = 1;\nreturn x;";
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let err = match parse_source(&mut ctx, input, 0) {
             Ok(_) => panic!("expected parse error"),
             Err(err) => err,
@@ -150,7 +158,13 @@ mod tests {
     #[test]
     fn parse_source_json_error_line_col() {
         let input = b"{\n\"a\": }";
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let err = match parse_source(&mut ctx, input, JS_EVAL_JSON) {
             Ok(_) => panic!("expected parse error"),
             Err(err) => err,
@@ -165,7 +179,13 @@ mod tests {
     fn parse_source_regexp_flags() {
         let eval_flags =
             JS_EVAL_REGEXP | (LRE_FLAG_STICKY << JS_EVAL_REGEXP_FLAGS_SHIFT);
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let output = parse_source(&mut ctx, b"a+", eval_flags).expect("parse");
         let ParseOutput::RegExp(bytecode) = output else {
             panic!("expected regexp");

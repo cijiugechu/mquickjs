@@ -2985,16 +2985,6 @@ mod tests {
     use core::mem::size_of;
     use core::ptr;
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
-            image: &MQUICKJS_STDLIB_IMAGE,
-            memory_size: 16 * 1024,
-            prepare_compilation: false,
-            finalizers: &[],
-        })
-        .expect("context init")
-    }
-
     fn emit_i32(buf: &mut Vec<u8>, value: i32) {
         buf.extend_from_slice(&value.to_le_bytes());
     }
@@ -3138,7 +3128,13 @@ mod tests {
 
     #[test]
     fn call_simple_add() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![OP_PUSH_1.as_u8(), OP_PUSH_2.as_u8(), OP_ADD.as_u8(), OP_RETURN.as_u8()],
@@ -3149,7 +3145,13 @@ mod tests {
 
     #[test]
     fn call_add_string_concat() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let str_val = ctx.new_string("hi").expect("string");
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3165,7 +3167,13 @@ mod tests {
 
     #[test]
     fn call_eq_and_strict_eq() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let str_val = ctx.new_string("1").expect("string");
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3178,7 +3186,13 @@ mod tests {
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
         assert_eq!(value_get_special_value(result), 1);
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let str_val = ctx.new_string("1").expect("string");
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3194,7 +3208,13 @@ mod tests {
 
     #[test]
     fn call_relational_string_compare() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let a = ctx.new_string("a").expect("string");
         let b = ctx.new_string("b").expect("string");
         let bytecode = vec![
@@ -3213,7 +3233,13 @@ mod tests {
 
     #[test]
     fn call_bitwise_and() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![OP_PUSH_3.as_u8(), OP_PUSH_1.as_u8(), OP_AND.as_u8(), OP_RETURN.as_u8()],
@@ -3224,7 +3250,13 @@ mod tests {
 
     #[test]
     fn control_flow_if_false_goto() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_TRUE.as_u8());
         bytecode.push(OP_IF_FALSE.as_u8());
@@ -3241,7 +3273,13 @@ mod tests {
 
     #[test]
     fn control_flow_if_true() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_TRUE.as_u8());
         bytecode.push(OP_IF_TRUE.as_u8());
@@ -3257,7 +3295,13 @@ mod tests {
 
     #[test]
     fn control_flow_gosub_ret() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_1.as_u8());
         bytecode.push(OP_GOSUB.as_u8());
@@ -3273,7 +3317,13 @@ mod tests {
 
     #[test]
     fn exception_flow_catch_throw() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut bytecode = Vec::new();
         bytecode.push(OP_CATCH.as_u8());
         emit_i32(&mut bytecode, 8);
@@ -3289,7 +3339,13 @@ mod tests {
 
     #[test]
     fn stack_ops_shuffle() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![OP_PUSH_1.as_u8(), OP_PUSH_2.as_u8(), OP_NIP.as_u8(), OP_RETURN.as_u8()],
@@ -3297,7 +3353,13 @@ mod tests {
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 2);
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![
@@ -3313,7 +3375,13 @@ mod tests {
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 6);
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![
@@ -3328,7 +3396,13 @@ mod tests {
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 5);
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![
@@ -3345,7 +3419,13 @@ mod tests {
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 9);
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![
@@ -3360,7 +3440,13 @@ mod tests {
         assert!(is_int(result));
         assert_eq!(value_get_int(result), -2);
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![
@@ -3375,7 +3461,13 @@ mod tests {
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 2);
 
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let result = call_bytecode(
             &mut ctx,
             vec![
@@ -3394,7 +3486,13 @@ mod tests {
 
     #[test]
     fn get_field_reads_property() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3415,7 +3513,13 @@ mod tests {
 
     #[test]
     fn get_field2_keeps_object() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3436,7 +3540,13 @@ mod tests {
 
     #[test]
     fn put_field_writes_property() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3461,7 +3571,13 @@ mod tests {
 
     #[test]
     fn define_field_sets_property() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3484,7 +3600,13 @@ mod tests {
 
     #[test]
     fn define_getter_sets_getset_entry() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3517,7 +3639,13 @@ mod tests {
 
     #[test]
     fn define_setter_sets_getset_entry() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3550,7 +3678,13 @@ mod tests {
 
     #[test]
     fn get_array_el_reads_element() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let array = new_array(
             &mut ctx,
             &[new_short_int(10), new_short_int(20)],
@@ -3572,7 +3706,13 @@ mod tests {
 
     #[test]
     fn get_array_el2_keeps_object() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let array = new_array(&mut ctx, &[new_short_int(7)]);
 
         let bytecode = vec![
@@ -3591,7 +3731,13 @@ mod tests {
 
     #[test]
     fn put_array_el_writes_element() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let array = new_array(&mut ctx, &[new_short_int(0)]);
 
         let bytecode = vec![
@@ -3617,7 +3763,13 @@ mod tests {
 
     #[test]
     fn get_length_array() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let array = new_array(&mut ctx, &[new_short_int(1), new_short_int(2)]);
 
         let bytecode = vec![
@@ -3635,7 +3787,13 @@ mod tests {
 
     #[test]
     fn get_length_string() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let val = ctx.new_string("hi").expect("string");
         let bytecode = vec![
             OP_PUSH_CONST.as_u8(),
@@ -3652,7 +3810,13 @@ mod tests {
 
     #[test]
     fn get_length2_keeps_object() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let array = new_array(&mut ctx, &[new_short_int(3)]);
 
         let bytecode = vec![
@@ -3670,7 +3834,13 @@ mod tests {
 
     #[test]
     fn set_proto_sets_object_proto() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3696,7 +3866,13 @@ mod tests {
 
     #[test]
     fn delete_property_removes_entry() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3721,7 +3897,13 @@ mod tests {
 
     #[test]
     fn array_from_preserves_order() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_1.as_u8());
         bytecode.push(OP_PUSH_2.as_u8());
@@ -3739,7 +3921,13 @@ mod tests {
 
     #[test]
     fn for_of_next_yields_value() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let array = new_array(&mut ctx, &[new_short_int(7)]);
         let mut bytecode = Vec::new();
         bytecode.push(OP_PUSH_CONST.as_u8());
@@ -3760,7 +3948,13 @@ mod tests {
 
     #[test]
     fn for_in_start_collects_keys() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let obj = ctx
             .alloc_object(JSObjectClass::Object, JS_NULL, 0)
             .expect("object");
@@ -3787,7 +3981,13 @@ mod tests {
 
     #[test]
     fn regexp_opcode_builds_object() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let source = ctx.new_string("a").expect("source");
         let compiled = compile_regexp(b"a", 0).expect("regexp");
         let bytecode_val = ctx.alloc_byte_array(compiled.bytes()).expect("bytecode");
@@ -3814,7 +4014,13 @@ mod tests {
 
     #[test]
     fn arguments_len_matches_passed_args() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let bytecode = vec![OP_ARGUMENTS.as_u8(), OP_GET_LENGTH.as_u8(), OP_RETURN.as_u8()];
         let func = make_function_bytecode(
             &mut ctx,
@@ -3833,7 +4039,13 @@ mod tests {
 
     #[test]
     fn this_func_returns_closure() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let bytecode = vec![OP_THIS_FUNC.as_u8(), OP_RETURN.as_u8()];
         let func = make_function_bytecode(
             &mut ctx,
@@ -3851,7 +4063,13 @@ mod tests {
 
     #[test]
     fn new_target_tracks_constructor_calls() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let inner_code = vec![OP_NEW_TARGET.as_u8(), OP_RETURN.as_u8()];
         let inner_func = make_function_bytecode(
             &mut ctx,
@@ -3894,7 +4112,13 @@ mod tests {
 
     #[test]
     fn call_invokes_closure_with_args() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let callee_code = vec![
             OP_GET_ARG0.as_u8(),
             OP_GET_ARG1.as_u8(),
@@ -3937,7 +4161,13 @@ mod tests {
 
     #[test]
     fn call_method_preserves_arg_order() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let callee_code = vec![OP_GET_ARG0.as_u8(), OP_RETURN.as_u8()];
         let callee_func = make_function_bytecode(
             &mut ctx,
@@ -3979,7 +4209,13 @@ mod tests {
 
     #[test]
     fn call_constructor_uses_function_prototype() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let callee_code = vec![OP_PUSH_1.as_u8(), OP_RETURN.as_u8()];
         let callee_func = make_function_bytecode(
             &mut ctx,
@@ -4019,7 +4255,13 @@ mod tests {
 
     #[test]
     fn fclosure_varref_roundtrip() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let name = ctx.intern_string(b"x").expect("atom");
         let decl = (JSVarRefKind::Arg as i32) << 16;
         let ext_vars = vec![name, new_short_int(decl)];
@@ -4072,7 +4314,13 @@ mod tests {
 
     #[test]
     fn var_ref_nocheck_allows_uninitialized() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let name = ctx.intern_string(b"missing").expect("atom");
         let decl = (JSVarRefKind::Global as i32) << 16;
         let ext_vars = vec![name, new_short_int(decl)];
@@ -4101,7 +4349,13 @@ mod tests {
 
     #[test]
     fn var_ref_checked_errors_on_uninitialized() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let name = ctx.intern_string(b"missing").expect("atom");
         let decl = (JSVarRefKind::Global as i32) << 16;
         let ext_vars = vec![name, new_short_int(decl)];

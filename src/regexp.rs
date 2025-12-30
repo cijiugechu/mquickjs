@@ -1204,19 +1204,15 @@ mod tests {
     use crate::property::get_property;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
+    #[test]
+    fn regexp_exec_match_array() {
+        let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 16 * 1024,
             prepare_compilation: false,
             finalizers: &[],
         })
-        .expect("context init")
-    }
-
-    #[test]
-    fn regexp_exec_match_array() {
-        let mut ctx = new_context();
+        .expect("context init");
         let source = ctx.new_string("a").expect("source");
         let bytecode = compile_regexp(b"a", 0).expect("regexp");
         let bytecode_val = ctx.alloc_byte_array(bytecode.bytes()).expect("bytecode");
@@ -1239,7 +1235,13 @@ mod tests {
 
     #[test]
     fn regexp_exec_global_updates_last_index() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let source = ctx.new_string("a").expect("source");
         let bytecode = compile_regexp(b"a", LRE_FLAG_GLOBAL).expect("regexp");
         let bytecode_val = ctx.alloc_byte_array(bytecode.bytes()).expect("bytecode");

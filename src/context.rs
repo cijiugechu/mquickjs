@@ -2435,16 +2435,6 @@ mod tests {
     use core::slice;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    fn new_context() -> JSContext {
-        JSContext::new(ContextConfig {
-            image: &MQUICKJS_STDLIB_IMAGE,
-            memory_size: 32 * 1024,
-            prepare_compilation: false,
-            finalizers: &[],
-        })
-        .expect("context init")
-    }
-
     fn bytes_from_val(val: JSValue) -> Vec<u8> {
         let mut scratch = [0u8; 5];
         let view = string_view(val, &mut scratch).expect("string view");
@@ -2840,7 +2830,13 @@ mod tests {
 
     #[test]
     fn throw_error_format_includes_jsvalue() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let prop = ctx.new_string("abc").expect("prop");
         let val = ctx.throw_type_error_fmt(
             "cannot read property '%o' of null",
@@ -2857,7 +2853,13 @@ mod tests {
 
     #[test]
     fn throw_error_format_zero_pads_hex() {
-        let mut ctx = new_context();
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
         let val = ctx.throw_internal_error_fmt(
             "invalid opcode: pc=%u opcode=0x%02x",
             &[JsFormatArg::from(12u32), JsFormatArg::from(3u32)],
