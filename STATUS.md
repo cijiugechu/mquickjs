@@ -114,7 +114,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported RegExp builtins (`js_regexp_constructor`, `js_regexp_get_lastIndex`/`set_lastIndex`, `js_regexp_get_source`, `js_regexp_get_flags`, `js_regexp_exec`/test) into `src/builtins.rs` with stdlib dispatch wiring and unit tests.
 
 ## Known gaps (non-CLI/REPL)
-- Date builtin partial: only `Date.now`; constructor/prototype methods are missing.
+- Date builtin partial: only `Date.now`; constructor throws TypeError and prototype methods are unsupported.
 - Global `eval` builtin not wired (`js_global_eval`).
 - Error/exception helpers are incomplete: `JS_Throw*` equivalents and backtrace/stack formatting are missing.
 - Public C API functions are not ported yet (`JS_NewContext`, `JS_FreeContext`, `JS_Eval`, `JS_Parse`, `JS_Call`, etc.; only layouts/constants exist).
@@ -161,5 +161,4 @@ Replace with Rust std/core:
 Skip/avoid direct port:
 - C-only macros/attributes (`likely`, `unlikely`, `force_inline`, `no_inline`, `__maybe_unused`).
 - `offsetof`, `countof`, `container_of` (use Rust layouts, `memoffset` if needed, or `intrusive-collections` adapters).
-
 

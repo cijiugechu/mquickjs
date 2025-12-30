@@ -483,6 +483,10 @@ pub fn js_date_now(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]) -
     alloc_number(ctx, ms)
 }
 
+pub fn js_date_constructor(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]) -> JSValue {
+    ctx.throw_type_error("only Date.now() is supported")
+}
+
 pub fn js_global_isNaN(_ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
     let val = args.first().copied().unwrap_or(JS_UNDEFINED);
     let num = to_number(val);
@@ -4477,6 +4481,17 @@ mod tests {
         let mut ctx = new_context();
         let val = js_date_now(&mut ctx, JS_UNDEFINED, &[]);
         assert!(to_number(val) >= 0.0);
+    }
+
+    #[test]
+    fn date_constructor_throws_type_error() {
+        let mut ctx = new_context();
+        let val = js_date_constructor(&mut ctx, JS_UNDEFINED, &[]);
+        assert_eq!(val, JS_EXCEPTION);
+        let err = ctx.take_current_exception();
+        assert!(is_error(err));
+        let message = ctx.get_error_message(err).expect("message");
+        assert_eq!(string_from_value(message), "only Date.now() is supported");
     }
 
     #[test]

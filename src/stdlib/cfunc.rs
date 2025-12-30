@@ -210,6 +210,7 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_boolean_constructor" => {
                 BuiltinCFunction::Constructor(builtins::js_boolean_constructor)
             }
+            "js_date_constructor" => BuiltinCFunction::Constructor(builtins::js_date_constructor),
             "js_object_constructor" => BuiltinCFunction::Constructor(builtins::js_object_constructor),
             "js_function_constructor" => {
                 BuiltinCFunction::Constructor(builtins::js_function_constructor)
