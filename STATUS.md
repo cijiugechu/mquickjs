@@ -111,10 +111,9 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Created integration test framework in `tests/integration_tests.rs` with JSON parsing and global object tests; wired `src/stdlib/cfunc.rs` to dispatch all new builtins.
 - Added regexp-aware String helpers (`match`, `search`, RegExp-aware `split`/`replace`) in `src/builtins.rs` and wired stdlib entries in `src/stdlib/cfunc.rs`; aligned regexp quantifier capture reset ordering with C and added a C Catch2 bytecode dump test for the tag regexp in `ctests/parser_bytecode_catch2_test.cpp`.
 - Ported Boolean builtin constructor (`js_boolean_constructor`) with C-aligned truthiness semantics and stdlib dispatch wiring, plus unit tests.
+- Ported RegExp builtins (`js_regexp_constructor`, `js_regexp_get_lastIndex`/`set_lastIndex`, `js_regexp_get_source`, `js_regexp_get_flags`, `js_regexp_exec`/test) into `src/builtins.rs` with stdlib dispatch wiring and unit tests.
 
 ## Known gaps (non-CLI/REPL)
-
-- RegExp builtins are missing (RegExp constructor/prototype: lastIndex/source/flags, exec/test).
 - Date builtin partial: only `Date.now`; constructor/prototype methods are missing.
 - Global `eval` builtin not wired (`js_global_eval`).
 - Error/exception helpers are incomplete: `JS_Throw*` equivalents and backtrace/stack formatting are missing.
@@ -163,14 +162,4 @@ Skip/avoid direct port:
 - C-only macros/attributes (`likely`, `unlikely`, `force_inline`, `no_inline`, `__maybe_unused`).
 - `offsetof`, `countof`, `container_of` (use Rust layouts, `memoffset` if needed, or `intrusive-collections` adapters).
 
-## Upcoming mquickjs.c/h port plan (incremental, correctness-first)
 
-- **JSValue tagging & helpers**: Recreate tag layout (`JS_TAG_*`, special bits) and `JS_VALUE_GET/MAKE_*`/`JS_Is*` helpers in Rust newtypes with exhaustive tests (cover short-float on/off, int/pointer tagging).
-- **Memblock header & mtags**: Model `JS_MTAG_BITS`/`JS_MB_HEADER` and mtags in Rust; add bit-width/packing tests for 32/64-bit layouts. Keep allocator in C initially; Rust only parses/validates headers.
-- **Core containers**: Port layouts/constants for `JSString`/`JSByteArray`/`JSValueArray`/`JSVarRef` (length limits, flag bits) with property/roundtrip tests. Provide safe read views, no allocator takeover yet.
-- **JSContext shell**: Define Rust view/FFI handle mirroring `JSContext` memory map invariants (sp > stack_bottom, min_free_size). Expose read-only queries; assert before any unsafe entry.
-- **Objects & classes**: Model `JSObject` shape (class_id, extra_size, proto, props, union payloads) with typed accessors. Validate size/alignment math via tests; keep creation backed by C for now.
-- **Bytecode metadata**: Use existing opcode port to parse `JSFunctionBytecode` fields (arg_count, stack_size, cpool/ext_vars/pc2line). Test with C-generated sample bytecode for field equality.
-- **Interpreter bridge**: Keep C interpreter as oracle; add Rust wrappers for `JS_Call`/`JS_Eval` to collect outputs/exceptions for diff tests. Defer opcode execution port until data-model steps above are stable.
-- **Builtins surface**: Use Rust stdlib metadata (`stdlib_image` + `BuiltinProto`) to register/dispatch builtins without C tables. Gradually port builtin families (Function/String/Array/Math/TypedArray) with proptest + differential tests.
-- **Validation regimen**: Each increment runs `cargo check --all-features`, `cargo test --all-features`, `cargo clippy`; unsafe-heavy paths also run `cargo miri test`. Differential tests compare C/Rust outputs (incl. NaN/-0, UTF-16 edges, hash collisions).

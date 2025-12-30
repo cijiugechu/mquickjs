@@ -1538,10 +1538,171 @@ fn regexp_set_last_index(val: JSValue, last_index: i32) -> Result<(), RegExpErro
     Ok(())
 }
 
+fn regexp_source(val: JSValue) -> Result<JSValue, RegExpError> {
+    let obj_ptr = regexp_object_ptr(val)?;
+    let re_ptr = regexp_payload_ptr(obj_ptr);
+    Ok(unsafe {
+        // SAFETY: re_ptr points to a valid RegExp with a source slot.
+        ptr::read_unaligned(RegExp::source_ptr(re_ptr))
+    })
+}
+
 fn handle_regexp_error(ctx: &mut JSContext, err: RegExpError) -> JSValue {
     match err {
         RegExpError::TypeError(msg) => ctx.throw_type_error(msg),
         _ => JS_EXCEPTION,
+    }
+}
+
+// Flag character order for regexp flags string: g, i, m, s, u, y
+const RE_FLAG_CHARS: [u8; 6] = [b'g', b'i', b'm', b's', b'u', b'y'];
+
+fn regexp_flags_str(re_flags: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(6);
+    for (i, &ch) in RE_FLAG_CHARS.iter().enumerate() {
+        if (re_flags >> i) & 1 != 0 {
+            buf.push(ch);
+        }
+    }
+    buf
+}
+
+/// RegExp constructor: new RegExp(pattern, flags)
+pub fn js_regexp_constructor(
+    ctx: &mut JSContext,
+    _this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    use crate::conversion::to_string;
+    use crate::parser::regexp::compile_regexp;
+    use crate::parser::regexp_flags::parse_regexp_flags;
+
+    // Convert pattern to string
+    let pattern_arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let pattern = match to_string(ctx, pattern_arg) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    // Get pattern bytes
+    let mut scratch = [0u8; 5];
+    let pattern_bytes = match string_view(pattern, &mut scratch) {
+        Some(view) => view.bytes().to_vec(),
+        None => return ctx.throw_type_error("invalid pattern"),
+    };
+
+    // Parse flags if provided
+    let flags_arg = args.get(1).copied().unwrap_or(JS_UNDEFINED);
+    let re_flags = if is_undefined(flags_arg) {
+        0u32
+    } else {
+        let flags_str = match to_string(ctx, flags_arg) {
+            Ok(s) => s,
+            Err(_) => return JS_EXCEPTION,
+        };
+        let mut scratch2 = [0u8; 5];
+        let flags_bytes = match string_view(flags_str, &mut scratch2) {
+            Some(view) => view.bytes().to_vec(),
+            None => return ctx.throw_type_error("invalid flags"),
+        };
+        let mut parsed_flags = 0u32;
+        let consumed = parse_regexp_flags(&mut parsed_flags, &flags_bytes);
+        if consumed != flags_bytes.len() {
+            return ctx.throw_syntax_error("invalid regexp flags");
+        }
+        parsed_flags
+    };
+
+    // Compile the regexp
+    let bytecode = match compile_regexp(&pattern_bytes, re_flags) {
+        Ok(bc) => bc,
+        Err(err) => return ctx.throw_syntax_error(err.message()),
+    };
+
+    // Allocate bytecode array
+    let bytecode_val = match ctx.alloc_byte_array(bytecode.bytes()) {
+        Ok(val) => val,
+        Err(_) => return JS_EXCEPTION,
+    };
+
+    // Create the RegExp object
+    match ctx.alloc_regexp(pattern, bytecode_val, 0) {
+        Ok(obj) => obj,
+        Err(_) => JS_EXCEPTION,
+    }
+}
+
+/// RegExp.prototype.lastIndex getter
+pub fn js_regexp_get_lastIndex(
+    _ctx: &mut JSContext,
+    this_val: JSValue,
+    _args: &[JSValue],
+) -> JSValue {
+    match regexp_last_index(this_val) {
+        Ok(idx) => new_short_int(idx),
+        Err(_) => JS_EXCEPTION,
+    }
+}
+
+/// RegExp.prototype.lastIndex setter
+pub fn js_regexp_set_lastIndex(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let last_index = match to_number(arg) {
+        v if v.is_nan() => 0,
+        v => v as i32,
+    };
+    if let Err(err) = regexp_set_last_index(this_val, last_index) {
+        return handle_regexp_error(ctx, err);
+    }
+    JS_UNDEFINED
+}
+
+/// RegExp.prototype.source getter
+pub fn js_regexp_get_source(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    _args: &[JSValue],
+) -> JSValue {
+    match regexp_source(this_val) {
+        Ok(source) => source,
+        Err(err) => handle_regexp_error(ctx, err),
+    }
+}
+
+/// RegExp.prototype.flags getter
+pub fn js_regexp_get_flags(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    _args: &[JSValue],
+) -> JSValue {
+    let flags = match regexp_flags(this_val) {
+        Ok(f) => f,
+        Err(err) => return handle_regexp_error(ctx, err),
+    };
+    let flags_str = regexp_flags_str(flags);
+    ctx.new_string_len(&flags_str).unwrap_or(JS_EXCEPTION)
+}
+
+/// RegExp.prototype.exec (magic=0) and RegExp.prototype.test (magic=1)
+pub fn js_regexp_exec(
+    ctx: &mut JSContext,
+    this_val: JSValue,
+    args: &[JSValue],
+    magic: i32,
+) -> JSValue {
+    let arg = args.first().copied().unwrap_or(JS_UNDEFINED);
+    let mode = if magic == 1 {
+        RegExpExecMode::Test
+    } else {
+        RegExpExecMode::Exec
+    };
+    match regexp_exec(ctx, this_val, arg, mode) {
+        Ok(val) => val,
+        Err(err) => handle_regexp_error(ctx, err),
     }
 }
 
@@ -4568,5 +4729,124 @@ mod tests {
         set_property(&mut ctx, ta, new_short_int(0), new_short_int(42)).unwrap();
         let v = get_property(&mut ctx, ta, new_short_int(0)).unwrap();
         assert_eq!(value_get_int(v), 42);
+    }
+
+    #[test]
+    fn regexp_constructor_creates_working_regexp() {
+        let mut ctx = new_context();
+        
+        let pattern = ctx.new_string("a+").unwrap();
+        let flags = ctx.new_string("g").unwrap();
+        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern, flags]);
+        assert_ne!(re, JS_EXCEPTION);
+        
+        // Check that it's a RegExp object by testing source and flags
+        let source = js_regexp_get_source(&mut ctx, re, &[]);
+        assert_string_bytes(source, b"a+");
+        
+        let flags_str = js_regexp_get_flags(&mut ctx, re, &[]);
+        assert_string_bytes(flags_str, b"g");
+    }
+
+    #[test]
+    fn regexp_lastindex_getter_setter() {
+        let mut ctx = new_context();
+        
+        let pattern = ctx.new_string("x").unwrap();
+        let flags = ctx.new_string("g").unwrap();
+        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern, flags]);
+        assert_ne!(re, JS_EXCEPTION);
+        
+        // Initial lastIndex should be 0
+        let idx = js_regexp_get_lastIndex(&mut ctx, re, &[]);
+        assert!(is_int(idx));
+        assert_eq!(value_get_int(idx), 0);
+        
+        // Set lastIndex to 5
+        let result = js_regexp_set_lastIndex(&mut ctx, re, &[new_short_int(5)]);
+        assert_eq!(result, JS_UNDEFINED);
+        
+        // Read back should be 5
+        let idx2 = js_regexp_get_lastIndex(&mut ctx, re, &[]);
+        assert_eq!(value_get_int(idx2), 5);
+    }
+
+    #[test]
+    fn regexp_flags_str_output() {
+        // Test the flag string generation
+        assert_eq!(regexp_flags_str(0), b"");
+        assert_eq!(regexp_flags_str(1), b"g");  // global
+        assert_eq!(regexp_flags_str(2), b"i");  // ignoreCase
+        assert_eq!(regexp_flags_str(3), b"gi"); // global + ignoreCase
+        assert_eq!(regexp_flags_str(4), b"m");  // multiline
+        assert_eq!(regexp_flags_str(7), b"gim"); // g + i + m
+        assert_eq!(regexp_flags_str(0x3f), b"gimsuy"); // all flags
+    }
+
+    #[test]
+    fn regexp_exec_returns_match_array() {
+        use crate::property::get_property;
+        
+        let mut ctx = new_context();
+        
+        let pattern = ctx.new_string("a").unwrap();
+        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern]);
+        assert_ne!(re, JS_EXCEPTION);
+        
+        let input = ctx.new_string("cat").unwrap();
+        let result = js_regexp_exec(&mut ctx, re, &[input], 0); // magic=0 for exec
+        assert_ne!(result, JS_EXCEPTION);
+        assert_ne!(result, JS_NULL);
+        
+        // Check the match at index 0
+        let match_val = get_property(&mut ctx, result, new_short_int(0)).unwrap();
+        assert_string_bytes(match_val, b"a");
+        
+        // Check the index property
+        let index_key = ctx.intern_string(b"index").unwrap();
+        let index = get_property(&mut ctx, result, index_key).unwrap();
+        assert!(is_int(index));
+        assert_eq!(value_get_int(index), 1); // 'a' is at position 1 in "cat"
+    }
+
+    #[test]
+    fn regexp_test_returns_boolean() {
+        let mut ctx = new_context();
+        
+        let pattern = ctx.new_string("x").unwrap();
+        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern]);
+        assert_ne!(re, JS_EXCEPTION);
+        
+        // Test match
+        let input_match = ctx.new_string("fox").unwrap();
+        let result_match = js_regexp_exec(&mut ctx, re, &[input_match], 1); // magic=1 for test
+        assert_eq!(result_match, JS_TRUE);
+        
+        // Test no match
+        let input_no_match = ctx.new_string("cat").unwrap();
+        let result_no_match = js_regexp_exec(&mut ctx, re, &[input_no_match], 1);
+        assert_eq!(result_no_match, JS_FALSE);
+    }
+
+    #[test]
+    fn regexp_global_updates_lastindex() {
+        let mut ctx = new_context();
+        
+        let pattern = ctx.new_string("a").unwrap();
+        let flags = ctx.new_string("g").unwrap();
+        let re = js_regexp_constructor(&mut ctx, JS_UNDEFINED, &[pattern, flags]);
+        assert_ne!(re, JS_EXCEPTION);
+        
+        let input = ctx.new_string("banana").unwrap();
+        
+        // First exec should find 'a' at index 1
+        let _ = js_regexp_exec(&mut ctx, re, &[input], 0);
+        let idx1 = js_regexp_get_lastIndex(&mut ctx, re, &[]);
+        assert_eq!(value_get_int(idx1), 2);
+        
+        // Second exec should find 'a' at index 3
+        let _ = js_regexp_exec(&mut ctx, re, &[input], 0);
+        let idx2 = js_regexp_get_lastIndex(&mut ctx, re, &[]);
+        assert_eq!(value_get_int(idx2), 4);
     }
 }

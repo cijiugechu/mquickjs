@@ -156,6 +156,19 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_typed_array_subarray" => {
                 BuiltinCFunction::Generic(builtins::js_typed_array_subarray)
             }
+            // RegExp
+            "js_regexp_get_lastIndex" => {
+                BuiltinCFunction::Generic(builtins::js_regexp_get_lastIndex)
+            }
+            "js_regexp_set_lastIndex" => {
+                BuiltinCFunction::Generic(builtins::js_regexp_set_lastIndex)
+            }
+            "js_regexp_get_source" => {
+                BuiltinCFunction::Generic(builtins::js_regexp_get_source)
+            }
+            "js_regexp_get_flags" => {
+                BuiltinCFunction::Generic(builtins::js_regexp_get_flags)
+            }
             _ => BuiltinCFunction::Missing(proto),
         },
         BuiltinProto::GenericMagic => match func_name {
@@ -188,6 +201,8 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_error_get_message" => {
                 BuiltinCFunction::GenericMagic(builtins::js_error_get_message)
             }
+            // RegExp
+            "js_regexp_exec" => BuiltinCFunction::GenericMagic(builtins::js_regexp_exec),
             _ => BuiltinCFunction::Missing(proto),
         },
         BuiltinProto::Constructor => match func_name {
@@ -208,6 +223,10 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             }
             "js_typed_array_base_constructor" => {
                 BuiltinCFunction::Constructor(builtins::js_typed_array_base_constructor)
+            }
+            // RegExp
+            "js_regexp_constructor" => {
+                BuiltinCFunction::Constructor(builtins::js_regexp_constructor)
             }
             _ => BuiltinCFunction::Missing(proto),
         },
