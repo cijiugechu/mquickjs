@@ -81,6 +81,10 @@ impl HeapLayout {
         self.stack_bottom = stack_bottom;
     }
 
+    pub fn set_min_free_size(&mut self, min_free_size: usize) {
+        self.min_free_size = min_free_size;
+    }
+
     pub fn ptr_in_heap(self, ptr: NonNull<u8>) -> bool {
         let base = self.heap_base.as_ptr() as usize;
         let free = self.heap_free.as_ptr() as usize;

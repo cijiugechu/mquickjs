@@ -2663,7 +2663,7 @@ pub fn js_error_constructor(
     };
 
     let proto = ctx.class_proto()[class_id as usize];
-    let obj = match ctx.alloc_error(proto, class_id) {
+    let obj = match ctx.alloc_error(proto) {
         Ok(o) => o,
         Err(_) => return JS_EXCEPTION,
     };
@@ -2685,7 +2685,7 @@ pub fn js_error_constructor(
         return JS_EXCEPTION;
     }
 
-    // TODO: build_backtrace(ctx, obj)
+    let _ = ctx.build_backtrace(obj, None, 1);
 
     obj
 }
@@ -2696,7 +2696,7 @@ pub fn js_error_toString(
     _args: &[JSValue],
 ) -> JSValue {
     if !is_error(this_val) {
-        return JS_EXCEPTION;
+        return ctx.throw_type_error("not an Error object");
     }
 
     // Get name property
@@ -2747,7 +2747,7 @@ pub fn js_error_get_message(
     magic: i32,
 ) -> JSValue {
     if !is_error(this_val) {
-        return JS_EXCEPTION;
+        return ctx.throw_type_error("not an Error object");
     }
     if magic == 0 {
         ctx.get_error_message(this_val).unwrap_or(JS_NULL)
@@ -3296,14 +3296,17 @@ fn is_error(val: JSValue) -> bool {
         return false;
     }
     let class_id = header.class_id();
-    (JSObjectClass::Error as u8..=JSObjectClass::InternalError as u8).contains(&class_id)
+    class_id == JSObjectClass::Error as u8
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
+    use crate::jsvalue::JSWord;
+    use crate::object::{Object, ObjectHeader};
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
+    use core::ptr;
 
     fn new_context() -> JSContext {
         JSContext::new(ContextConfig {
@@ -3320,6 +3323,12 @@ mod tests {
         core::str::from_utf8(view.bytes())
             .expect("utf8")
             .to_string()
+    }
+
+    fn object_class_id(val: JSValue) -> u8 {
+        let obj_ptr = value_to_ptr::<Object>(val).expect("object ptr");
+        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        ObjectHeader::from_word(header_word).class_id()
     }
 
     #[test]
@@ -3403,6 +3412,36 @@ mod tests {
         let inf = ctx.new_string("Infinity").unwrap();
         let not_finite = js_global_isFinite(&mut ctx, JS_UNDEFINED, &[inf]);
         assert_eq!(value_get_special_value(not_finite), 0);
+    }
+
+    #[test]
+    fn error_constructor_sets_message_and_stack() {
+        let mut ctx = new_context();
+        let msg = ctx.new_string("boom").expect("msg");
+        let err = js_error_constructor(&mut ctx, JS_UNDEFINED, &[msg], JSObjectClass::TypeError as i32);
+        assert!(is_error(err));
+        assert_eq!(object_class_id(err), JSObjectClass::Error as u8);
+        let message = ctx.get_error_message(err).expect("message");
+        assert_eq!(string_from_value(message), "boom");
+        let stack = ctx.get_error_stack(err).expect("stack");
+        assert_eq!(string_from_value(stack), "");
+    }
+
+    #[test]
+    fn build_backtrace_records_location_only() {
+        let mut ctx = new_context();
+        let proto = ctx.class_proto()[JSObjectClass::Error as usize];
+        let err = ctx.alloc_error(proto).expect("error");
+        let msg = ctx.new_string("nope").expect("msg");
+        ctx.set_error_message(err, msg).expect("message");
+        let location = crate::context::BacktraceLocation {
+            filename: "test.js",
+            line: 3,
+            column: 5,
+        };
+        ctx.build_backtrace(err, Some(location), 0).expect("backtrace");
+        let stack = ctx.get_error_stack(err).expect("stack");
+        assert_eq!(string_from_value(stack), "    at test.js:3:5\n");
     }
 
     #[cfg(all(test, not(miri)))]

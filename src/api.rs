@@ -6,7 +6,7 @@
 //! - `js_call` - Call a JavaScript function with arguments
 //! - `js_run` - Execute parsed bytecode
 
-use crate::context::JSContext;
+use crate::context::{BacktraceLocation, JSContext};
 use crate::conversion;
 use crate::interpreter::{call, call_with_this, create_closure};
 use crate::jsvalue::{JSValue, JS_EXCEPTION, JS_NULL, JS_UNDEFINED};
@@ -41,7 +41,7 @@ impl From<ParseError> for ApiError {
 pub fn js_eval(ctx: &mut JSContext, source: &[u8], eval_flags: u32) -> JSValue {
     match js_eval_internal(ctx, source, eval_flags) {
         Ok(val) => val,
-        Err(_) => JS_EXCEPTION,
+        Err(err) => handle_api_error(ctx, err),
     }
 }
 
@@ -112,7 +112,7 @@ fn js_eval_internal(
 pub fn js_parse(ctx: &mut JSContext, source: &[u8], eval_flags: u32) -> JSValue {
     match js_parse_internal(ctx, source, eval_flags) {
         Ok(val) => val,
-        Err(_) => JS_EXCEPTION,
+        Err(err) => handle_api_error(ctx, err),
     }
 }
 
@@ -179,7 +179,7 @@ pub fn js_call(
     args: &[JSValue],
 ) -> JSValue {
     if !conversion::is_function(func) {
-        return JS_EXCEPTION;
+        return ctx.throw_type_error("not a function");
     }
     match call_with_this(ctx, func, this_obj, args) {
         Ok(val) => val,
@@ -197,7 +197,7 @@ pub fn js_call(
 /// The result of executing the function, or `JS_EXCEPTION` on error.
 pub fn js_run(ctx: &mut JSContext, func: JSValue) -> JSValue {
     if !conversion::is_function(func) {
-        return JS_EXCEPTION;
+        return ctx.throw_type_error("not a function");
     }
     match call(ctx, func, &[]) {
         Ok(val) => val,
@@ -236,6 +236,25 @@ pub fn js_set_property_str(
     match crate::property::set_property(ctx, obj, key, val) {
         Ok(()) => JS_UNDEFINED,
         Err(_) => JS_EXCEPTION,
+    }
+}
+
+fn handle_api_error(ctx: &mut JSContext, err: ApiError) -> JSValue {
+    match err {
+        ApiError::Parse(err) => {
+            let val = ctx.throw_syntax_error(err.message());
+            let location = BacktraceLocation {
+                filename: "<input>",
+                line: err.line() + 1,
+                column: err.column() + 1,
+            };
+            let error_obj = ctx.current_exception();
+            let _ = ctx.build_backtrace(error_obj, Some(location), 0);
+            val
+        }
+        ApiError::NotAFunction => ctx.throw_type_error("not a function"),
+        ApiError::NotABytecode => ctx.throw_type_error("bytecode function expected"),
+        ApiError::Runtime(message) => ctx.throw_internal_error(&message),
     }
 }
 

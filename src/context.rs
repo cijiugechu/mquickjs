@@ -9,17 +9,19 @@ use crate::containers::{
 use crate::cutils::{float64_as_uint64, unicode_to_utf8, utf8_get};
 use crate::enums::JSObjectClass;
 use crate::gc::{GcMarkConfig};
-use crate::gc_ref::GcRefState;
+use crate::gc_ref::{GcRef, GcRefState};
 use crate::gc_runtime::{gc_collect, GcRuntimeRoots};
-use crate::heap::{HeapLayout, JS_MIN_FREE_SIZE};
+use crate::heap::{HeapLayout, JS_MIN_CRITICAL_FREE_SIZE, JS_MIN_FREE_SIZE};
 use crate::jsvalue::{
-    from_bits, is_ptr, new_short_int, raw_bits, value_from_ptr, value_get_special_tag,
-    value_get_special_value, value_make_special, value_to_ptr, JSValue, JSWord, JSW, JS_NULL,
-    JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_PTR, JS_TAG_STRING_CHAR, JS_UNDEFINED,
+    from_bits, is_int, is_ptr, new_short_int, raw_bits, value_from_ptr, value_get_int,
+    value_get_special_tag, value_get_special_value, value_make_special, value_to_ptr, JSValue,
+    JSWord, JSW, JS_NULL, JS_SHORTINT_MAX, JS_SHORTINT_MIN, JS_TAG_PTR, JS_TAG_SHORT_FUNC,
+    JS_TAG_STRING_CHAR, JS_UNDEFINED,
 };
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
 use crate::memblock::{Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
+use crate::parser::pc2line::find_line_col;
 use crate::parser::parse_state::JSParseState;
 use crate::property::{define_property_varref, PropertyError};
 use crate::closure_data::ClosureData;
@@ -42,6 +44,20 @@ const ROOT_CURRENT_EXCEPTION: usize = 0;
 const ROOT_EMPTY_PROPS: usize = 1;
 const ROOT_GLOBAL_OBJ: usize = 2;
 const ROOT_MINUS_ZERO: usize = 3;
+
+const BACKTRACE_MAX_LEN: usize = 127;
+const BACKTRACE_MAX_LEVELS: usize = 10;
+
+// Keep in sync with the interpreter frame layout.
+const FRAME_OFFSET_FUNC_OBJ: isize = 3;
+const FRAME_OFFSET_SAVED_FP: isize = 0;
+const FRAME_OFFSET_CUR_PC: isize = -1;
+
+pub(crate) struct BacktraceLocation<'a> {
+    pub filename: &'a str,
+    pub line: i32,
+    pub column: i32,
+}
 
 struct HeapStorage {
     ptr: NonNull<[JSWord]>,
@@ -565,6 +581,10 @@ impl JSContext {
         self.class_roots[ROOT_CURRENT_EXCEPTION] = value;
     }
 
+    pub(crate) fn current_exception(&self) -> JSValue {
+        self.class_roots[ROOT_CURRENT_EXCEPTION]
+    }
+
     pub(crate) fn take_current_exception(&mut self) -> JSValue {
         let value = self.class_roots[ROOT_CURRENT_EXCEPTION];
         self.class_roots[ROOT_CURRENT_EXCEPTION] = JS_NULL;
@@ -573,6 +593,75 @@ impl JSContext {
 
     pub(crate) fn current_exception_is_uncatchable(&self) -> bool {
         self.current_exception_is_uncatchable
+    }
+
+    pub(crate) fn throw(&mut self, obj: JSValue) -> JSValue {
+        self.set_current_exception(obj);
+        self.current_exception_is_uncatchable = false;
+        crate::jsvalue::JS_EXCEPTION
+    }
+
+    pub(crate) fn throw_error(&mut self, class: JSObjectClass, message: &str) -> JSValue {
+        let msg_val = match self.new_string(message) {
+            Ok(val) => val,
+            Err(_) => return self.throw_out_of_memory(),
+        };
+        let mut msg_ref = GcRef::new(JS_UNDEFINED);
+        let msg_slot = self.gc_refs.push_gc_ref(&mut msg_ref);
+        unsafe {
+            // SAFETY: msg_slot points to a GC root slot for msg_ref.
+            *msg_slot = msg_val;
+        }
+        let proto = self.class_proto()[class as usize];
+        let error_obj = match self.alloc_error(proto) {
+            Ok(obj) => obj,
+            Err(_) => {
+                let _ = self.gc_refs.pop_gc_ref(&msg_ref);
+                return self.throw_out_of_memory();
+            }
+        };
+        let _ = self.gc_refs.pop_gc_ref(&msg_ref);
+        if self.set_error_message(error_obj, msg_val).is_err() {
+            return self.throw_out_of_memory();
+        }
+        if class != JSObjectClass::SyntaxError {
+            let _ = self.build_backtrace(error_obj, None, 0);
+        }
+        self.throw(error_obj)
+    }
+
+    pub(crate) fn throw_type_error(&mut self, message: &str) -> JSValue {
+        self.throw_error(JSObjectClass::TypeError, message)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn throw_reference_error(&mut self, message: &str) -> JSValue {
+        self.throw_error(JSObjectClass::ReferenceError, message)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn throw_range_error(&mut self, message: &str) -> JSValue {
+        self.throw_error(JSObjectClass::RangeError, message)
+    }
+
+    pub(crate) fn throw_syntax_error(&mut self, message: &str) -> JSValue {
+        self.throw_error(JSObjectClass::SyntaxError, message)
+    }
+
+    pub(crate) fn throw_internal_error(&mut self, message: &str) -> JSValue {
+        self.throw_error(JSObjectClass::InternalError, message)
+    }
+
+    pub(crate) fn throw_out_of_memory(&mut self) -> JSValue {
+        if self.in_out_of_memory {
+            return self.throw(JS_NULL);
+        }
+        self.in_out_of_memory = true;
+        self.heap.set_min_free_size(JS_MIN_CRITICAL_FREE_SIZE as usize);
+        let val = self.throw_internal_error("out of memory");
+        self.in_out_of_memory = false;
+        self.heap.set_min_free_size(JS_MIN_FREE_SIZE as usize);
+        val
     }
 
     pub fn new_float64(&mut self, value: f64) -> Result<JSValue, ContextError> {
@@ -1363,18 +1452,9 @@ impl JSContext {
     }
 
     /// Allocates a new Error object.
-    pub fn alloc_error(
-        &mut self,
-        proto: JSValue,
-        class_id: u8,
-    ) -> Result<JSValue, ContextError> {
+    pub fn alloc_error(&mut self, proto: JSValue) -> Result<JSValue, ContextError> {
         use crate::error_data::ErrorData;
-        let error = self.alloc_object(
-            // Safety: class_id is validated by the caller
-            unsafe { core::mem::transmute::<u8, JSObjectClass>(class_id) },
-            proto,
-            size_of::<ErrorData>(),
-        )?;
+        let error = self.alloc_object(JSObjectClass::Error, proto, size_of::<ErrorData>())?;
         let obj_ptr = value_to_ptr::<Object>(error).expect("error allocation must be a pointer");
         unsafe {
             // SAFETY: error points at a writable error object allocation.
@@ -1397,6 +1477,18 @@ impl JSContext {
         Ok(())
     }
 
+    /// Sets the stack on an Error object.
+    pub fn set_error_stack(&mut self, error: JSValue, stack: JSValue) -> Result<(), ContextError> {
+        let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
+        unsafe {
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let error_ptr = core::ptr::addr_of_mut!((*payload).error);
+            let stack_ptr = crate::error_data::ErrorData::stack_ptr(error_ptr);
+            ptr::write_unaligned(stack_ptr, stack);
+        }
+        Ok(())
+    }
+
     /// Gets the message from an Error object.
     pub fn get_error_message(&self, error: JSValue) -> Result<JSValue, ContextError> {
         let obj_ptr = value_to_ptr::<Object>(error).ok_or(ContextError::InvalidRomClassValue)?;
@@ -1415,6 +1507,170 @@ impl JSContext {
             ptr::read_unaligned(core::ptr::addr_of!((*payload).error))
         };
         Ok(data.stack())
+    }
+
+    pub(crate) fn build_backtrace(
+        &mut self,
+        error_obj: JSValue,
+        location: Option<BacktraceLocation<'_>>,
+        mut skip_level: usize,
+    ) -> Result<(), ContextError> {
+        if !self.is_error_object(error_obj) {
+            return Ok(());
+        }
+
+        let mut buf = String::new();
+        if let Some(loc) = location {
+            let line = format!("    at {}:{}:{}\n", loc.filename, loc.line, loc.column);
+            if !push_backtrace_line(&mut buf, &line) {
+                return self.finish_backtrace(error_obj, &buf);
+            }
+        }
+
+        let stack_top = self.stack_top().as_ptr() as *mut JSValue;
+        let mut fp = self.fp.as_ptr();
+        let mut level = 0usize;
+
+        while fp != stack_top && level < BACKTRACE_MAX_LEVELS {
+            if skip_level != 0 {
+                skip_level -= 1;
+            } else {
+                let func_obj = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ)) };
+                let (func_name, bytecode) = self.backtrace_func_info(func_obj);
+                let mut line = String::new();
+                if let Some(bytecode) = bytecode {
+                    let filename = self
+                        .string_from_value(bytecode.filename())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    let pc_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_CUR_PC)) };
+                    let pc = if is_int(pc_val) {
+                        let pc = value_get_int(pc_val);
+                        pc.saturating_sub(1) as u32
+                    } else {
+                        0
+                    };
+                    let byte_code = byte_array_view(bytecode.byte_code())
+                        .map(|view| unsafe { view.as_slice() });
+                    let pc2line = byte_array_view(bytecode.pc2line())
+                        .map(|view| unsafe { view.as_slice() });
+                    let (line_num, col_num) = match byte_code {
+                        Some(code) => find_line_col(code, pc2line, bytecode.has_column(), pc),
+                        None => (0, 0),
+                    };
+                    line.push_str("    at ");
+                    line.push_str(&func_name);
+                    line.push_str(" (");
+                    line.push_str(&filename);
+                    if line_num != 0 {
+                        line.push(':');
+                        line.push_str(&line_num.to_string());
+                        if col_num != 0 {
+                            line.push(':');
+                            line.push_str(&col_num.to_string());
+                        }
+                    }
+                    line.push_str(")\n");
+                } else {
+                    line = format!("    at {} (native)\n", func_name);
+                }
+                if !push_backtrace_line(&mut buf, &line) {
+                    break;
+                }
+                level += 1;
+            }
+
+            let saved_fp_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_SAVED_FP)) };
+            let Some(next_fp) = decode_stack_ptr(stack_top, saved_fp_val) else {
+                break;
+            };
+            fp = next_fp;
+        }
+
+        self.finish_backtrace(error_obj, &buf)
+    }
+
+    fn finish_backtrace(&mut self, error_obj: JSValue, buf: &str) -> Result<(), ContextError> {
+        let mut error_ref = GcRef::new(JS_UNDEFINED);
+        let slot = self.gc_refs.push_gc_ref(&mut error_ref);
+        unsafe {
+            // SAFETY: slot points to a GC root slot for error_ref.
+            *slot = error_obj;
+        }
+        let stack_val = self.new_string_len(buf.as_bytes()).unwrap_or(JS_NULL);
+        let _ = self.gc_refs.pop_gc_ref(&error_ref);
+        self.set_error_stack(error_obj, stack_val)
+    }
+
+    fn is_error_object(&self, val: JSValue) -> bool {
+        if !is_ptr(val) {
+            return false;
+        }
+        let Some(obj_ptr) = value_to_ptr::<Object>(val) else {
+            return false;
+        };
+        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        let header = ObjectHeader::from_word(header_word);
+        header.tag() == MTag::Object && header.class_id() == JSObjectClass::Error as u8
+    }
+
+    fn backtrace_func_info(&self, func_obj: JSValue) -> (String, Option<FunctionBytecode>) {
+        if !is_ptr(func_obj) {
+            if value_get_special_tag(func_obj) == JS_TAG_SHORT_FUNC {
+                let idx = value_get_special_value(func_obj);
+                if idx >= 0 && let Some(def) = self.c_function(idx as usize) {
+                    return (def.name_str.to_string(), None);
+                }
+            }
+            return ("<anonymous>".to_string(), None);
+        }
+
+        let Some(obj_ptr) = value_to_ptr::<Object>(func_obj) else {
+            return ("<anonymous>".to_string(), None);
+        };
+        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        let header = ObjectHeader::from_word(header_word);
+        if header.tag() != MTag::Object {
+            return ("<anonymous>".to_string(), None);
+        }
+
+        match header.class_id() {
+            c if c == JSObjectClass::Closure as u8 => {
+                let func_val = unsafe {
+                    let payload = Object::payload_ptr(obj_ptr.as_ptr());
+                    let closure = core::ptr::addr_of_mut!((*payload).closure);
+                    ptr::read_unaligned(ClosureData::func_bytecode_ptr(closure))
+                };
+                let Some(func_ptr) = function_bytecode_ptr(func_val) else {
+                    return ("<anonymous>".to_string(), None);
+                };
+                let func = unsafe { ptr::read_unaligned(func_ptr.as_ptr()) };
+                let name = if func.func_name() == JS_NULL {
+                    String::new()
+                } else {
+                    self.string_from_value(func.func_name())
+                        .unwrap_or_default()
+                };
+                (name, Some(func))
+            }
+            c if c == JSObjectClass::CFunction as u8 => {
+                let data = unsafe {
+                    let payload = Object::payload_ptr(obj_ptr.as_ptr());
+                    ptr::read_unaligned(core::ptr::addr_of!((*payload).cfunc))
+                };
+                if let Some(def) = self.c_function(data.idx() as usize) {
+                    (def.name_str.to_string(), None)
+                } else {
+                    ("<anonymous>".to_string(), None)
+                }
+            }
+            _ => ("<anonymous>".to_string(), None),
+        }
+    }
+
+    fn string_from_value(&self, val: JSValue) -> Option<String> {
+        let mut scratch = [0u8; 5];
+        let view = string_view(val, &mut scratch)?;
+        Some(String::from_utf8_lossy(view.bytes()).into_owned())
     }
 
     /// Allocates a new RegExp object.
@@ -1573,6 +1829,65 @@ impl JSContext {
         Ok(value_from_ptr(ptr))
     }
 
+}
+
+fn push_backtrace_line(buf: &mut String, line: &str) -> bool {
+    if buf.len().saturating_add(line.len()) > BACKTRACE_MAX_LEN {
+        return false;
+    }
+    buf.push_str(line);
+    true
+}
+
+fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Option<*mut JSValue> {
+    if !is_int(val) {
+        return None;
+    }
+    let offset = value_get_int(val);
+    if offset < 0 {
+        return None;
+    }
+    Some(unsafe { stack_top.offset(-(offset as isize)) })
+}
+
+struct ByteArrayView {
+    ptr: *const u8,
+    len: usize,
+}
+
+impl ByteArrayView {
+    unsafe fn as_slice<'a>(&self) -> &'a [u8] {
+        // SAFETY: caller ensures the ByteArrayView points at valid byte data.
+        unsafe { slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+fn byte_array_view(val: JSValue) -> Option<ByteArrayView> {
+    let ptr = value_to_ptr::<u8>(val)?;
+    let header_word = unsafe {
+        // SAFETY: ptr points at a readable memblock header.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = MbHeader::from_word(header_word);
+    if header.tag() != MTag::ByteArray {
+        return None;
+    }
+    let size = ByteArrayHeader::from(header).size() as usize;
+    let payload = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) };
+    Some(ByteArrayView { ptr: payload, len: size })
+}
+
+fn function_bytecode_ptr(val: JSValue) -> Option<NonNull<FunctionBytecode>> {
+    let ptr = value_to_ptr::<FunctionBytecode>(val)?;
+    let header_word = unsafe {
+        // SAFETY: ptr points at a readable function bytecode header word.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = MbHeader::from_word(header_word);
+    if header.tag() != MTag::FunctionBytecode {
+        return None;
+    }
+    Some(ptr)
 }
 
 #[allow(dead_code)]
