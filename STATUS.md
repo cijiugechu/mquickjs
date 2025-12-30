@@ -114,7 +114,6 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 ## Known gaps (non-CLI/REPL)
 
 - RegExp builtins are missing (RegExp constructor/prototype: lastIndex/source/flags, exec/test).
-- `JS_ToObject` does not box primitives yet.
 - Date builtin partial: only `Date.now`; constructor/prototype methods are missing.
 - Global `eval` builtin not wired (`js_global_eval`).
 - Error/exception helpers are incomplete: `JS_Throw*` equivalents and backtrace/stack formatting are missing.

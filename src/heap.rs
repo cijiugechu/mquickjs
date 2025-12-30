@@ -3,7 +3,7 @@ use crate::enums::JSObjectClass;
 use crate::function_bytecode::FunctionBytecode;
 use crate::jsvalue::{is_ptr, value_from_ptr, value_to_ptr, JSValue, JSWord, JSW};
 use crate::memblock::{FreeBlockHeader, MTag, MbHeader};
-use crate::object::{Object, ObjectHeader, RegExp};
+use crate::object::{Object, ObjectHeader, PrimitiveValue, RegExp};
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 
@@ -442,6 +442,14 @@ unsafe fn thread_object(heap: &HeapLayout, ptr: *mut u8) {
             let regexp = core::ptr::addr_of_mut!((*payload).regexp);
             thread_pointer(heap, RegExp::source_ptr(regexp));
             thread_pointer(heap, RegExp::byte_code_ptr(regexp));
+        },
+        x if x == JSObjectClass::Number as u8
+            || x == JSObjectClass::Boolean as u8
+            || x == JSObjectClass::String as u8 =>
+        unsafe {
+            let payload = Object::payload_ptr(obj);
+            let primitive = core::ptr::addr_of_mut!((*payload).primitive);
+            thread_pointer(heap, PrimitiveValue::value_ptr(primitive));
         },
         _ => {}
     }

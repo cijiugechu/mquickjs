@@ -513,7 +513,14 @@ fn is_number_value(val: JSValue) -> bool {
             ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
         };
         let header = MbHeader::from_word(header_word);
-        return header.tag() == MTag::Float64;
+        if header.tag() == MTag::Float64 {
+            return true;
+        }
+        if header.tag() == MTag::Object {
+            let obj_header = ObjectHeader::from_word(header_word);
+            return obj_header.class_id() == JSObjectClass::Number as u8
+                && obj_header.extra_size() >= 1;
+        }
     }
     false
 }
@@ -605,6 +612,9 @@ fn object_to_string_internal(ctx: &mut JSContext, val: JSValue) -> JSValue {
                         c if c == JSObjectClass::Error as u8 => "Error",
                         c if c == JSObjectClass::Closure as u8 => "Function",
                         c if c == JSObjectClass::CFunction as u8 => "Function",
+                        c if c == JSObjectClass::Number as u8 => "Number",
+                        c if c == JSObjectClass::Boolean as u8 => "Boolean",
+                        c if c == JSObjectClass::String as u8 => "String",
                         c if c == JSObjectClass::RegExp as u8 => "RegExp",
                         c if c == JSObjectClass::Date as u8 => "Date",
                         _ => "Object",
@@ -1214,10 +1224,11 @@ pub fn js_string_get_length(
     this_val: JSValue,
     _args: &[JSValue],
 ) -> JSValue {
-    if !conversion::is_string(this_val) {
-        return JS_EXCEPTION;
-    }
-    let len = ctx.string_len(this_val);
+    let s = match to_string_check_object(ctx, this_val) {
+        Ok(s) => s,
+        Err(_) => return JS_EXCEPTION,
+    };
+    let len = ctx.string_len(s);
     new_short_int(len as i32)
 }
 

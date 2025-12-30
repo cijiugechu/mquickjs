@@ -105,6 +105,28 @@ impl RegExp {
     }
 }
 
+// C: boxed primitive value stored in object payload.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct PrimitiveValue {
+    value: JSValue,
+}
+
+impl PrimitiveValue {
+    pub const fn new(value: JSValue) -> Self {
+        Self { value }
+    }
+
+    pub const fn value(self) -> JSValue {
+        self.value
+    }
+
+    pub(crate) unsafe fn value_ptr(this: *mut Self) -> *mut JSValue {
+        // SAFETY: caller guarantees `this` is valid for writes.
+        unsafe { core::ptr::addr_of_mut!((*this).value) }
+    }
+}
+
 // C: `JSObjectUserData` in mquickjs.c.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ObjectUserData {
@@ -132,6 +154,7 @@ pub union ObjectPayload {
     pub array_buffer: ArrayBuffer,
     pub typed_array: TypedArray,
     pub regexp: RegExp,
+    pub primitive: PrimitiveValue,
     pub user: ObjectUserData,
 }
 
@@ -237,6 +260,7 @@ mod tests {
             size_of::<ArrayBuffer>(),
             size_of::<TypedArray>(),
             size_of::<RegExp>(),
+            size_of::<PrimitiveValue>(),
             size_of::<ObjectUserData>(),
         ];
         let max = sizes.iter().copied().max().unwrap();

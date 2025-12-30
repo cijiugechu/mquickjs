@@ -11,7 +11,7 @@ use crate::jsvalue::{
 #[cfg(target_pointer_width = "64")]
 use crate::jsvalue::{is_short_float, short_float_to_f64};
 use crate::memblock::{MbHeader, MTag};
-use crate::object::{Object, ObjectHeader};
+use crate::object::{Object, ObjectHeader, PrimitiveValue};
 use crate::property::{get_property, PropertyError};
 use crate::string::runtime::string_view;
 use core::mem::size_of;
@@ -210,13 +210,42 @@ pub(crate) fn to_property_key(ctx: &mut JSContext, val: JSValue) -> Result<JSVal
     Ok(ctx.atom_tables_mut().make_unique_string(str_val))
 }
 
+fn alloc_primitive_object(
+    ctx: &mut JSContext,
+    class_id: JSObjectClass,
+    val: JSValue,
+) -> Result<JSValue, ConversionError> {
+    let proto = ctx.class_proto()[class_id as usize];
+    let obj = ctx.alloc_object(class_id, proto, size_of::<PrimitiveValue>())?;
+    let obj_ptr = value_to_ptr::<Object>(obj).ok_or(ConversionError::TypeError("object"))?;
+    unsafe {
+        // SAFETY: payload region holds a PrimitiveValue.
+        let payload = Object::payload_ptr(obj_ptr.as_ptr());
+        let primitive = core::ptr::addr_of_mut!((*payload).primitive);
+        ptr::write_unaligned(PrimitiveValue::value_ptr(primitive), val);
+    }
+    Ok(obj)
+}
+
 #[allow(dead_code)]
-pub(crate) fn to_object(_ctx: &mut JSContext, val: JSValue) -> Result<JSValue, ConversionError> {
+pub(crate) fn to_object(ctx: &mut JSContext, val: JSValue) -> Result<JSValue, ConversionError> {
     if is_object(val) {
+        return Ok(val);
+    }
+    if !is_ptr(val) && value_get_special_tag(val) == JS_TAG_SHORT_FUNC {
         return Ok(val);
     }
     if is_null(val) || is_undefined(val) {
         return Err(ConversionError::TypeError("null or undefined"));
+    }
+    if is_number(val) {
+        return alloc_primitive_object(ctx, JSObjectClass::Number, val);
+    }
+    if is_bool(val) {
+        return alloc_primitive_object(ctx, JSObjectClass::Boolean, val);
+    }
+    if is_string(val) {
+        return alloc_primitive_object(ctx, JSObjectClass::String, val);
     }
     Err(ConversionError::TypeError("not an object"))
 }
@@ -228,6 +257,9 @@ pub(crate) fn to_primitive(
 ) -> Result<JSValue, ConversionError> {
     if is_primitive(val) {
         return Ok(val);
+    }
+    if let Some(primitive) = object_primitive_value(val) {
+        return Ok(primitive);
     }
     let hint_index = match hint {
         ToPrimitiveHint::String => 0,
@@ -309,6 +341,30 @@ fn object_header(val: JSValue) -> Option<ObjectHeader> {
         return None;
     }
     Some(header)
+}
+
+fn object_primitive_value(val: JSValue) -> Option<JSValue> {
+    let obj_ptr = value_to_ptr::<Object>(val)?;
+    let header_word = unsafe {
+        // SAFETY: obj_ptr points at a readable object header.
+        ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = ObjectHeader::from_word(header_word);
+    if header.tag() != MTag::Object || header.extra_size() < 1 {
+        return None;
+    }
+    match header.class_id() {
+        c if c == JSObjectClass::Number as u8
+            || c == JSObjectClass::Boolean as u8
+            || c == JSObjectClass::String as u8 =>
+        unsafe {
+            // SAFETY: payload starts with PrimitiveValue for boxed primitives.
+            let payload = Object::payload_ptr(obj_ptr.as_ptr());
+            let primitive = core::ptr::addr_of_mut!((*payload).primitive);
+            Some(ptr::read_unaligned(PrimitiveValue::value_ptr(primitive)))
+        },
+        _ => None,
+    }
 }
 
 fn read_float64(val: JSValue) -> Option<f64> {

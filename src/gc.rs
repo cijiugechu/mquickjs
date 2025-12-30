@@ -7,7 +7,7 @@ use crate::gc_ref::GcRefState;
 use crate::heap::{mblock_size, set_free_block, HeapLayout};
 use crate::jsvalue::{value_from_ptr, value_to_ptr, JSValue, JSWord, JS_NULL};
 use crate::memblock::{MbHeader, MTag};
-use crate::object::{Object, ObjectHeader};
+use crate::object::{Object, ObjectHeader, PrimitiveValue};
 use crate::parser::parse_state::JSParseState;
 use crate::string::string_pos_cache::{StringPosCacheEntry, JS_STRING_POS_CACHE_SIZE};
 use core::mem::size_of;
@@ -513,6 +513,14 @@ impl GcMarker {
                 let regexp = core::ptr::addr_of_mut!((*payload).regexp);
                 self.mark_value(*crate::object::RegExp::source_ptr(regexp));
                 self.mark_value(*crate::object::RegExp::byte_code_ptr(regexp));
+            },
+            x if x == JSObjectClass::Number as u8
+                || x == JSObjectClass::Boolean as u8
+                || x == JSObjectClass::String as u8 =>
+            unsafe {
+                let payload = Object::payload_ptr(obj);
+                let primitive = core::ptr::addr_of_mut!((*payload).primitive);
+                self.mark_value(*PrimitiveValue::value_ptr(primitive));
             },
             _ => {}
         }
