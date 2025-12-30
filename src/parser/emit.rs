@@ -115,7 +115,7 @@ impl<'a> BytecodeEmitter<'a> {
         self.last_pc2line_pos = self.pc2line.bit_len();
         self.last_pc2line_source_pos = self.pc2line.source_pos();
         self.pc2line.emit_pc2line(self.source, source_pos);
-        self.emit_u8(op.0 as u8);
+        self.emit_u8(op.as_u8());
     }
 
     pub fn emit_op(&mut self, op: OpCode) {
@@ -156,7 +156,7 @@ impl<'a> BytecodeEmitter<'a> {
 
     pub fn get_prev_opcode(&self) -> OpCode {
         match self.last_opcode_pos {
-            Some(pos) => OpCode(self.byte_code[pos] as u16),
+            Some(pos) => OpCode::from_u8(self.byte_code[pos]),
             None => OP_INVALID,
         }
     }
@@ -195,7 +195,7 @@ impl<'a> BytecodeEmitter<'a> {
             return;
         }
         if (0..=7).contains(&val) {
-            self.emit_op(OpCode(OP_PUSH_0.0 + val as u16));
+            self.emit_op(OpCode::from_u16(OP_PUSH_0.as_u16() + val as u16));
             return;
         }
         if val == val as i8 as i32 {
@@ -215,7 +215,10 @@ impl<'a> BytecodeEmitter<'a> {
     pub fn emit_var(&mut self, opcode: OpCode, var_idx: u32, source_pos: SourcePos) {
         if opcode == OP_GET_LOC {
             if var_idx < 4 {
-                self.emit_op_pos(OpCode(OP_GET_LOC0.0 + var_idx as u16), source_pos);
+                self.emit_op_pos(
+                    OpCode::from_u16(OP_GET_LOC0.as_u16() + var_idx as u16),
+                    source_pos,
+                );
                 return;
             }
             if var_idx < 256 {
@@ -225,7 +228,10 @@ impl<'a> BytecodeEmitter<'a> {
             }
         } else if opcode == OP_PUT_LOC {
             if var_idx < 4 {
-                self.emit_op_pos(OpCode(OP_PUT_LOC0.0 + var_idx as u16), source_pos);
+                self.emit_op_pos(
+                    OpCode::from_u16(OP_PUT_LOC0.as_u16() + var_idx as u16),
+                    source_pos,
+                );
                 return;
             }
             if var_idx < 256 {
@@ -235,11 +241,17 @@ impl<'a> BytecodeEmitter<'a> {
             }
         } else if opcode == OP_GET_ARG {
             if var_idx < 4 {
-                self.emit_op_pos(OpCode(OP_GET_ARG0.0 + var_idx as u16), source_pos);
+                self.emit_op_pos(
+                    OpCode::from_u16(OP_GET_ARG0.as_u16() + var_idx as u16),
+                    source_pos,
+                );
                 return;
             }
         } else if opcode == OP_PUT_ARG && var_idx < 4 {
-            self.emit_op_pos(OpCode(OP_PUT_ARG0.0 + var_idx as u16), source_pos);
+            self.emit_op_pos(
+                OpCode::from_u16(OP_PUT_ARG0.as_u16() + var_idx as u16),
+                source_pos,
+            );
             return;
         }
 
@@ -307,7 +319,7 @@ mod tests {
         let mut label = Label::new();
 
         emitter.emit_goto(OP_GOTO, &mut label);
-        assert_eq!(emitter.byte_code[0], OP_GOTO.0 as u8);
+        assert_eq!(emitter.byte_code[0], OP_GOTO.as_u8());
         assert_eq!(get_u32(&emitter.byte_code[1..5]), LABEL_OFFSET_MASK as u32);
         assert!(!label.is_resolved());
 
@@ -326,7 +338,7 @@ mod tests {
         let source = b"call";
         let mut emitter = BytecodeEmitter::new(source, 0, false);
         emitter.emit_op_param(OP_CALL, 7, 0);
-        assert_eq!(emitter.byte_code[0], OP_CALL.0 as u8);
+        assert_eq!(emitter.byte_code[0], OP_CALL.as_u8());
         assert_eq!(get_u16(&emitter.byte_code[1..3]), 7);
     }
 

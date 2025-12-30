@@ -875,9 +875,9 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                     var_idx -= arg_count;
                     OP_PUT_LOC
                 };
-                hoisted.push(OP_FCLOSURE.0 as u8);
+                hoisted.push(OP_FCLOSURE.as_u8());
                 hoisted.extend_from_slice(&(idx as u16).to_le_bytes());
-                hoisted.push(opcode.0 as u8);
+                hoisted.push(opcode.as_u8());
                 hoisted.extend_from_slice(&(var_idx as u16).to_le_bytes());
             }
         }
@@ -1978,7 +1978,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             5 => {
                 op_source_pos = stack.pop_int() as SourcePos;
                 is_new = stack.pop_int() != 0;
-                opcode = OpCode(stack.pop_int() as u16);
+                opcode = OpCode::from_u16(stack.pop_int() as u16);
                 arg_count = stack.pop_int();
                 parse_flags = stack.pop_int();
                 Phase::CallArg
@@ -2307,7 +2307,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                     arg_count += 1;
                     stack.push_int(parse_flags).map_err(Self::stack_error)?;
                     stack.push_int(arg_count).map_err(Self::stack_error)?;
-                    stack.push_int(opcode.0 as i32).map_err(Self::stack_error)?;
+                    stack.push_int(opcode.as_u16() as i32)
+                        .map_err(Self::stack_error)?;
                     stack.push_int(is_new as i32).map_err(Self::stack_error)?;
                     stack.push_int(op_source_pos as i32)
                         .map_err(Self::stack_error)?;
@@ -2331,19 +2332,19 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                             match prev {
                                 OP_GET_FIELD => {
                                     if let Some(pos) = self.emitter.last_opcode_pos() {
-                                        self.emitter.byte_code_mut()[pos] = OP_GET_FIELD2.0 as u8;
+                                        self.emitter.byte_code_mut()[pos] = OP_GET_FIELD2.as_u8();
                                     }
                                     opcode = OP_GET_FIELD;
                                 }
                                 OP_GET_LENGTH => {
                                     if let Some(pos) = self.emitter.last_opcode_pos() {
-                                        self.emitter.byte_code_mut()[pos] = OP_GET_LENGTH2.0 as u8;
+                                        self.emitter.byte_code_mut()[pos] = OP_GET_LENGTH2.as_u8();
                                     }
                                     opcode = OP_GET_LENGTH;
                                 }
                                 OP_GET_ARRAY_EL => {
                                     if let Some(pos) = self.emitter.last_opcode_pos() {
-                                        self.emitter.byte_code_mut()[pos] = OP_GET_ARRAY_EL2.0 as u8;
+                                        self.emitter.byte_code_mut()[pos] = OP_GET_ARRAY_EL2.as_u8();
                                     }
                                     opcode = OP_GET_ARRAY_EL;
                                 }
@@ -2399,7 +2400,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                         arg_count += 1;
                         stack.push_int(parse_flags).map_err(Self::stack_error)?;
                         stack.push_int(arg_count).map_err(Self::stack_error)?;
-                        stack.push_int(opcode.0 as i32).map_err(Self::stack_error)?;
+                        stack.push_int(opcode.as_u16() as i32)
+                            .map_err(Self::stack_error)?;
                         stack.push_int(is_new as i32).map_err(Self::stack_error)?;
                         stack.push_int(op_source_pos as i32)
                             .map_err(Self::stack_error)?;
@@ -2452,7 +2454,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                         let is_repl = self.parse_state_ref().is_repl();
                         if self.maybe_drop_result(parse_flags) {
                             self.dropped_result = true;
-                            let op = OpCode(OP_DEC.0 + (op - TOK_DEC) as u16);
+                            let op = OpCode::from_u16(OP_DEC.as_u16() + (op - TOK_DEC) as u16);
                             self.emitter.emit_op_pos(op, op_source_pos);
                             let length = self.length_atom_index()?;
                             put_lvalue(
@@ -2464,7 +2466,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                             )
                             .map_err(Self::lvalue_error)?;
                         } else {
-                            let op = OpCode(OP_POST_DEC.0 + (op - TOK_DEC) as u16);
+                            let op =
+                                OpCode::from_u16(OP_POST_DEC.as_u16() + (op - TOK_DEC) as u16);
                             self.emitter.emit_op_pos(op, op_source_pos);
                             let length = self.length_atom_index()?;
                             put_lvalue(
@@ -2603,7 +2606,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             }
             Phase::AfterIncDec => {
                 let lvalue = get_lvalue(&mut self.emitter, true).map_err(Self::lvalue_error)?;
-                let op_code = OpCode(OP_DEC.0 + (op - TOK_DEC) as u16);
+                let op_code = OpCode::from_u16(OP_DEC.as_u16() + (op - TOK_DEC) as u16);
                 self.emitter.emit_op_pos(op_code, op_source_pos);
                 let special = if self.maybe_drop_result(parse_flags) {
                     self.dropped_result = true;
@@ -2627,7 +2630,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 if self.emitter.get_prev_opcode() == OP_GET_VAR_REF
                     && let Some(pos) = self.emitter.last_opcode_pos()
                 {
-                    self.emitter.byte_code_mut()[pos] = OP_GET_VAR_REF_NOCHECK.0 as u8;
+                    self.emitter.byte_code_mut()[pos] = OP_GET_VAR_REF_NOCHECK.as_u8();
                 }
                 self.emitter.emit_op(OP_TYPEOF);
                 Ok(PARSE_STATE_RET as i32)
@@ -2680,7 +2683,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             }
             2 => {
                 op_source_pos = stack.pop_int() as SourcePos;
-                opcode = OpCode(stack.pop_int() as u16);
+                opcode = OpCode::from_u16(stack.pop_int() as u16);
                 parse_flags = stack.pop_int();
                 Phase::AfterRight
             }
@@ -2765,7 +2768,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                     };
                     self.next_token()?;
                     stack.push_int(parse_flags).map_err(Self::stack_error)?;
-                    stack.push_int(opcode.0 as i32).map_err(Self::stack_error)?;
+                    stack.push_int(opcode.as_u16() as i32)
+                        .map_err(Self::stack_error)?;
                     stack.push_int(op_source_pos as i32)
                         .map_err(Self::stack_error)?;
                     return Ok(encode_call(
@@ -2985,7 +2989,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                 op_source_pos = stack.pop_int() as SourcePos;
                 parse_flags = stack.pop_int();
                 var_idx = stack.pop_int();
-                opcode = OpCode(stack.pop_int() as u16);
+                opcode = OpCode::from_u16(stack.pop_int() as u16);
                 op = stack.pop_int();
                 Phase::AfterAssign
             }
@@ -3019,7 +3023,8 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                     var_idx = lvalue.var_idx();
                     source_pos = lvalue.source_pos();
                     stack.push_int(op).map_err(Self::stack_error)?;
-                    stack.push_int(opcode.0 as i32).map_err(Self::stack_error)?;
+                    stack.push_int(opcode.as_u16() as i32)
+                        .map_err(Self::stack_error)?;
                     stack.push_int(var_idx).map_err(Self::stack_error)?;
                     stack.push_int(parse_flags).map_err(Self::stack_error)?;
                     stack.push_int(op_source_pos as i32)
@@ -3159,7 +3164,7 @@ mod tests {
         let mut ops = Vec::new();
         let mut pos = 0usize;
         while pos < bytes.len() {
-            let op = OpCode(bytes[pos] as u16);
+            let op = OpCode::from_u16(bytes[pos] as u16);
             ops.push(op);
             let size = OPCODES[op.as_usize()].size as usize;
             if size == 0 {

@@ -3,8 +3,8 @@ use crate::opcode::{
     OpCode, OPCODES, OP_DUP, OP_GET_ARG, OP_GET_ARG0, OP_GET_ARG1, OP_GET_ARG2, OP_GET_ARG3,
     OP_GET_ARRAY_EL, OP_GET_FIELD, OP_GET_FIELD2, OP_GET_LENGTH, OP_GET_LENGTH2, OP_GET_LOC,
     OP_GET_LOC0, OP_GET_LOC1, OP_GET_LOC2, OP_GET_LOC3, OP_GET_LOC8, OP_GET_VAR_REF, OP_INSERT2,
-    OP_INSERT3, OP_PERM3, OP_PERM4, OP_PUT_ARG, OP_PUT_ARRAY_EL,
-    OP_PUT_FIELD, OP_PUT_LOC, OP_PUT_VAR_REF, OP_PUT_VAR_REF_NOCHECK, OP_ROT3L, OP_SWAP,
+    OP_INSERT3, OP_INVALID, OP_PERM3, OP_PERM4, OP_PUT_ARG, OP_PUT_ARRAY_EL, OP_PUT_FIELD,
+    OP_PUT_LOC, OP_PUT_VAR_REF, OP_PUT_VAR_REF_NOCHECK, OP_ROT3L, OP_SWAP,
 };
 
 use super::emit::BytecodeEmitter;
@@ -96,7 +96,7 @@ pub fn get_lvalue(
     keep: bool,
 ) -> Result<LValue, LValueError> {
     let opcode = emitter.get_prev_opcode();
-    if opcode == OpCode(0) {
+    if opcode == OP_INVALID {
         return Err(LValueError::new(
             ERR_INVALID_LVALUE,
             emitter.pc2line_source_pos() as usize,
@@ -117,11 +117,11 @@ pub fn get_lvalue(
 
     let (opcode, var_idx) = match opcode {
         OP_GET_LOC0 | OP_GET_LOC1 | OP_GET_LOC2 | OP_GET_LOC3 => {
-            let idx = (opcode.0 - OP_GET_LOC0.0) as i32;
+            let idx = (opcode.as_u16() - OP_GET_LOC0.as_u16()) as i32;
             (OP_GET_LOC, idx)
         }
         OP_GET_ARG0 | OP_GET_ARG1 | OP_GET_ARG2 | OP_GET_ARG3 => {
-            let idx = (opcode.0 - OP_GET_ARG0.0) as i32;
+            let idx = (opcode.as_u16() - OP_GET_ARG0.as_u16()) as i32;
             (OP_GET_ARG, idx)
         }
         OP_GET_LOC8 => {
@@ -268,7 +268,7 @@ mod tests {
         let lvalue = get_lvalue(&mut emitter, true).unwrap();
         assert_eq!(lvalue.opcode(), OP_GET_LOC);
         assert_eq!(lvalue.var_idx(), 200);
-        assert_eq!(emitter.byte_code()[0], OP_GET_LOC8.0 as u8);
+        assert_eq!(emitter.byte_code()[0], OP_GET_LOC8.as_u8());
         assert_eq!(emitter.byte_code()[1], 200u8);
     }
 
@@ -281,7 +281,7 @@ mod tests {
         let lvalue = get_lvalue(&mut emitter, true).unwrap();
         assert_eq!(lvalue.opcode(), OP_GET_FIELD);
         assert_eq!(lvalue.var_idx(), 0x1234);
-        assert_eq!(emitter.byte_code()[0], OP_GET_FIELD2.0 as u8);
+        assert_eq!(emitter.byte_code()[0], OP_GET_FIELD2.as_u8());
         assert_eq!(get_u16(&emitter.byte_code()[1..3]), 0x1234);
     }
 
@@ -293,8 +293,8 @@ mod tests {
         let lvalue = get_lvalue(&mut emitter, true).unwrap();
         assert_eq!(lvalue.opcode(), OP_GET_ARRAY_EL);
         assert_eq!(lvalue.var_idx(), -1);
-        assert_eq!(emitter.byte_code()[0], OP_DUP.0 as u8);
-        assert_eq!(emitter.byte_code()[1], OP_GET_ARRAY_EL.0 as u8);
+        assert_eq!(emitter.byte_code()[0], OP_DUP.as_u8());
+        assert_eq!(emitter.byte_code()[1], OP_GET_ARRAY_EL.as_u8());
     }
 
     #[test]
@@ -313,8 +313,8 @@ mod tests {
         let mut emitter = BytecodeEmitter::new(source, 0, false);
         let lvalue = LValue::new(OP_GET_LOC, 2, 1);
         put_lvalue(&mut emitter, lvalue, PutLValue::KeepTop, false, 0).unwrap();
-        assert_eq!(emitter.byte_code()[0], OP_DUP.0 as u8);
-        assert_eq!(emitter.byte_code()[1], crate::opcode::OP_PUT_LOC2.0 as u8);
+        assert_eq!(emitter.byte_code()[0], OP_DUP.as_u8());
+        assert_eq!(emitter.byte_code()[1], crate::opcode::OP_PUT_LOC2.as_u8());
     }
 
     #[test]
@@ -323,8 +323,8 @@ mod tests {
         let mut emitter = BytecodeEmitter::new(source, 0, false);
         let lvalue = LValue::new(OP_GET_VAR_REF, 7, 2);
         put_lvalue(&mut emitter, lvalue, PutLValue::KeepTop, true, 0).unwrap();
-        assert_eq!(emitter.byte_code()[0], OP_DUP.0 as u8);
-        assert_eq!(emitter.byte_code()[1], OP_PUT_VAR_REF_NOCHECK.0 as u8);
+        assert_eq!(emitter.byte_code()[0], OP_DUP.as_u8());
+        assert_eq!(emitter.byte_code()[1], OP_PUT_VAR_REF_NOCHECK.as_u8());
         assert_eq!(get_u16(&emitter.byte_code()[2..4]), 7);
     }
 
@@ -334,8 +334,8 @@ mod tests {
         let mut emitter = BytecodeEmitter::new(source, 0, false);
         let lvalue = LValue::new(OP_GET_FIELD, 0x2222, 3);
         put_lvalue(&mut emitter, lvalue, PutLValue::KeepSecond, false, 0).unwrap();
-        assert_eq!(emitter.byte_code()[0], OP_PERM3.0 as u8);
-        assert_eq!(emitter.byte_code()[1], OP_PUT_FIELD.0 as u8);
+        assert_eq!(emitter.byte_code()[0], OP_PERM3.as_u8());
+        assert_eq!(emitter.byte_code()[1], OP_PUT_FIELD.as_u8());
         assert_eq!(get_u16(&emitter.byte_code()[2..4]), 0x2222);
     }
 
@@ -345,7 +345,7 @@ mod tests {
         let mut emitter = BytecodeEmitter::new(source, 0, false);
         let lvalue = LValue::new(OP_GET_LENGTH, -1, 4);
         put_lvalue(&mut emitter, lvalue, PutLValue::NoKeepTop, false, 0x55aa).unwrap();
-        assert_eq!(emitter.byte_code()[0], OP_PUT_FIELD.0 as u8);
+        assert_eq!(emitter.byte_code()[0], OP_PUT_FIELD.as_u8());
         assert_eq!(get_u16(&emitter.byte_code()[1..3]), 0x55aa);
     }
 
@@ -362,8 +362,8 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(emitter.byte_code()[0], OP_ROT3L.0 as u8);
-        assert_eq!(emitter.byte_code()[1], OP_PUT_ARRAY_EL.0 as u8);
+        assert_eq!(emitter.byte_code()[0], OP_ROT3L.as_u8());
+        assert_eq!(emitter.byte_code()[1], OP_PUT_ARRAY_EL.as_u8());
     }
 
     #[test]

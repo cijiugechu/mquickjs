@@ -533,7 +533,7 @@ fn convert_ext_vars_to_local_vars_bytecode(
         if op_val >= OPCODES.len() {
             break;
         }
-        let op = OpCode(op_val as u16);
+        let op = OpCode::from_u16(op_val as u16);
         match op {
             OP_GET_VAR_REF | OP_PUT_VAR_REF | OP_GET_VAR_REF_NOCHECK | OP_PUT_VAR_REF_NOCHECK => {
                 let var_idx = get_u16(&byte_code[pos + 1..pos + 3]);
@@ -543,9 +543,9 @@ fn convert_ext_vars_to_local_vars_bytecode(
                     put_u16(&mut byte_code[pos + 1..pos + 3], entry.new_var_idx);
                     if entry.is_local {
                         byte_code[pos] = if op == OP_GET_VAR_REF || op == OP_GET_VAR_REF_NOCHECK {
-                            OP_GET_LOC.0 as u8
+                            OP_GET_LOC.as_u8()
                         } else {
-                            OP_PUT_LOC.0 as u8
+                            OP_PUT_LOC.as_u8()
                         };
                     }
                 }
@@ -935,7 +935,7 @@ mod tests {
         harness.func.as_mut().set_ext_vars(ext_vars_val);
         harness.func.as_mut().set_ext_vars_len(1);
 
-        let mut byte_code = vec![OP_GET_VAR_REF.0 as u8, 0, 0];
+        let mut byte_code = vec![OP_GET_VAR_REF.as_u8(), 0, 0];
         let byte_code_val = harness.alloc.alloc_byte_array(byte_code.clone());
         harness.func.as_mut().set_byte_code(byte_code_val);
         harness.state.set_byte_code_len(byte_code.len() as u32);
@@ -946,7 +946,7 @@ mod tests {
         let arr = unsafe { byte_code_ptr.as_mut() };
         let len = byte_code.len();
         byte_code.copy_from_slice(&arr.buf_mut()[..len]);
-        assert_eq!(byte_code[0], OP_GET_LOC.0 as u8);
+        assert_eq!(byte_code[0], OP_GET_LOC.as_u8());
         assert_eq!(get_u16(&byte_code[1..3]), 0);
         assert_eq!(harness.func.as_ref().ext_vars_len(), 0);
     }

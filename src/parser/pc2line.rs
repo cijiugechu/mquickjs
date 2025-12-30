@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn find_line_col_basic() {
-        let byte_code = vec![OP_NOP.0 as u8, OP_NOP.0 as u8, OP_NOP.0 as u8];
+        let byte_code = vec![OP_NOP.as_u8(), OP_NOP.as_u8(), OP_NOP.as_u8()];
         let source_buf = b"abc\nxyz";
         let positions = [0u32, 2, 4];
         let mut emitter = Pc2LineEmitter::new(0, true);
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn find_line_col_missing_pc2line() {
-        let byte_code = vec![OP_NOP.0 as u8];
+        let byte_code = vec![OP_NOP.as_u8()];
         assert_eq!(find_line_col(&byte_code, None, true, 0), (0, 0));
     }
 }

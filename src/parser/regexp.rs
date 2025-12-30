@@ -283,7 +283,9 @@ impl<'a> RegExpParser<'a> {
     fn re_emit_char(&mut self, c: u32) {
         let mut buf = [0u8; 4];
         let n = unicode_to_utf8(&mut buf, c);
-        self.re_emit_op(opcode_u8(RegExpOpCode(REOP_CHAR1.0 + n as u16 - 1)));
+        self.re_emit_op(opcode_u8(RegExpOpCode::from_u16(
+            REOP_CHAR1.as_u16() + n as u16 - 1,
+        )));
         for b in &buf[..n] {
             self.bytecode.emit_u8(*b);
         }
@@ -702,8 +704,8 @@ impl<'a> RegExpParser<'a> {
                 self.bytecode.insert(last_atom_start, 5 + extra);
                 self.bytecode.write_u8(
                     last_atom_start,
-                    opcode_u8(RegExpOpCode(
-                        REOP_SPLIT_GOTO_FIRST.0 + greedy_offset as u16,
+                    opcode_u8(RegExpOpCode::from_u16(
+                        REOP_SPLIT_GOTO_FIRST.as_u16() + greedy_offset as u16,
                     )),
                 );
                 let jump_len = len + 5 * if has_goto { 1 } else { 0 } + extra * 2;
@@ -725,8 +727,8 @@ impl<'a> RegExpParser<'a> {
                 let mut pos = last_atom_start;
                 self.bytecode.write_u8(
                     pos,
-                    opcode_u8(RegExpOpCode(
-                        REOP_SPLIT_GOTO_FIRST.0 + greedy_offset as u16,
+                    opcode_u8(RegExpOpCode::from_u16(
+                        REOP_SPLIT_GOTO_FIRST.as_u16() + greedy_offset as u16,
                     )),
                 );
                 self.bytecode.write_u32(pos + 1, (6 + extra + len + 10) as u32);
@@ -741,12 +743,12 @@ impl<'a> RegExpParser<'a> {
                     self.bytecode.write_u8(pos + 1, 0);
                 }
                 self.re_emit_goto_u8_u32(
-                    opcode_u8(RegExpOpCode(
-                        if need_check_adv {
-                            REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.0
+                    opcode_u8(RegExpOpCode::from_u16(
+                        (if need_check_adv {
+                            REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.as_u16()
                         } else {
-                            REOP_LOOP_SPLIT_NEXT_FIRST.0
-                        } - greedy_offset as u16,
+                            REOP_LOOP_SPLIT_NEXT_FIRST.as_u16()
+                        }) - greedy_offset as u16,
                     )),
                     0,
                     quant_max as u32,
@@ -755,8 +757,8 @@ impl<'a> RegExpParser<'a> {
             }
         } else if quant_min == 1 && quant_max == JS_SHORTINT_MAX && !need_check_adv {
             self.re_emit_goto(
-                opcode_u8(RegExpOpCode(
-                    REOP_SPLIT_NEXT_FIRST.0 - greedy_offset as u16,
+                opcode_u8(RegExpOpCode::from_u16(
+                    REOP_SPLIT_NEXT_FIRST.as_u16() - greedy_offset as u16,
                 )),
                 last_atom_start,
             );
@@ -781,12 +783,12 @@ impl<'a> RegExpParser<'a> {
                 self.re_emit_goto_u8(opcode_u8(REOP_LOOP), 0, loop_start);
             } else {
                 self.re_emit_goto_u8_u32(
-                    opcode_u8(RegExpOpCode(
-                        if need_check_adv {
-                            REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.0
+                    opcode_u8(RegExpOpCode::from_u16(
+                        (if need_check_adv {
+                            REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.as_u16()
                         } else {
-                            REOP_LOOP_SPLIT_NEXT_FIRST.0
-                        } - greedy_offset as u16,
+                            REOP_LOOP_SPLIT_NEXT_FIRST.as_u16()
+                        }) - greedy_offset as u16,
                     )),
                     0,
                     (quant_max - quant_min) as u32,
@@ -869,8 +871,8 @@ impl<'a> RegExpParser<'a> {
                                 let is_neg = c == b'!';
                                 self.buf_pos += 3;
                                 let pos = self.re_emit_op_u32(
-                                    opcode_u8(RegExpOpCode(
-                                        REOP_LOOKAHEAD.0 + is_neg as u16,
+                                    opcode_u8(RegExpOpCode::from_u16(
+                                        REOP_LOOKAHEAD.as_u16() + is_neg as u16,
                                     )),
                                     0,
                                 );
@@ -1007,7 +1009,9 @@ impl<'a> RegExpParser<'a> {
             if n1 > 0 && n2 > 0 && n1 + n2 <= 4 {
                 self.bytecode.write_u8(
                     last_term_start,
-                    opcode_u8(RegExpOpCode(REOP_CHAR1.0 + (n1 + n2 - 1) as u16)),
+                    opcode_u8(RegExpOpCode::from_u16(
+                        REOP_CHAR1.as_u16() + (n1 + n2 - 1) as u16,
+                    )),
                 );
                 self.bytecode
                     .buf
@@ -1241,7 +1245,7 @@ enum AlternativeState {
 }
 
 fn opcode_u8(op: RegExpOpCode) -> u8 {
-    op.0 as u8
+    op.as_u8()
 }
 
 fn opcode_size(opcode: u8) -> usize {

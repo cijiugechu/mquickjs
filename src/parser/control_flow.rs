@@ -228,7 +228,7 @@ mod tests {
         let source = b"ret";
         let mut emitter = BytecodeEmitter::new(source, 0, false);
         emit_return(&mut emitter, &mut stack, false, 3);
-        assert_eq!(emitter.byte_code(), &[OP_RETURN_UNDEF.0 as u8]);
+        assert_eq!(emitter.byte_code(), &[OP_RETURN_UNDEF.as_u8()]);
     }
 
     #[test]
@@ -242,12 +242,12 @@ mod tests {
         emit_return(&mut emitter, &mut stack, false, 5);
         let code = emitter.byte_code();
         assert_eq!(code.len(), 10);
-        assert_eq!(code[0], OP_UNDEFINED.0 as u8);
-        assert_eq!(code[1], OP_NIP.0 as u8);
-        assert_eq!(code[2], OP_NIP.0 as u8);
-        assert_eq!(code[3], OP_NIP.0 as u8);
-        assert_eq!(code[4], OP_GOSUB.0 as u8);
-        assert_eq!(code[9], OP_RETURN.0 as u8);
+        assert_eq!(code[0], OP_UNDEFINED.as_u8());
+        assert_eq!(code[1], OP_NIP.as_u8());
+        assert_eq!(code[2], OP_NIP.as_u8());
+        assert_eq!(code[3], OP_NIP.as_u8());
+        assert_eq!(code[4], OP_GOSUB.as_u8());
+        assert_eq!(code[9], OP_RETURN.as_u8());
     }
 
     #[test]
@@ -260,8 +260,8 @@ mod tests {
         emit_break(&mut emitter, &mut stack, JS_NULL, true, 0).unwrap();
         let code = emitter.byte_code();
         assert_eq!(code.len(), 6);
-        assert_eq!(code[0], OP_DROP.0 as u8);
-        assert_eq!(code[1], OP_GOTO.0 as u8);
+        assert_eq!(code[0], OP_DROP.as_u8());
+        assert_eq!(code[1], OP_GOTO.as_u8());
     }
 
     #[test]
@@ -275,10 +275,10 @@ mod tests {
         emit_break(&mut emitter, &mut stack, JS_NULL, true, 0).unwrap();
         let code = emitter.byte_code();
         assert_eq!(code.len(), 12);
-        assert_eq!(code[0], OP_UNDEFINED.0 as u8);
-        assert_eq!(code[1], OP_GOSUB.0 as u8);
-        assert_eq!(code[6], OP_DROP.0 as u8);
-        assert_eq!(code[7], OP_GOTO.0 as u8);
+        assert_eq!(code[0], OP_UNDEFINED.as_u8());
+        assert_eq!(code[1], OP_GOSUB.as_u8());
+        assert_eq!(code[6], OP_DROP.as_u8());
+        assert_eq!(code[7], OP_GOTO.as_u8());
     }
 
     #[test]

@@ -550,11 +550,11 @@ fn binary_arith_slow(
     let d1 = conversion::to_number(ctx, left)?;
     let d2 = conversion::to_number(ctx, right)?;
     let res = match opcode {
-        op if op == crate::opcode::OP_SUB.0 as u8 => d1 - d2,
-        op if op == crate::opcode::OP_MUL.0 as u8 => d1 * d2,
-        op if op == crate::opcode::OP_DIV.0 as u8 => d1 / d2,
-        op if op == crate::opcode::OP_MOD.0 as u8 => js_fmod(d1, d2),
-        op if op == crate::opcode::OP_POW.0 as u8 => js_pow(d1, d2),
+        op if op == crate::opcode::OP_SUB.as_u8() => d1 - d2,
+        op if op == crate::opcode::OP_MUL.as_u8() => d1 * d2,
+        op if op == crate::opcode::OP_DIV.as_u8() => d1 / d2,
+        op if op == crate::opcode::OP_MOD.as_u8() => js_fmod(d1, d2),
+        op if op == crate::opcode::OP_POW.as_u8() => js_pow(d1, d2),
         _ => return Err(InterpreterError::InvalidBytecode("binary arith slow")),
     };
     Ok(ctx.new_float64(res)?)
@@ -591,10 +591,10 @@ fn unary_arith_slow(
 ) -> Result<JSValue, InterpreterError> {
     let mut d = conversion::to_number(ctx, val)?;
     match opcode {
-        op if op == crate::opcode::OP_INC.0 as u8 => d += 1.0,
-        op if op == crate::opcode::OP_DEC.0 as u8 => d -= 1.0,
-        op if op == crate::opcode::OP_PLUS.0 as u8 => {}
-        op if op == crate::opcode::OP_NEG.0 as u8 => d = -d,
+        op if op == crate::opcode::OP_INC.as_u8() => d += 1.0,
+        op if op == crate::opcode::OP_DEC.as_u8() => d -= 1.0,
+        op if op == crate::opcode::OP_PLUS.as_u8() => {}
+        op if op == crate::opcode::OP_NEG.as_u8() => d = -d,
         _ => return Err(InterpreterError::InvalidBytecode("unary arith slow")),
     }
     Ok(ctx.new_float64(d)?)
@@ -607,7 +607,7 @@ fn post_inc_slow(
 ) -> Result<(JSValue, JSValue), InterpreterError> {
     let d = conversion::to_number(ctx, val)?;
     let old_val = ctx.new_float64(d)?;
-    let delta = if opcode == crate::opcode::OP_POST_INC.0 as u8 {
+    let delta = if opcode == crate::opcode::OP_POST_INC.as_u8() {
         1.0
     } else {
         -1.0
@@ -625,21 +625,21 @@ fn binary_logic_slow(
     let v1 = conversion::to_uint32(ctx, left)?;
     let v2 = conversion::to_uint32(ctx, right)?;
     let res = match opcode {
-        op if op == crate::opcode::OP_SHL.0 as u8 => {
+        op if op == crate::opcode::OP_SHL.as_u8() => {
             let r = (v1 as i32) << (v2 & 0x1f);
             return Ok(ctx.new_float64(r as f64)?);
         }
-        op if op == crate::opcode::OP_SAR.0 as u8 => {
+        op if op == crate::opcode::OP_SAR.as_u8() => {
             let r = (v1 as i32) >> (v2 & 0x1f);
             return Ok(ctx.new_float64(r as f64)?);
         }
-        op if op == crate::opcode::OP_SHR.0 as u8 => {
+        op if op == crate::opcode::OP_SHR.as_u8() => {
             let r = v1 >> (v2 & 0x1f);
             return Ok(ctx.new_float64(r as f64)?);
         }
-        op if op == crate::opcode::OP_AND.0 as u8 => v1 & v2,
-        op if op == crate::opcode::OP_OR.0 as u8 => v1 | v2,
-        op if op == crate::opcode::OP_XOR.0 as u8 => v1 ^ v2,
+        op if op == crate::opcode::OP_AND.as_u8() => v1 & v2,
+        op if op == crate::opcode::OP_OR.as_u8() => v1 | v2,
+        op if op == crate::opcode::OP_XOR.as_u8() => v1 ^ v2,
         _ => return Err(InterpreterError::InvalidBytecode("binary logic slow")),
     };
     Ok(ctx.new_float64((res as i32) as f64)?)
@@ -661,20 +661,20 @@ fn relational_slow(
     let res = if left.is_string() && right.is_string() {
         let cmp = string_compare(left, right);
         match opcode {
-            op if op == crate::opcode::OP_LT.0 as u8 => cmp < 0,
-            op if op == crate::opcode::OP_LTE.0 as u8 => cmp <= 0,
-            op if op == crate::opcode::OP_GT.0 as u8 => cmp > 0,
-            op if op == crate::opcode::OP_GTE.0 as u8 => cmp >= 0,
+            op if op == crate::opcode::OP_LT.as_u8() => cmp < 0,
+            op if op == crate::opcode::OP_LTE.as_u8() => cmp <= 0,
+            op if op == crate::opcode::OP_GT.as_u8() => cmp > 0,
+            op if op == crate::opcode::OP_GTE.as_u8() => cmp >= 0,
             _ => return Err(InterpreterError::InvalidBytecode("relational slow")),
         }
     } else {
         let d1 = conversion::to_number(ctx, left)?;
         let d2 = conversion::to_number(ctx, right)?;
         match opcode {
-            op if op == crate::opcode::OP_LT.0 as u8 => d1 < d2,
-            op if op == crate::opcode::OP_LTE.0 as u8 => d1 <= d2,
-            op if op == crate::opcode::OP_GT.0 as u8 => d1 > d2,
-            op if op == crate::opcode::OP_GTE.0 as u8 => d1 >= d2,
+            op if op == crate::opcode::OP_LT.as_u8() => d1 < d2,
+            op if op == crate::opcode::OP_LTE.as_u8() => d1 <= d2,
+            op if op == crate::opcode::OP_GT.as_u8() => d1 > d2,
+            op if op == crate::opcode::OP_GTE.as_u8() => d1 >= d2,
             _ => return Err(InterpreterError::InvalidBytecode("relational slow")),
         }
     };
@@ -1681,7 +1681,7 @@ pub fn call_with_this(
         let opcode = byte_slice[pc];
         pc += 1;
         match opcode {
-            op if op == crate::opcode::OP_RETURN.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_RETURN.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
                 if !is_int(call_flags_val) {
@@ -1730,7 +1730,7 @@ pub fn call_with_this(
                     }
                 }
             },
-            op if op == crate::opcode::OP_RETURN_UNDEF.0 as u8 => {
+            op if op == crate::opcode::OP_RETURN_UNDEF.as_u8() => {
                 let call_flags_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS)) };
                 if !is_int(call_flags_val) {
                     break Err(InterpreterError::InvalidValue("call flags"));
@@ -1778,7 +1778,7 @@ pub fn call_with_this(
                     }
                 }
             },
-            op if op == crate::opcode::OP_THROW.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_THROW.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let flow = try_or_break!(unwind_exception(
                     ctx,
@@ -1797,7 +1797,7 @@ pub fn call_with_this(
                 }
                 b = func_ptr.as_ref();
             },
-            op if op == crate::opcode::OP_CATCH.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_CATCH.as_u8() => unsafe {
                 let diff = try_or_break!(read_i32(byte_slice, pc, "catch"));
                 let target = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "catch"));
                 let offset = u32::try_from(target)
@@ -1805,7 +1805,7 @@ pub fn call_with_this(
                 push(ctx, &mut sp, value_make_special(JS_TAG_CATCH_OFFSET, offset));
                 pc += 4;
             },
-            op if op == crate::opcode::OP_GOSUB.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GOSUB.as_u8() => unsafe {
                 let diff = try_or_break!(read_i32(byte_slice, pc, "gosub"));
                 let return_pc = pc + 4;
                 let return_pc =
@@ -1813,7 +1813,7 @@ pub fn call_with_this(
                 push(ctx, &mut sp, new_short_int(return_pc));
                 pc = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "gosub"));
             },
-            op if op == crate::opcode::OP_RET.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_RET.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 if !is_int(val) {
                     break Err(InterpreterError::InvalidBytecode("ret"));
@@ -1825,11 +1825,11 @@ pub fn call_with_this(
                 let _ = pop(ctx, &mut sp);
                 pc = pos as usize;
             },
-            op if op == crate::opcode::OP_GOTO.0 as u8 => {
+            op if op == crate::opcode::OP_GOTO.as_u8() => {
                 let diff = try_or_break!(read_i32(byte_slice, pc, "goto"));
                 pc = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "goto"));
             }
-            op if op == crate::opcode::OP_IF_FALSE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_IF_FALSE.as_u8() => unsafe {
                 let diff = try_or_break!(read_i32(byte_slice, pc, "if_false"));
                 let target = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "if_false"));
                 pc += 4;
@@ -1838,7 +1838,7 @@ pub fn call_with_this(
                     pc = target;
                 }
             },
-            op if op == crate::opcode::OP_IF_TRUE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_IF_TRUE.as_u8() => unsafe {
                 let diff = try_or_break!(read_i32(byte_slice, pc, "if_true"));
                 let target = try_or_break!(pc_with_offset(pc, diff, byte_slice.len(), "if_true"));
                 pc += 4;
@@ -1847,19 +1847,19 @@ pub fn call_with_this(
                     pc = target;
                 }
             },
-            op if op == crate::opcode::OP_DROP.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DROP.as_u8() => unsafe {
                 let _ = pop(ctx, &mut sp);
             },
-            op if op == crate::opcode::OP_NIP.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_NIP.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 ptr::write_unaligned(sp.add(1), val);
                 let _ = pop(ctx, &mut sp);
             },
-            op if op == crate::opcode::OP_DUP.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DUP.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_DUP2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DUP2.as_u8() => unsafe {
                 sp = sp.sub(2);
                 let a = ptr::read_unaligned(sp.add(2));
                 let b = ptr::read_unaligned(sp.add(3));
@@ -1867,7 +1867,7 @@ pub fn call_with_this(
                 ptr::write_unaligned(sp.add(1), b);
                 ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
             },
-            op if op == crate::opcode::OP_INSERT2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_INSERT2.as_u8() => unsafe {
                 let top = ptr::read_unaligned(sp);
                 let next = ptr::read_unaligned(sp.add(1));
                 ptr::write_unaligned(sp.sub(1), top);
@@ -1876,7 +1876,7 @@ pub fn call_with_this(
                 sp = sp.sub(1);
                 ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
             },
-            op if op == crate::opcode::OP_INSERT3.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_INSERT3.as_u8() => unsafe {
                 let top = ptr::read_unaligned(sp);
                 let next = ptr::read_unaligned(sp.add(1));
                 let next2 = ptr::read_unaligned(sp.add(2));
@@ -1887,13 +1887,13 @@ pub fn call_with_this(
                 sp = sp.sub(1);
                 ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
             },
-            op if op == crate::opcode::OP_PERM3.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PERM3.as_u8() => unsafe {
                 let tmp = ptr::read_unaligned(sp.add(1));
                 let val = ptr::read_unaligned(sp.add(2));
                 ptr::write_unaligned(sp.add(1), val);
                 ptr::write_unaligned(sp.add(2), tmp);
             },
-            op if op == crate::opcode::OP_PERM4.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PERM4.as_u8() => unsafe {
                 let tmp = ptr::read_unaligned(sp.add(1));
                 let val = ptr::read_unaligned(sp.add(2));
                 let val2 = ptr::read_unaligned(sp.add(3));
@@ -1901,13 +1901,13 @@ pub fn call_with_this(
                 ptr::write_unaligned(sp.add(2), val2);
                 ptr::write_unaligned(sp.add(3), tmp);
             },
-            op if op == crate::opcode::OP_SWAP.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_SWAP.as_u8() => unsafe {
                 let a = ptr::read_unaligned(sp);
                 let b = ptr::read_unaligned(sp.add(1));
                 ptr::write_unaligned(sp, b);
                 ptr::write_unaligned(sp.add(1), a);
             },
-            op if op == crate::opcode::OP_ROT3L.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_ROT3L.as_u8() => unsafe {
                 let tmp = ptr::read_unaligned(sp.add(2));
                 let mid = ptr::read_unaligned(sp.add(1));
                 let top = ptr::read_unaligned(sp);
@@ -1915,34 +1915,34 @@ pub fn call_with_this(
                 ptr::write_unaligned(sp.add(1), top);
                 ptr::write_unaligned(sp, tmp);
             },
-            op if op == crate::opcode::OP_PUSH_MINUS1.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_MINUS1.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(-1));
             },
-            op if op == crate::opcode::OP_PUSH_0.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_0.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(0));
             },
-            op if op == crate::opcode::OP_PUSH_1.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_1.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(1));
             },
-            op if op == crate::opcode::OP_PUSH_2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_2.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(2));
             },
-            op if op == crate::opcode::OP_PUSH_3.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_3.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(3));
             },
-            op if op == crate::opcode::OP_PUSH_4.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_4.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(4));
             },
-            op if op == crate::opcode::OP_PUSH_5.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_5.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(5));
             },
-            op if op == crate::opcode::OP_PUSH_6.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_6.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(6));
             },
-            op if op == crate::opcode::OP_PUSH_7.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_7.as_u8() => unsafe {
                 push(ctx, &mut sp, new_short_int(7));
             },
-            op if op == crate::opcode::OP_PUSH_I8.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_I8.as_u8() => unsafe {
                 let imm = match byte_slice.get(pc).copied() {
                     Some(val) => val as i8,
                     None => break Err(InterpreterError::InvalidBytecode("push_i8")),
@@ -1950,7 +1950,7 @@ pub fn call_with_this(
                 pc += 1;
                 push(ctx, &mut sp, new_short_int(i32::from(imm)));
             },
-            op if op == crate::opcode::OP_PUSH_I16.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_I16.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("push_i16"));
                 }
@@ -1958,7 +1958,7 @@ pub fn call_with_this(
                 pc += 2;
                 push(ctx, &mut sp, new_short_int(i32::from(imm)));
             },
-            op if op == crate::opcode::OP_PUSH_CONST.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_CONST.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("push_const"));
                 }
@@ -1968,7 +1968,7 @@ pub fn call_with_this(
                 let val = try_or_break!(cpool.read(idx));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_PUSH_CONST8.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_CONST8.as_u8() => unsafe {
                 let idx = match byte_slice.get(pc).copied() {
                     Some(val) => val as usize,
                     None => break Err(InterpreterError::InvalidBytecode("push_const8")),
@@ -1978,7 +1978,7 @@ pub fn call_with_this(
                 let val = try_or_break!(cpool.read(idx));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_PUSH_VALUE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_VALUE.as_u8() => unsafe {
                 if pc + 3 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("push_value"));
                 }
@@ -1991,23 +1991,23 @@ pub fn call_with_this(
                 pc += 4;
                 push(ctx, &mut sp, from_bits(raw as JSWord));
             },
-            op if op == crate::opcode::OP_UNDEFINED.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_UNDEFINED.as_u8() => unsafe {
                 push(ctx, &mut sp, JS_UNDEFINED);
             },
-            op if op == crate::opcode::OP_NULL.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_NULL.as_u8() => unsafe {
                 push(ctx, &mut sp, JS_NULL);
             },
-            op if op == crate::opcode::OP_PUSH_FALSE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_FALSE.as_u8() => unsafe {
                 push(ctx, &mut sp, new_bool(0));
             },
-            op if op == crate::opcode::OP_PUSH_TRUE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUSH_TRUE.as_u8() => unsafe {
                 push(ctx, &mut sp, new_bool(1));
             },
-            op if op == crate::opcode::OP_THIS_FUNC.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_THIS_FUNC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_ARGUMENTS.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_ARGUMENTS.as_u8() => unsafe {
                 let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
                 if !is_int(call_flags_val) {
                     break Err(InterpreterError::InvalidValue("call flags"));
@@ -2035,7 +2035,7 @@ pub fn call_with_this(
                 }
                 push(ctx, &mut sp, array);
             },
-            op if op == crate::opcode::OP_NEW_TARGET.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_NEW_TARGET.as_u8() => unsafe {
                 let call_flags_val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_CALL_FLAGS));
                 if !is_int(call_flags_val) {
                     break Err(InterpreterError::InvalidValue("call flags"));
@@ -2048,7 +2048,7 @@ pub fn call_with_this(
                 };
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_ARRAY_FROM.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_ARRAY_FROM.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("array_from"));
                 }
@@ -2078,7 +2078,7 @@ pub fn call_with_this(
                 ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
                 push(ctx, &mut sp, array);
             },
-            op if op == crate::opcode::OP_FCLOSURE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_FCLOSURE.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("fclosure"));
                 }
@@ -2089,7 +2089,7 @@ pub fn call_with_this(
                 let closure = try_or_break!(create_closure(ctx, bfunc, Some(fp)));
                 push(ctx, &mut sp, closure);
             },
-            op if op == crate::opcode::OP_CALL_CONSTRUCTOR.0 as u8 => {
+            op if op == crate::opcode::OP_CALL_CONSTRUCTOR.as_u8() => {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("call_constructor"));
                 }
@@ -2102,7 +2102,7 @@ pub fn call_with_this(
                 }
                 handle_call!(call_flags);
             },
-            op if op == crate::opcode::OP_CALL.0 as u8 => {
+            op if op == crate::opcode::OP_CALL.as_u8() => {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("call"));
                 }
@@ -2114,7 +2114,7 @@ pub fn call_with_this(
                 }
                 handle_call!(call_flags);
             },
-            op if op == crate::opcode::OP_CALL_METHOD.0 as u8 => {
+            op if op == crate::opcode::OP_CALL_METHOD.as_u8() => {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("call_method"));
                 }
@@ -2125,7 +2125,7 @@ pub fn call_with_this(
                 }
                 handle_call!(call_flags);
             },
-            op if op == crate::opcode::OP_GET_LOC.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_LOC.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("get_loc"));
                 }
@@ -2134,7 +2134,7 @@ pub fn call_with_this(
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0 - idx));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_PUT_LOC.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_LOC.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("put_loc"));
                 }
@@ -2143,7 +2143,7 @@ pub fn call_with_this(
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.offset(FRAME_OFFSET_VAR0 - idx), val);
             },
-            op if op == crate::opcode::OP_ADD.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_ADD.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2171,7 +2171,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_SUB.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_SUB.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2199,7 +2199,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_MUL.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_MUL.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2229,7 +2229,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_DIV.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DIV.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2242,7 +2242,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_MOD.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_MOD.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2259,13 +2259,13 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_POW.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_POW.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = try_or_break!(binary_arith_slow(ctx, opcode, lhs, rhs));
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_NEG.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_NEG.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if is_int(val) {
                     let v1 = value_get_int(val);
@@ -2282,7 +2282,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_PLUS.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PLUS.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if val.is_number() {
                     Ok(val)
@@ -2292,7 +2292,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_INC.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_INC.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if is_int(val) {
                     let v1 = value_get_int(val);
@@ -2307,7 +2307,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_DEC.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DEC.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if is_int(val) {
                     let v1 = value_get_int(val);
@@ -2322,7 +2322,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_POST_INC.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_POST_INC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 let (old_val, new_val) = if is_int(val) {
                     let v1 = value_get_int(val);
@@ -2337,7 +2337,7 @@ pub fn call_with_this(
                 ptr::write_unaligned(sp, old_val);
                 push(ctx, &mut sp, new_val);
             },
-            op if op == crate::opcode::OP_POST_DEC.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_POST_DEC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(sp);
                 let (old_val, new_val) = if is_int(val) {
                     let v1 = value_get_int(val);
@@ -2352,12 +2352,12 @@ pub fn call_with_this(
                 ptr::write_unaligned(sp, old_val);
                 push(ctx, &mut sp, new_val);
             },
-            op if op == crate::opcode::OP_LNOT.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_LNOT.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = new_bool(!try_or_break!(to_bool(val)) as i32);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_NOT.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_NOT.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = if is_int(val) {
                     Ok(new_short_int(!value_get_int(val)))
@@ -2367,7 +2367,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_SHL.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_SHL.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2384,7 +2384,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_SAR.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_SAR.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2397,7 +2397,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_SHR.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_SHR.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2414,7 +2414,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_AND.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_AND.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2425,7 +2425,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_XOR.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_XOR.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2436,7 +2436,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_OR.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_OR.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2447,7 +2447,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_LT.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_LT.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2458,7 +2458,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_LTE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_LTE.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2469,7 +2469,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_GT.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GT.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2480,7 +2480,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_GTE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GTE.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2491,7 +2491,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_EQ.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_EQ.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2502,7 +2502,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_NEQ.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_NEQ.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if is_int(lhs) && is_int(rhs) {
@@ -2513,7 +2513,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_STRICT_EQ.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_STRICT_EQ.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res: Result<JSValue, InterpreterError> = if is_int(lhs) && is_int(rhs) {
@@ -2524,7 +2524,7 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_STRICT_NEQ.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_STRICT_NEQ.as_u8() => unsafe {
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res: Result<JSValue, InterpreterError> = if is_int(lhs) && is_int(rhs) {
@@ -2535,12 +2535,12 @@ pub fn call_with_this(
                 let res = try_or_break!(res);
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_TYPEOF.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_TYPEOF.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let res = try_or_break!(typeof_value(ctx, val));
                 push(ctx, &mut sp, res);
             },
-            op if op == crate::opcode::OP_IN.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_IN.as_u8() => unsafe {
                 let obj = pop(ctx, &mut sp);
                 let prop = pop(ctx, &mut sp);
                 if !obj.is_object() {
@@ -2552,7 +2552,7 @@ pub fn call_with_this(
                 );
                 push(ctx, &mut sp, new_bool(has as i32));
             },
-            op if op == crate::opcode::OP_INSTANCEOF.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_INSTANCEOF.as_u8() => unsafe {
                 let obj = pop(ctx, &mut sp);
                 let ctor = pop(ctx, &mut sp);
                 if !is_function_object(ctor) {
@@ -2567,7 +2567,7 @@ pub fn call_with_this(
                 let found = try_or_break!(instanceof_check(obj, proto));
                 push(ctx, &mut sp, new_bool(found as i32));
             },
-            op if op == crate::opcode::OP_GET_FIELD.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_FIELD.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("get_field"));
                 }
@@ -2581,7 +2581,7 @@ pub fn call_with_this(
                 );
                 ptr::write_unaligned(sp, val);
             },
-            op if op == crate::opcode::OP_GET_FIELD2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_FIELD2.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("get_field2"));
                 }
@@ -2596,7 +2596,7 @@ pub fn call_with_this(
                 );
                 ptr::write_unaligned(sp, val);
             },
-            op if op == crate::opcode::OP_PUT_FIELD.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_FIELD.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("put_field"));
                 }
@@ -2611,7 +2611,7 @@ pub fn call_with_this(
                 );
                 let _ = pop(ctx, &mut sp);
             },
-            op if op == crate::opcode::OP_GET_ARRAY_EL.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_ARRAY_EL.as_u8() => unsafe {
                 let prop = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
                 let prop = try_or_break!(conversion::to_property_key(ctx, prop));
@@ -2620,7 +2620,7 @@ pub fn call_with_this(
                 );
                 ptr::write_unaligned(sp, val);
             },
-            op if op == crate::opcode::OP_GET_ARRAY_EL2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_ARRAY_EL2.as_u8() => unsafe {
                 let prop = ptr::read_unaligned(sp);
                 let obj = ptr::read_unaligned(sp.add(1));
                 let prop = try_or_break!(conversion::to_property_key(ctx, prop));
@@ -2629,7 +2629,7 @@ pub fn call_with_this(
                 );
                 ptr::write_unaligned(sp, val);
             },
-            op if op == crate::opcode::OP_PUT_ARRAY_EL.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_ARRAY_EL.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 let prop = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
@@ -2639,18 +2639,18 @@ pub fn call_with_this(
                 );
                 let _ = pop(ctx, &mut sp);
             },
-            op if op == crate::opcode::OP_GET_LENGTH.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_LENGTH.as_u8() => unsafe {
                 let obj = ptr::read_unaligned(sp);
                 let val = try_or_break!(get_length_value(ctx, obj));
                 ptr::write_unaligned(sp, val);
             },
-            op if op == crate::opcode::OP_GET_LENGTH2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_LENGTH2.as_u8() => unsafe {
                 let obj = ptr::read_unaligned(sp);
                 push(ctx, &mut sp, obj);
                 let val = try_or_break!(get_length_value(ctx, obj));
                 ptr::write_unaligned(sp, val);
             },
-            op if op == crate::opcode::OP_DEFINE_FIELD.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DEFINE_FIELD.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("define_field"));
                 }
@@ -2665,7 +2665,7 @@ pub fn call_with_this(
                         .map_err(ConversionError::from)
                 );
             },
-            op if op == crate::opcode::OP_DEFINE_GETTER.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DEFINE_GETTER.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("define_getter"));
                 }
@@ -2680,7 +2680,7 @@ pub fn call_with_this(
                         .map_err(ConversionError::from)
                 );
             },
-            op if op == crate::opcode::OP_DEFINE_SETTER.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DEFINE_SETTER.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("define_setter"));
                 }
@@ -2695,14 +2695,14 @@ pub fn call_with_this(
                         .map_err(ConversionError::from)
                 );
             },
-            op if op == crate::opcode::OP_SET_PROTO.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_SET_PROTO.as_u8() => unsafe {
                 let proto = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
                 if proto.is_object() || is_null(proto) {
                     try_or_break!(set_prototype_internal(obj, proto));
                 }
             },
-            op if op == crate::opcode::OP_DELETE.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_DELETE.as_u8() => unsafe {
                 let prop = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
                 let prop = try_or_break!(conversion::to_property_key(ctx, prop));
@@ -2711,18 +2711,18 @@ pub fn call_with_this(
                 );
                 ptr::write_unaligned(sp, new_bool(deleted as i32));
             },
-            op if op == crate::opcode::OP_FOR_IN_START.0 as u8
-                || op == crate::opcode::OP_FOR_OF_START.0 as u8 =>
+            op if op == crate::opcode::OP_FOR_IN_START.as_u8()
+                || op == crate::opcode::OP_FOR_OF_START.as_u8() =>
             unsafe {
                 let val = ptr::read_unaligned(sp);
                 let iter = try_or_break!(for_of_start(
                     ctx,
                     val,
-                    op == crate::opcode::OP_FOR_IN_START.0 as u8
+                    op == crate::opcode::OP_FOR_IN_START.as_u8()
                 ));
                 ptr::write_unaligned(sp, iter);
             },
-            op if op == crate::opcode::OP_FOR_OF_NEXT.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_FOR_OF_NEXT.as_u8() => unsafe {
                 try_or_break!(stack_check(ctx, sp, 2));
                 let iter = ptr::read_unaligned(sp);
                 let done_slot = sp.sub(2);
@@ -2731,7 +2731,7 @@ pub fn call_with_this(
                 sp = sp.sub(2);
                 ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
             },
-            op if op == crate::opcode::OP_REGEXP.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_REGEXP.as_u8() => unsafe {
                 let byte_code = ptr::read_unaligned(sp);
                 let source = ptr::read_unaligned(sp.add(1));
                 let re_obj = try_or_break!(crate::regexp::new_regexp_object(ctx, source, byte_code));
@@ -2739,39 +2739,39 @@ pub fn call_with_this(
                 sp = sp.add(1);
                 ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
             },
-            op if op == crate::opcode::OP_GET_LOC0.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_LOC0.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_GET_LOC1.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_LOC1.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0 - 1));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_GET_LOC2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_LOC2.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0 - 2));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_GET_LOC3.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_LOC3.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0 - 3));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_PUT_LOC0.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_LOC0.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.offset(FRAME_OFFSET_VAR0), val);
             },
-            op if op == crate::opcode::OP_PUT_LOC1.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_LOC1.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.offset(FRAME_OFFSET_VAR0 - 1), val);
             },
-            op if op == crate::opcode::OP_PUT_LOC2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_LOC2.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.offset(FRAME_OFFSET_VAR0 - 2), val);
             },
-            op if op == crate::opcode::OP_PUT_LOC3.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_LOC3.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.offset(FRAME_OFFSET_VAR0 - 3), val);
             },
-            op if op == crate::opcode::OP_GET_LOC8.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_LOC8.as_u8() => unsafe {
                 let idx = match byte_slice.get(pc).copied() {
                     Some(val) => val as isize,
                     None => break Err(InterpreterError::InvalidBytecode("get_loc8")),
@@ -2780,7 +2780,7 @@ pub fn call_with_this(
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_VAR0 - idx));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_PUT_LOC8.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_LOC8.as_u8() => unsafe {
                 let idx = match byte_slice.get(pc).copied() {
                     Some(val) => val as isize,
                     None => break Err(InterpreterError::InvalidBytecode("put_loc8")),
@@ -2789,7 +2789,7 @@ pub fn call_with_this(
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.offset(FRAME_OFFSET_VAR0 - idx), val);
             },
-            op if op == crate::opcode::OP_GET_ARG.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_ARG.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("get_arg"));
                 }
@@ -2798,7 +2798,7 @@ pub fn call_with_this(
                 let val = ptr::read_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + idx));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_PUT_ARG.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_ARG.as_u8() => unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("put_arg"));
                 }
@@ -2807,40 +2807,40 @@ pub fn call_with_this(
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + idx), val);
             },
-            op if op == crate::opcode::OP_GET_ARG0.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_ARG0.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_GET_ARG1.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_ARG1.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + 1));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_GET_ARG2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_ARG2.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + 2));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_GET_ARG3.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_GET_ARG3.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + 3));
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_PUT_ARG0.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_ARG0.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize), val);
             },
-            op if op == crate::opcode::OP_PUT_ARG1.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_ARG1.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + 1), val);
             },
-            op if op == crate::opcode::OP_PUT_ARG2.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_ARG2.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + 2), val);
             },
-            op if op == crate::opcode::OP_PUT_ARG3.0 as u8 => unsafe {
+            op if op == crate::opcode::OP_PUT_ARG3.as_u8() => unsafe {
                 let val = pop(ctx, &mut sp);
                 ptr::write_unaligned(fp.add(FRAME_OFFSET_ARG0 as usize + 3), val);
             },
-            op if op == crate::opcode::OP_GET_VAR_REF.0 as u8
-                || op == crate::opcode::OP_GET_VAR_REF_NOCHECK.0 as u8 =>
+            op if op == crate::opcode::OP_GET_VAR_REF.as_u8()
+                || op == crate::opcode::OP_GET_VAR_REF_NOCHECK.as_u8() =>
             unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("get_var_ref"));
@@ -2865,13 +2865,13 @@ pub fn call_with_this(
                     ptr::read_unaligned(var_refs.add(idx))
                 };
                 let val = try_or_break!(var_ref_get(var_ref));
-                if is_uninitialized(val) && op == crate::opcode::OP_GET_VAR_REF.0 as u8 {
+                if is_uninitialized(val) && op == crate::opcode::OP_GET_VAR_REF.as_u8() {
                     break Err(InterpreterError::ReferenceError("varref uninitialized"));
                 }
                 push(ctx, &mut sp, val);
             },
-            op if op == crate::opcode::OP_PUT_VAR_REF.0 as u8
-                || op == crate::opcode::OP_PUT_VAR_REF_NOCHECK.0 as u8 =>
+            op if op == crate::opcode::OP_PUT_VAR_REF.as_u8()
+                || op == crate::opcode::OP_PUT_VAR_REF_NOCHECK.as_u8() =>
             unsafe {
                 if pc + 1 >= byte_slice.len() {
                     break Err(InterpreterError::InvalidBytecode("put_var_ref"));
@@ -2896,7 +2896,7 @@ pub fn call_with_this(
                     ptr::read_unaligned(var_refs.add(idx))
                 };
                 let current = try_or_break!(var_ref_get(var_ref));
-                if is_uninitialized(current) && op == crate::opcode::OP_PUT_VAR_REF.0 as u8 {
+                if is_uninitialized(current) && op == crate::opcode::OP_PUT_VAR_REF.as_u8() {
                     break Err(InterpreterError::ReferenceError("varref uninitialized"));
                 }
                 let val = pop(ctx, &mut sp);
@@ -3098,7 +3098,7 @@ mod tests {
         let mut ctx = new_context();
         let result = call_bytecode(
             &mut ctx,
-            vec![OP_PUSH_1.0 as u8, OP_PUSH_2.0 as u8, OP_ADD.0 as u8, OP_RETURN.0 as u8],
+            vec![OP_PUSH_1.as_u8(), OP_PUSH_2.as_u8(), OP_ADD.as_u8(), OP_RETURN.as_u8()],
         );
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 3);
@@ -3109,12 +3109,12 @@ mod tests {
         let mut ctx = new_context();
         let str_val = ctx.new_string("hi").expect("string");
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_1.0 as u8,
-            OP_ADD.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_PUSH_1.as_u8(),
+            OP_ADD.as_u8(),
+            OP_RETURN.as_u8(),
         ];
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
         assert_eq!(string_from_value(result), "hi1");
@@ -3125,12 +3125,12 @@ mod tests {
         let mut ctx = new_context();
         let str_val = ctx.new_string("1").expect("string");
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_1.0 as u8,
-            OP_EQ.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_PUSH_1.as_u8(),
+            OP_EQ.as_u8(),
+            OP_RETURN.as_u8(),
         ];
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
         assert_eq!(value_get_special_value(result), 1);
@@ -3138,12 +3138,12 @@ mod tests {
         let mut ctx = new_context();
         let str_val = ctx.new_string("1").expect("string");
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_1.0 as u8,
-            OP_STRICT_EQ.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_PUSH_1.as_u8(),
+            OP_STRICT_EQ.as_u8(),
+            OP_RETURN.as_u8(),
         ];
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![str_val]);
         assert_eq!(value_get_special_value(result), 0);
@@ -3155,14 +3155,14 @@ mod tests {
         let a = ctx.new_string("a").expect("string");
         let b = ctx.new_string("b").expect("string");
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             1,
             0,
-            OP_LT.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_LT.as_u8(),
+            OP_RETURN.as_u8(),
         ];
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![a, b]);
         assert_eq!(value_get_special_value(result), 1);
@@ -3173,7 +3173,7 @@ mod tests {
         let mut ctx = new_context();
         let result = call_bytecode(
             &mut ctx,
-            vec![OP_PUSH_3.0 as u8, OP_PUSH_1.0 as u8, OP_AND.0 as u8, OP_RETURN.0 as u8],
+            vec![OP_PUSH_3.as_u8(), OP_PUSH_1.as_u8(), OP_AND.as_u8(), OP_RETURN.as_u8()],
         );
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 1);
@@ -3183,14 +3183,14 @@ mod tests {
     fn control_flow_if_false_goto() {
         let mut ctx = new_context();
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_TRUE.0 as u8);
-        bytecode.push(OP_IF_FALSE.0 as u8);
+        bytecode.push(OP_PUSH_TRUE.as_u8());
+        bytecode.push(OP_IF_FALSE.as_u8());
         emit_i32(&mut bytecode, 10);
-        bytecode.push(OP_PUSH_1.0 as u8);
-        bytecode.push(OP_GOTO.0 as u8);
+        bytecode.push(OP_PUSH_1.as_u8());
+        bytecode.push(OP_GOTO.as_u8());
         emit_i32(&mut bytecode, 5);
-        bytecode.push(OP_PUSH_2.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_PUSH_2.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 1);
@@ -3200,13 +3200,13 @@ mod tests {
     fn control_flow_if_true() {
         let mut ctx = new_context();
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_TRUE.0 as u8);
-        bytecode.push(OP_IF_TRUE.0 as u8);
+        bytecode.push(OP_PUSH_TRUE.as_u8());
+        bytecode.push(OP_IF_TRUE.as_u8());
         emit_i32(&mut bytecode, 6);
-        bytecode.push(OP_PUSH_1.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
-        bytecode.push(OP_PUSH_2.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_PUSH_1.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
+        bytecode.push(OP_PUSH_2.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 2);
@@ -3216,13 +3216,13 @@ mod tests {
     fn control_flow_gosub_ret() {
         let mut ctx = new_context();
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_1.0 as u8);
-        bytecode.push(OP_GOSUB.0 as u8);
+        bytecode.push(OP_PUSH_1.as_u8());
+        bytecode.push(OP_GOSUB.as_u8());
         emit_i32(&mut bytecode, 7);
-        bytecode.push(OP_PUSH_2.0 as u8);
-        bytecode.push(OP_ADD.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
-        bytecode.push(OP_RET.0 as u8);
+        bytecode.push(OP_PUSH_2.as_u8());
+        bytecode.push(OP_ADD.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
+        bytecode.push(OP_RET.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 3);
@@ -3232,13 +3232,13 @@ mod tests {
     fn exception_flow_catch_throw() {
         let mut ctx = new_context();
         let mut bytecode = Vec::new();
-        bytecode.push(OP_CATCH.0 as u8);
+        bytecode.push(OP_CATCH.as_u8());
         emit_i32(&mut bytecode, 8);
-        bytecode.push(OP_PUSH_1.0 as u8);
-        bytecode.push(OP_THROW.0 as u8);
-        bytecode.push(OP_PUSH_2.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_PUSH_1.as_u8());
+        bytecode.push(OP_THROW.as_u8());
+        bytecode.push(OP_PUSH_2.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 1);
@@ -3249,7 +3249,7 @@ mod tests {
         let mut ctx = new_context();
         let result = call_bytecode(
             &mut ctx,
-            vec![OP_PUSH_1.0 as u8, OP_PUSH_2.0 as u8, OP_NIP.0 as u8, OP_RETURN.0 as u8],
+            vec![OP_PUSH_1.as_u8(), OP_PUSH_2.as_u8(), OP_NIP.as_u8(), OP_RETURN.as_u8()],
         );
         assert!(is_int(result));
         assert_eq!(value_get_int(result), 2);
@@ -3258,13 +3258,13 @@ mod tests {
         let result = call_bytecode(
             &mut ctx,
             vec![
-                OP_PUSH_1.0 as u8,
-                OP_PUSH_2.0 as u8,
-                OP_DUP2.0 as u8,
-                OP_ADD.0 as u8,
-                OP_ADD.0 as u8,
-                OP_ADD.0 as u8,
-                OP_RETURN.0 as u8,
+                OP_PUSH_1.as_u8(),
+                OP_PUSH_2.as_u8(),
+                OP_DUP2.as_u8(),
+                OP_ADD.as_u8(),
+                OP_ADD.as_u8(),
+                OP_ADD.as_u8(),
+                OP_RETURN.as_u8(),
             ],
         );
         assert!(is_int(result));
@@ -3274,12 +3274,12 @@ mod tests {
         let result = call_bytecode(
             &mut ctx,
             vec![
-                OP_PUSH_1.0 as u8,
-                OP_PUSH_2.0 as u8,
-                OP_INSERT2.0 as u8,
-                OP_ADD.0 as u8,
-                OP_ADD.0 as u8,
-                OP_RETURN.0 as u8,
+                OP_PUSH_1.as_u8(),
+                OP_PUSH_2.as_u8(),
+                OP_INSERT2.as_u8(),
+                OP_ADD.as_u8(),
+                OP_ADD.as_u8(),
+                OP_RETURN.as_u8(),
             ],
         );
         assert!(is_int(result));
@@ -3289,14 +3289,14 @@ mod tests {
         let result = call_bytecode(
             &mut ctx,
             vec![
-                OP_PUSH_1.0 as u8,
-                OP_PUSH_2.0 as u8,
-                OP_PUSH_3.0 as u8,
-                OP_INSERT3.0 as u8,
-                OP_ADD.0 as u8,
-                OP_ADD.0 as u8,
-                OP_ADD.0 as u8,
-                OP_RETURN.0 as u8,
+                OP_PUSH_1.as_u8(),
+                OP_PUSH_2.as_u8(),
+                OP_PUSH_3.as_u8(),
+                OP_INSERT3.as_u8(),
+                OP_ADD.as_u8(),
+                OP_ADD.as_u8(),
+                OP_ADD.as_u8(),
+                OP_RETURN.as_u8(),
             ],
         );
         assert!(is_int(result));
@@ -3306,12 +3306,12 @@ mod tests {
         let result = call_bytecode(
             &mut ctx,
             vec![
-                OP_PUSH_1.0 as u8,
-                OP_PUSH_2.0 as u8,
-                OP_PUSH_3.0 as u8,
-                OP_PERM3.0 as u8,
-                OP_SUB.0 as u8,
-                OP_RETURN.0 as u8,
+                OP_PUSH_1.as_u8(),
+                OP_PUSH_2.as_u8(),
+                OP_PUSH_3.as_u8(),
+                OP_PERM3.as_u8(),
+                OP_SUB.as_u8(),
+                OP_RETURN.as_u8(),
             ],
         );
         assert!(is_int(result));
@@ -3321,12 +3321,12 @@ mod tests {
         let result = call_bytecode(
             &mut ctx,
             vec![
-                OP_PUSH_1.0 as u8,
-                OP_PUSH_2.0 as u8,
-                OP_PUSH_3.0 as u8,
-                OP_ROT3L.0 as u8,
-                OP_SUB.0 as u8,
-                OP_RETURN.0 as u8,
+                OP_PUSH_1.as_u8(),
+                OP_PUSH_2.as_u8(),
+                OP_PUSH_3.as_u8(),
+                OP_ROT3L.as_u8(),
+                OP_SUB.as_u8(),
+                OP_RETURN.as_u8(),
             ],
         );
         assert!(is_int(result));
@@ -3336,13 +3336,13 @@ mod tests {
         let result = call_bytecode(
             &mut ctx,
             vec![
-                OP_PUSH_1.0 as u8,
-                OP_PUSH_2.0 as u8,
-                OP_PUSH_3.0 as u8,
-                OP_PUSH_4.0 as u8,
-                OP_PERM4.0 as u8,
-                OP_SUB.0 as u8,
-                OP_RETURN.0 as u8,
+                OP_PUSH_1.as_u8(),
+                OP_PUSH_2.as_u8(),
+                OP_PUSH_3.as_u8(),
+                OP_PUSH_4.as_u8(),
+                OP_PERM4.as_u8(),
+                OP_SUB.as_u8(),
+                OP_RETURN.as_u8(),
             ],
         );
         assert!(is_int(result));
@@ -3359,11 +3359,11 @@ mod tests {
         define_property_value(&mut ctx, obj, key, new_short_int(42)).expect("define");
 
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_GET_FIELD.0 as u8);
+        bytecode.push(OP_GET_FIELD.as_u8());
         emit_u16(&mut bytecode, 1);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert!(is_int(result));
@@ -3380,12 +3380,12 @@ mod tests {
         define_property_value(&mut ctx, obj, key, new_short_int(7)).expect("define");
 
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_GET_FIELD2.0 as u8);
+        bytecode.push(OP_GET_FIELD2.as_u8());
         emit_u16(&mut bytecode, 1);
-        bytecode.push(OP_SWAP.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_SWAP.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert_eq!(result, obj);
@@ -3400,16 +3400,16 @@ mod tests {
         let key = ctx.intern_string(b"x").expect("atom");
 
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_PUSH_5.0 as u8);
-        bytecode.push(OP_PUT_FIELD.0 as u8);
+        bytecode.push(OP_PUSH_5.as_u8());
+        bytecode.push(OP_PUT_FIELD.as_u8());
         emit_u16(&mut bytecode, 1);
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_GET_FIELD.0 as u8);
+        bytecode.push(OP_GET_FIELD.as_u8());
         emit_u16(&mut bytecode, 1);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert!(is_int(result));
@@ -3425,14 +3425,14 @@ mod tests {
         let key = ctx.intern_string(b"y").expect("atom");
 
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_PUSH_3.0 as u8);
-        bytecode.push(OP_DEFINE_FIELD.0 as u8);
+        bytecode.push(OP_PUSH_3.as_u8());
+        bytecode.push(OP_DEFINE_FIELD.as_u8());
         emit_u16(&mut bytecode, 1);
-        bytecode.push(OP_GET_FIELD.0 as u8);
+        bytecode.push(OP_GET_FIELD.as_u8());
         emit_u16(&mut bytecode, 1);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert!(is_int(result));
@@ -3448,13 +3448,13 @@ mod tests {
         let key = ctx.intern_string(b"g").expect("atom");
 
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_PUSH_I8.0 as u8);
+        bytecode.push(OP_PUSH_I8.as_u8());
         bytecode.push(11);
-        bytecode.push(OP_DEFINE_GETTER.0 as u8);
+        bytecode.push(OP_DEFINE_GETTER.as_u8());
         emit_u16(&mut bytecode, 1);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert_eq!(result, obj);
@@ -3481,13 +3481,13 @@ mod tests {
         let key = ctx.intern_string(b"s").expect("atom");
 
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_PUSH_I8.0 as u8);
+        bytecode.push(OP_PUSH_I8.as_u8());
         bytecode.push(22);
-        bytecode.push(OP_DEFINE_SETTER.0 as u8);
+        bytecode.push(OP_DEFINE_SETTER.as_u8());
         emit_u16(&mut bytecode, 1);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
         assert_eq!(result, obj);
@@ -3514,12 +3514,12 @@ mod tests {
         );
 
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_1.0 as u8,
-            OP_GET_ARRAY_EL.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_PUSH_1.as_u8(),
+            OP_GET_ARRAY_EL.as_u8(),
+            OP_RETURN.as_u8(),
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
@@ -3533,13 +3533,13 @@ mod tests {
         let array = new_array(&mut ctx, &[new_short_int(7)]);
 
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_0.0 as u8,
-            OP_GET_ARRAY_EL2.0 as u8,
-            OP_SWAP.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_PUSH_0.as_u8(),
+            OP_GET_ARRAY_EL2.as_u8(),
+            OP_SWAP.as_u8(),
+            OP_RETURN.as_u8(),
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
@@ -3552,19 +3552,19 @@ mod tests {
         let array = new_array(&mut ctx, &[new_short_int(0)]);
 
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_0.0 as u8,
-            OP_PUSH_I8.0 as u8,
+            OP_PUSH_0.as_u8(),
+            OP_PUSH_I8.as_u8(),
             7,
-            OP_PUT_ARRAY_EL.0 as u8,
-            OP_PUSH_CONST.0 as u8,
+            OP_PUT_ARRAY_EL.as_u8(),
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_0.0 as u8,
-            OP_GET_ARRAY_EL.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_PUSH_0.as_u8(),
+            OP_GET_ARRAY_EL.as_u8(),
+            OP_RETURN.as_u8(),
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
@@ -3578,11 +3578,11 @@ mod tests {
         let array = new_array(&mut ctx, &[new_short_int(1), new_short_int(2)]);
 
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_GET_LENGTH.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_GET_LENGTH.as_u8(),
+            OP_RETURN.as_u8(),
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
@@ -3595,11 +3595,11 @@ mod tests {
         let mut ctx = new_context();
         let val = ctx.new_string("hi").expect("string");
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_GET_LENGTH.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_GET_LENGTH.as_u8(),
+            OP_RETURN.as_u8(),
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![val]);
@@ -3613,12 +3613,12 @@ mod tests {
         let array = new_array(&mut ctx, &[new_short_int(3)]);
 
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_GET_LENGTH2.0 as u8,
-            OP_SWAP.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_GET_LENGTH2.as_u8(),
+            OP_SWAP.as_u8(),
+            OP_RETURN.as_u8(),
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
@@ -3636,14 +3636,14 @@ mod tests {
             .expect("proto");
 
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             1,
             0,
-            OP_SET_PROTO.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_SET_PROTO.as_u8(),
+            OP_RETURN.as_u8(),
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, proto]);
@@ -3661,14 +3661,14 @@ mod tests {
         define_property_value(&mut ctx, obj, key, new_short_int(1)).expect("define");
 
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             1,
             0,
-            OP_DELETE.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_DELETE.as_u8(),
+            OP_RETURN.as_u8(),
         ];
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj, key]);
@@ -3680,14 +3680,14 @@ mod tests {
     fn array_from_preserves_order() {
         let mut ctx = new_context();
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_1.0 as u8);
-        bytecode.push(OP_PUSH_2.0 as u8);
-        bytecode.push(OP_PUSH_3.0 as u8);
-        bytecode.push(OP_ARRAY_FROM.0 as u8);
+        bytecode.push(OP_PUSH_1.as_u8());
+        bytecode.push(OP_PUSH_2.as_u8());
+        bytecode.push(OP_PUSH_3.as_u8());
+        bytecode.push(OP_ARRAY_FROM.as_u8());
         emit_u16(&mut bytecode, 3);
-        bytecode.push(OP_PUSH_0.0 as u8);
-        bytecode.push(OP_GET_ARRAY_EL.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_PUSH_0.as_u8());
+        bytecode.push(OP_GET_ARRAY_EL.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode(&mut ctx, bytecode);
         assert!(is_int(result));
@@ -3699,16 +3699,16 @@ mod tests {
         let mut ctx = new_context();
         let array = new_array(&mut ctx, &[new_short_int(7)]);
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_FOR_OF_START.0 as u8);
-        bytecode.push(OP_FOR_OF_NEXT.0 as u8);
-        bytecode.push(OP_IF_FALSE.0 as u8);
+        bytecode.push(OP_FOR_OF_START.as_u8());
+        bytecode.push(OP_FOR_OF_NEXT.as_u8());
+        bytecode.push(OP_IF_FALSE.as_u8());
         emit_i32(&mut bytecode, 6);
-        bytecode.push(OP_PUSH_0.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
-        bytecode.push(OP_NIP.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_PUSH_0.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
+        bytecode.push(OP_NIP.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![array]);
         assert!(is_int(result));
@@ -3725,16 +3725,16 @@ mod tests {
         define_property_value(&mut ctx, obj, key, new_short_int(1)).expect("define");
 
         let mut bytecode = Vec::new();
-        bytecode.push(OP_PUSH_CONST.0 as u8);
+        bytecode.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut bytecode, 0);
-        bytecode.push(OP_FOR_IN_START.0 as u8);
-        bytecode.push(OP_FOR_OF_NEXT.0 as u8);
-        bytecode.push(OP_IF_FALSE.0 as u8);
+        bytecode.push(OP_FOR_IN_START.as_u8());
+        bytecode.push(OP_FOR_OF_NEXT.as_u8());
+        bytecode.push(OP_IF_FALSE.as_u8());
         emit_i32(&mut bytecode, 6);
-        bytecode.push(OP_PUSH_0.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
-        bytecode.push(OP_NIP.0 as u8);
-        bytecode.push(OP_RETURN.0 as u8);
+        bytecode.push(OP_PUSH_0.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
+        bytecode.push(OP_NIP.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
 
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![obj]);
         let mut scratch = [0u8; 5];
@@ -3749,14 +3749,14 @@ mod tests {
         let compiled = compile_regexp(b"a", 0).expect("regexp");
         let bytecode_val = ctx.alloc_byte_array(compiled.bytes()).expect("bytecode");
         let bytecode = vec![
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             0,
             0,
-            OP_PUSH_CONST.0 as u8,
+            OP_PUSH_CONST.as_u8(),
             1,
             0,
-            OP_REGEXP.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_REGEXP.as_u8(),
+            OP_RETURN.as_u8(),
         ];
         let result = call_bytecode_with_cpool(&mut ctx, bytecode, vec![source, bytecode_val]);
         let obj_ptr = object_ptr(result).expect("regexp ptr");
@@ -3772,7 +3772,7 @@ mod tests {
     #[test]
     fn arguments_len_matches_passed_args() {
         let mut ctx = new_context();
-        let bytecode = vec![OP_ARGUMENTS.0 as u8, OP_GET_LENGTH.0 as u8, OP_RETURN.0 as u8];
+        let bytecode = vec![OP_ARGUMENTS.as_u8(), OP_GET_LENGTH.as_u8(), OP_RETURN.as_u8()];
         let func = make_function_bytecode(
             &mut ctx,
             bytecode,
@@ -3791,7 +3791,7 @@ mod tests {
     #[test]
     fn this_func_returns_closure() {
         let mut ctx = new_context();
-        let bytecode = vec![OP_THIS_FUNC.0 as u8, OP_RETURN.0 as u8];
+        let bytecode = vec![OP_THIS_FUNC.as_u8(), OP_RETURN.as_u8()];
         let func = make_function_bytecode(
             &mut ctx,
             bytecode,
@@ -3809,7 +3809,7 @@ mod tests {
     #[test]
     fn new_target_tracks_constructor_calls() {
         let mut ctx = new_context();
-        let inner_code = vec![OP_NEW_TARGET.0 as u8, OP_RETURN.0 as u8];
+        let inner_code = vec![OP_NEW_TARGET.as_u8(), OP_RETURN.as_u8()];
         let inner_func = make_function_bytecode(
             &mut ctx,
             inner_code,
@@ -3824,11 +3824,11 @@ mod tests {
         assert_eq!(result, JS_UNDEFINED);
 
         let mut outer_code = Vec::new();
-        outer_code.push(OP_FCLOSURE.0 as u8);
+        outer_code.push(OP_FCLOSURE.as_u8());
         emit_u16(&mut outer_code, 0);
-        outer_code.push(OP_CALL_CONSTRUCTOR.0 as u8);
+        outer_code.push(OP_CALL_CONSTRUCTOR.as_u8());
         emit_u16(&mut outer_code, 0);
-        outer_code.push(OP_RETURN.0 as u8);
+        outer_code.push(OP_RETURN.as_u8());
         let outer_func = make_function_bytecode(
             &mut ctx,
             outer_code,
@@ -3853,10 +3853,10 @@ mod tests {
     fn call_invokes_closure_with_args() {
         let mut ctx = new_context();
         let callee_code = vec![
-            OP_GET_ARG0.0 as u8,
-            OP_GET_ARG1.0 as u8,
-            OP_ADD.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_GET_ARG0.as_u8(),
+            OP_GET_ARG1.as_u8(),
+            OP_ADD.as_u8(),
+            OP_RETURN.as_u8(),
         ];
         let callee_func = make_function_bytecode(
             &mut ctx,
@@ -3870,13 +3870,13 @@ mod tests {
         let callee_closure = ctx.alloc_closure(callee_func, 0).expect("closure");
 
         let mut caller_code = Vec::new();
-        caller_code.push(OP_PUSH_CONST.0 as u8);
+        caller_code.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut caller_code, 0);
-        caller_code.push(OP_PUSH_1.0 as u8);
-        caller_code.push(OP_PUSH_2.0 as u8);
-        caller_code.push(OP_CALL.0 as u8);
+        caller_code.push(OP_PUSH_1.as_u8());
+        caller_code.push(OP_PUSH_2.as_u8());
+        caller_code.push(OP_CALL.as_u8());
         emit_u16(&mut caller_code, 2);
-        caller_code.push(OP_RETURN.0 as u8);
+        caller_code.push(OP_RETURN.as_u8());
         let caller_func = make_function_bytecode(
             &mut ctx,
             caller_code,
@@ -3895,7 +3895,7 @@ mod tests {
     #[test]
     fn call_method_preserves_arg_order() {
         let mut ctx = new_context();
-        let callee_code = vec![OP_GET_ARG0.0 as u8, OP_RETURN.0 as u8];
+        let callee_code = vec![OP_GET_ARG0.as_u8(), OP_RETURN.as_u8()];
         let callee_func = make_function_bytecode(
             &mut ctx,
             callee_code,
@@ -3911,14 +3911,14 @@ mod tests {
             .expect("object");
 
         let mut caller_code = Vec::new();
-        caller_code.push(OP_PUSH_CONST.0 as u8);
+        caller_code.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut caller_code, 0);
-        caller_code.push(OP_PUSH_CONST.0 as u8);
+        caller_code.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut caller_code, 1);
-        caller_code.push(OP_PUSH_5.0 as u8);
-        caller_code.push(OP_CALL_METHOD.0 as u8);
+        caller_code.push(OP_PUSH_5.as_u8());
+        caller_code.push(OP_CALL_METHOD.as_u8());
         emit_u16(&mut caller_code, 1);
-        caller_code.push(OP_RETURN.0 as u8);
+        caller_code.push(OP_RETURN.as_u8());
         let caller_func = make_function_bytecode(
             &mut ctx,
             caller_code,
@@ -3937,7 +3937,7 @@ mod tests {
     #[test]
     fn call_constructor_uses_function_prototype() {
         let mut ctx = new_context();
-        let callee_code = vec![OP_PUSH_1.0 as u8, OP_RETURN.0 as u8];
+        let callee_code = vec![OP_PUSH_1.as_u8(), OP_RETURN.as_u8()];
         let callee_func = make_function_bytecode(
             &mut ctx,
             callee_code,
@@ -3955,11 +3955,11 @@ mod tests {
         define_property_value(&mut ctx, callee_closure, proto_key, proto).expect("define");
 
         let mut caller_code = Vec::new();
-        caller_code.push(OP_PUSH_CONST.0 as u8);
+        caller_code.push(OP_PUSH_CONST.as_u8());
         emit_u16(&mut caller_code, 0);
-        caller_code.push(OP_CALL_CONSTRUCTOR.0 as u8);
+        caller_code.push(OP_CALL_CONSTRUCTOR.as_u8());
         emit_u16(&mut caller_code, 0);
-        caller_code.push(OP_RETURN.0 as u8);
+        caller_code.push(OP_RETURN.as_u8());
         let caller_func = make_function_bytecode(
             &mut ctx,
             caller_code,
@@ -3982,15 +3982,15 @@ mod tests {
         let ext_vars = vec![name, new_short_int(decl)];
 
         let mut inner_code = Vec::new();
-        inner_code.push(OP_GET_VAR_REF.0 as u8);
+        inner_code.push(OP_GET_VAR_REF.as_u8());
         emit_u16(&mut inner_code, 0);
-        inner_code.push(OP_PUSH_1.0 as u8);
-        inner_code.push(OP_ADD.0 as u8);
-        inner_code.push(OP_PUT_VAR_REF.0 as u8);
+        inner_code.push(OP_PUSH_1.as_u8());
+        inner_code.push(OP_ADD.as_u8());
+        inner_code.push(OP_PUT_VAR_REF.as_u8());
         emit_u16(&mut inner_code, 0);
-        inner_code.push(OP_GET_VAR_REF.0 as u8);
+        inner_code.push(OP_GET_VAR_REF.as_u8());
         emit_u16(&mut inner_code, 0);
-        inner_code.push(OP_RETURN.0 as u8);
+        inner_code.push(OP_RETURN.as_u8());
         let inner_func = make_function_bytecode(
             &mut ctx,
             inner_code,
@@ -4002,9 +4002,9 @@ mod tests {
         );
 
         let mut outer_code = Vec::new();
-        outer_code.push(OP_FCLOSURE.0 as u8);
+        outer_code.push(OP_FCLOSURE.as_u8());
         emit_u16(&mut outer_code, 0);
-        outer_code.push(OP_RETURN.0 as u8);
+        outer_code.push(OP_RETURN.as_u8());
         let outer_func = make_function_bytecode(
             &mut ctx,
             outer_code,
@@ -4035,12 +4035,12 @@ mod tests {
         let ext_vars = vec![name, new_short_int(decl)];
 
         let mut code = Vec::new();
-        code.push(OP_PUSH_1.0 as u8);
-        code.push(OP_PUT_VAR_REF_NOCHECK.0 as u8);
+        code.push(OP_PUSH_1.as_u8());
+        code.push(OP_PUT_VAR_REF_NOCHECK.as_u8());
         emit_u16(&mut code, 0);
-        code.push(OP_GET_VAR_REF_NOCHECK.0 as u8);
+        code.push(OP_GET_VAR_REF_NOCHECK.as_u8());
         emit_u16(&mut code, 0);
-        code.push(OP_RETURN.0 as u8);
+        code.push(OP_RETURN.as_u8());
         let func = make_function_bytecode(
             &mut ctx,
             code,
@@ -4064,9 +4064,9 @@ mod tests {
         let ext_vars = vec![name, new_short_int(decl)];
 
         let mut code = Vec::new();
-        code.push(OP_GET_VAR_REF.0 as u8);
+        code.push(OP_GET_VAR_REF.as_u8());
         emit_u16(&mut code, 0);
-        code.push(OP_RETURN.0 as u8);
+        code.push(OP_RETURN.as_u8());
         let func = make_function_bytecode(
             &mut ctx,
             code,

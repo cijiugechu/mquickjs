@@ -531,7 +531,7 @@ mod tests {
     }
 
     fn make_const_func(ctx: &mut JSContext, value_op: u8) -> JSValue {
-        let bytecode = vec![value_op, OP_RETURN.0 as u8];
+        let bytecode = vec![value_op, OP_RETURN.as_u8()];
         let byte_code_val = ctx.alloc_byte_array(&bytecode).expect("bytecode");
         let header = FunctionBytecodeHeader::new(false, false, false, 0, false);
         let fields = FunctionBytecodeFields {
@@ -585,7 +585,7 @@ mod tests {
             .alloc_object(JSObjectClass::Object, ctx.class_proto()[JSObjectClass::Object as usize], 0)
             .expect("object");
         let value_of = ctx.intern_string(b"valueOf").expect("atom");
-        let func = make_const_func(&mut ctx, OP_PUSH_1.0 as u8);
+        let func = make_const_func(&mut ctx, OP_PUSH_1.as_u8());
         define_property_value(&mut ctx, obj, value_of, func).expect("define");
         let prim = to_primitive(&mut ctx, obj, ToPrimitiveHint::Number).expect("primitive");
         assert!(is_int(prim));

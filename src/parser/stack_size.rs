@@ -120,7 +120,7 @@ pub fn compute_stack_size(byte_code: &[u8]) -> Result<u16, StackSizeError> {
         }
         let op = byte_code[pos as usize];
         pos += 1;
-        if op == OP_INVALID.0 as u8 || (op as usize) >= OPCODES.len() {
+        if op == OP_INVALID.as_u8() || (op as usize) >= OPCODES.len() {
             return Err(StackSizeError::new(StackSizeErrorKind::InvalidOpcode, pc));
         }
         let info = &OPCODES[op as usize];
@@ -143,7 +143,7 @@ pub fn compute_stack_size(byte_code: &[u8]) -> Result<u16, StackSizeError> {
             }
             max_stack = stack_len;
         }
-        let opcode = OpCode(op as u16);
+        let opcode = OpCode::from_u16(op as u16);
         match opcode {
             OP_RETURN | OP_RETURN_UNDEF | OP_THROW | OP_RET => continue,
             OP_GOTO => {
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn compute_stack_size_linear_sequence() {
-        let byte_code = [OP_PUSH_0.0 as u8, OP_RETURN.0 as u8];
+        let byte_code = [OP_PUSH_0.as_u8(), OP_RETURN.as_u8()];
         let size = compute_stack_size(&byte_code).unwrap();
         assert_eq!(size, 1);
     }
@@ -200,13 +200,13 @@ mod tests {
     #[test]
     fn compute_stack_size_handles_npop_call() {
         let mut byte_code = vec![
-            OP_PUSH_0.0 as u8,
-            OP_PUSH_0.0 as u8,
-            OP_PUSH_0.0 as u8,
-            OP_CALL.0 as u8,
+            OP_PUSH_0.as_u8(),
+            OP_PUSH_0.as_u8(),
+            OP_PUSH_0.as_u8(),
+            OP_CALL.as_u8(),
             0,
             0,
-            OP_RETURN.0 as u8,
+            OP_RETURN.as_u8(),
         ];
         put_u16(&mut byte_code[4..6], 2);
         let size = compute_stack_size(&byte_code).unwrap();
@@ -216,20 +216,20 @@ mod tests {
     #[test]
     fn compute_stack_size_handles_branch_and_goto() {
         let mut byte_code = vec![
-            OP_PUSH_TRUE.0 as u8,
-            OP_IF_TRUE.0 as u8,
+            OP_PUSH_TRUE.as_u8(),
+            OP_IF_TRUE.as_u8(),
             0,
             0,
             0,
             0,
-            OP_PUSH_0.0 as u8,
-            OP_GOTO.0 as u8,
+            OP_PUSH_0.as_u8(),
+            OP_GOTO.as_u8(),
             0,
             0,
             0,
             0,
-            OP_PUSH_1.0 as u8,
-            OP_RETURN.0 as u8,
+            OP_PUSH_1.as_u8(),
+            OP_RETURN.as_u8(),
         ];
         let if_base = 2u32;
         let if_target = 12u32;
@@ -244,19 +244,19 @@ mod tests {
     #[test]
     fn compute_stack_size_detects_inconsistent_stack() {
         let mut byte_code = vec![
-            OP_PUSH_TRUE.0 as u8,
-            OP_IF_TRUE.0 as u8,
+            OP_PUSH_TRUE.as_u8(),
+            OP_IF_TRUE.as_u8(),
             0,
             0,
             0,
             0,
-            OP_PUSH_0.0 as u8,
-            OP_GOTO.0 as u8,
+            OP_PUSH_0.as_u8(),
+            OP_GOTO.as_u8(),
             0,
             0,
             0,
             0,
-            OP_RETURN.0 as u8,
+            OP_RETURN.as_u8(),
         ];
         let if_base = 2u32;
         let target = 12u32;
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn compute_stack_size_reports_underflow() {
-        let byte_code = [OP_RETURN.0 as u8];
+        let byte_code = [OP_RETURN.as_u8()];
         let err = compute_stack_size(&byte_code).unwrap_err();
         assert_eq!(err.pc(), 0);
         assert_eq!(err.kind(), &StackSizeErrorKind::StackUnderflow);

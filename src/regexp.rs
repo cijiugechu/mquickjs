@@ -547,8 +547,8 @@ fn lre_exec(
         let opcode = bytecode[pc];
         pc += 1;
         match opcode {
-            op if op == REOP_MATCH.0 as u8 => return Ok(true),
-            op if op == REOP_LOOKAHEAD_MATCH.0 as u8 => {
+            op if op == REOP_MATCH.as_u8() => return Ok(true),
+            op if op == REOP_LOOKAHEAD_MATCH.as_u8() => {
                 let sp_start = sp;
                 loop {
                     let sp1 = sp;
@@ -593,7 +593,7 @@ fn lre_exec(
                     }
                 }
             }
-            op if op == REOP_NEGATIVE_LOOKAHEAD_MATCH.0 as u8 => {
+            op if op == REOP_NEGATIVE_LOOKAHEAD_MATCH.as_u8() => {
                 loop {
                     while sp < bp {
                         let idx = unsafe { ptr::read_unaligned(sp) };
@@ -631,7 +631,7 @@ fn lre_exec(
                     return Ok(false);
                 }
             }
-            op if op == REOP_CHAR1.0 as u8 => {
+            op if op == REOP_CHAR1.as_u8() => {
                 if cptr + 1 > input.len() {
                     if !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                         return Ok(false);
@@ -647,7 +647,7 @@ fn lre_exec(
                 pc += 1;
                 cptr += 1;
             }
-            op if op == REOP_CHAR2.0 as u8 => {
+            op if op == REOP_CHAR2.as_u8() => {
                 if cptr + 2 > input.len() {
                     if !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                         return Ok(false);
@@ -663,7 +663,7 @@ fn lre_exec(
                 pc += 2;
                 cptr += 2;
             }
-            op if op == REOP_CHAR3.0 as u8 => {
+            op if op == REOP_CHAR3.as_u8() => {
                 if cptr + 3 > input.len() {
                     if !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                         return Ok(false);
@@ -681,7 +681,7 @@ fn lre_exec(
                 pc += 3;
                 cptr += 3;
             }
-            op if op == REOP_CHAR4.0 as u8 => {
+            op if op == REOP_CHAR4.as_u8() => {
                 if cptr + 4 > input.len() {
                     if !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                         return Ok(false);
@@ -697,14 +697,14 @@ fn lre_exec(
                 pc += 4;
                 cptr += 4;
             }
-            op if op == REOP_SPLIT_GOTO_FIRST.0 as u8 || op == REOP_SPLIT_NEXT_FIRST.0 as u8 => {
+            op if op == REOP_SPLIT_GOTO_FIRST.as_u8() || op == REOP_SPLIT_NEXT_FIRST.as_u8() => {
                 if pc + 4 > bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("split"));
                 }
                 let offset = get_u32(&bytecode[pc..pc + 4]) as i32;
                 pc += 4;
                 check_stack_space(ctx, sp, 3)?;
-                let (pc1, new_pc) = if op == REOP_SPLIT_NEXT_FIRST.0 as u8 {
+                let (pc1, new_pc) = if op == REOP_SPLIT_NEXT_FIRST.as_u8() {
                     ((pc as i32 + offset) as usize, pc)
                 } else {
                     (pc, (pc as i32 + offset) as usize)
@@ -722,7 +722,7 @@ fn lre_exec(
                 bp = sp;
                 pc = new_pc;
             }
-            op if op == REOP_LOOKAHEAD.0 as u8 || op == REOP_NEGATIVE_LOOKAHEAD.0 as u8 => {
+            op if op == REOP_LOOKAHEAD.as_u8() || op == REOP_NEGATIVE_LOOKAHEAD.as_u8() => {
                 if pc + 4 > bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("lookahead"));
                 }
@@ -732,7 +732,7 @@ fn lre_exec(
                 let target = (pc as i32 + offset) as usize;
                 let state = encode_pc_state(
                     target,
-                    if op == REOP_LOOKAHEAD.0 as u8 {
+                    if op == REOP_LOOKAHEAD.as_u8() {
                         ReExecState::Lookahead
                     } else {
                         ReExecState::NegativeLookahead
@@ -749,16 +749,16 @@ fn lre_exec(
                 }
                 bp = sp;
             }
-            op if op == REOP_GOTO.0 as u8 => {
+            op if op == REOP_GOTO.as_u8() => {
                 if pc + 4 > bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("goto"));
                 }
                 let offset = get_u32(&bytecode[pc..pc + 4]) as i32;
                 pc = (pc as i32 + 4 + offset) as usize;
             }
-            op if op == REOP_LINE_START.0 as u8 || op == REOP_LINE_START_M.0 as u8 => {
+            op if op == REOP_LINE_START.as_u8() || op == REOP_LINE_START_M.as_u8() => {
                 if cptr != 0 {
-                    if op == REOP_LINE_START.0 as u8 {
+                    if op == REOP_LINE_START.as_u8() {
                         if !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                             return Ok(false);
                         }
@@ -775,9 +775,9 @@ fn lre_exec(
                     }
                 }
             }
-            op if op == REOP_LINE_END.0 as u8 || op == REOP_LINE_END_M.0 as u8 => {
+            op if op == REOP_LINE_END.as_u8() || op == REOP_LINE_END_M.as_u8() => {
                 if cptr != input.len() {
-                    if op == REOP_LINE_END.0 as u8 {
+                    if op == REOP_LINE_END.as_u8() {
                         if !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                             return Ok(false);
                         }
@@ -794,7 +794,7 @@ fn lre_exec(
                     }
                 }
             }
-            op if op == REOP_DOT.0 as u8 => {
+            op if op == REOP_DOT.as_u8() => {
                 let Some(c) = get_char(input, &mut cptr) else {
                     if !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                         return Ok(false);
@@ -805,14 +805,14 @@ fn lre_exec(
                     return Ok(false);
                 }
             }
-            op if op == REOP_ANY.0 as u8 => {
+            op if op == REOP_ANY.as_u8() => {
                 if get_char(input, &mut cptr).is_none()
                     && !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)?
                 {
                     return Ok(false);
                 }
             }
-            op if op == REOP_SPACE.0 as u8 || op == REOP_NOT_SPACE.0 as u8 => {
+            op if op == REOP_SPACE.as_u8() || op == REOP_NOT_SPACE.as_u8() => {
                 if cptr >= input.len() {
                     if !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                         return Ok(false);
@@ -835,14 +835,14 @@ fn lre_exec(
                     cptr += len;
                     is_space_non_ascii(c as u32)
                 };
-                if op == REOP_NOT_SPACE.0 as u8 {
+                if op == REOP_NOT_SPACE.as_u8() {
                     is_space = !is_space;
                 }
                 if !is_space && !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)? {
                     return Ok(false);
                 }
             }
-            op if op == REOP_SAVE_START.0 as u8 || op == REOP_SAVE_END.0 as u8 => {
+            op if op == REOP_SAVE_START.as_u8() || op == REOP_SAVE_END.as_u8() => {
                 if pc >= bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("save"));
                 }
@@ -851,10 +851,10 @@ fn lre_exec(
                 if idx >= capture_count {
                     return Err(RegExpError::InvalidBytecode("capture index"));
                 }
-                let capture_idx = 2 * idx + (op - REOP_SAVE_START.0 as u8) as usize;
+                let capture_idx = 2 * idx + (op - REOP_SAVE_START.as_u8()) as usize;
                 save_capture(ctx, &mut sp, capture, capture_idx, cptr as u32)?;
             }
-            op if op == REOP_SAVE_RESET.0 as u8 => {
+            op if op == REOP_SAVE_RESET.as_u8() => {
                 if pc + 1 >= bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("save_reset"));
                 }
@@ -872,7 +872,7 @@ fn lre_exec(
                     idx += 1;
                 }
             }
-            op if op == REOP_SET_I32.0 as u8 => {
+            op if op == REOP_SET_I32.as_u8() => {
                 if pc + 5 > bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("set_i32"));
                 }
@@ -881,7 +881,7 @@ fn lre_exec(
                 pc += 5;
                 save_capture_check(ctx, &mut sp, &mut bp, capture, 2 * capture_count + reg, val)?;
             }
-            op if op == REOP_LOOP.0 as u8 => {
+            op if op == REOP_LOOP.as_u8() => {
                 if pc + 5 > bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("loop"));
                 }
@@ -895,10 +895,10 @@ fn lre_exec(
                     pc = (pc as i32 + offset) as usize;
                 }
             }
-            op if op == REOP_LOOP_SPLIT_GOTO_FIRST.0 as u8
-                || op == REOP_LOOP_SPLIT_NEXT_FIRST.0 as u8
-                || op == REOP_LOOP_CHECK_ADV_SPLIT_GOTO_FIRST.0 as u8
-                || op == REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.0 as u8 =>
+            op if op == REOP_LOOP_SPLIT_GOTO_FIRST.as_u8()
+                || op == REOP_LOOP_SPLIT_NEXT_FIRST.as_u8()
+                || op == REOP_LOOP_CHECK_ADV_SPLIT_GOTO_FIRST.as_u8()
+                || op == REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.as_u8() =>
             {
                 if pc + 9 > bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("loop_split"));
@@ -913,8 +913,8 @@ fn lre_exec(
                 if val > limit {
                     pc = (pc as i32 + offset) as usize;
                 } else {
-                    let check_adv = op == REOP_LOOP_CHECK_ADV_SPLIT_GOTO_FIRST.0 as u8
-                        || op == REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.0 as u8;
+                    let check_adv = op == REOP_LOOP_CHECK_ADV_SPLIT_GOTO_FIRST.as_u8()
+                        || op == REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.as_u8();
                     if check_adv
                         && capture[idx + 1] == cptr as u32
                         && val != limit
@@ -926,8 +926,8 @@ fn lre_exec(
                     }
                     if val != 0 {
                         check_stack_space(ctx, sp, 3)?;
-                        let (pc1, new_pc) = if op == REOP_LOOP_SPLIT_NEXT_FIRST.0 as u8
-                            || op == REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.0 as u8
+                        let (pc1, new_pc) = if op == REOP_LOOP_SPLIT_NEXT_FIRST.as_u8()
+                            || op == REOP_LOOP_CHECK_ADV_SPLIT_NEXT_FIRST.as_u8()
                         {
                             ((pc as i32 + offset) as usize, pc)
                         } else {
@@ -948,7 +948,7 @@ fn lre_exec(
                     }
                 }
             }
-            op if op == REOP_SET_CHAR_POS.0 as u8 => {
+            op if op == REOP_SET_CHAR_POS.as_u8() => {
                 if pc >= bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("set_char_pos"));
                 }
@@ -956,7 +956,7 @@ fn lre_exec(
                 pc += 1;
                 save_capture_check(ctx, &mut sp, &mut bp, capture, 2 * capture_count + reg, cptr as u32)?;
             }
-            op if op == REOP_CHECK_ADVANCE.0 as u8 => {
+            op if op == REOP_CHECK_ADVANCE.as_u8() => {
                 if pc >= bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("check_advance"));
                 }
@@ -968,7 +968,7 @@ fn lre_exec(
                     return Ok(false);
                 }
             }
-            op if op == REOP_WORD_BOUNDARY.0 as u8 || op == REOP_NOT_WORD_BOUNDARY.0 as u8 => {
+            op if op == REOP_WORD_BOUNDARY.as_u8() || op == REOP_NOT_WORD_BOUNDARY.as_u8() => {
                 let before = if cptr == 0 {
                     false
                 } else {
@@ -980,14 +980,14 @@ fn lre_exec(
                     peek_char(input, cptr).map(is_word_char).unwrap_or(false)
                 };
                 let is_boundary = before ^ after;
-                let want_boundary = op == REOP_WORD_BOUNDARY.0 as u8;
+                let want_boundary = op == REOP_WORD_BOUNDARY.as_u8();
                 if is_boundary != want_boundary
                     && !backtrack(capture, &mut pc, &mut cptr, &mut sp, &mut bp)?
                 {
                     return Ok(false);
                 }
             }
-            op if op == REOP_RANGE8.0 as u8 => {
+            op if op == REOP_RANGE8.as_u8() => {
                 if pc >= bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("range8"));
                 }
@@ -1028,7 +1028,7 @@ fn lre_exec(
                 }
                 pc += 2 * n;
             }
-            op if op == REOP_RANGE.0 as u8 => {
+            op if op == REOP_RANGE.as_u8() => {
                 if pc + 2 > bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("range"));
                 }
@@ -1078,7 +1078,7 @@ fn lre_exec(
                 }
                 pc += 8 * n;
             }
-            op if op == REOP_BACK_REFERENCE.0 as u8 || op == REOP_BACK_REFERENCE_I.0 as u8 => {
+            op if op == REOP_BACK_REFERENCE.as_u8() || op == REOP_BACK_REFERENCE_I.as_u8() => {
                 if pc >= bytecode.len() {
                     return Err(RegExpError::InvalidBytecode("back_reference"));
                 }
@@ -1106,7 +1106,7 @@ fn lre_exec(
                         };
                         let mut c1 = c1;
                         let mut c2 = c2;
-                        if op == REOP_BACK_REFERENCE_I.0 as u8 {
+                        if op == REOP_BACK_REFERENCE_I.as_u8() {
                             c1 = lre_canonicalize(c1);
                             c2 = lre_canonicalize(c2);
                         }
@@ -1119,7 +1119,7 @@ fn lre_exec(
                     }
                 }
             }
-            op if op == REOP_NOT_WORD_BOUNDARY.0 as u8 => {
+            op if op == REOP_NOT_WORD_BOUNDARY.as_u8() => {
                 let before = if cptr == 0 {
                     false
                 } else {
