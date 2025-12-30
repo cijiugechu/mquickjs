@@ -100,9 +100,8 @@ fn compute_stack_size_push(
     Ok(())
 }
 
-fn add_pos(base: u32, offset: u32, pc: u32) -> Result<u32, StackSizeError> {
-    base.checked_add(offset)
-        .ok_or_else(|| StackSizeError::new(StackSizeErrorKind::BufferOverflow, pc))
+fn add_pos(base: u32, offset: u32, _pc: u32) -> Result<u32, StackSizeError> {
+    Ok(base.wrapping_add(offset))
 }
 
 // C: `compute_stack_size` and `compute_stack_size_push` in mquickjs.c.

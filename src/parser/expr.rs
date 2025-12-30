@@ -3147,9 +3147,11 @@ mod tests {
     use super::*;
     use crate::context::{ContextConfig, JSContext};
     use crate::opcode::{
-        OP_ADD, OP_ARGUMENTS, OP_ARRAY_FROM, OP_DEFINE_GETTER, OP_DROP, OP_DUP, OP_FCLOSURE,
-        OP_GOTO, OP_IF_FALSE, OP_MUL, OP_PUT_LOC, OP_PUT_LOC0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3,
-        OP_PUSH_FALSE, OP_PUSH_TRUE, OP_RETURN, OP_RETURN_UNDEF, OP_THIS_FUNC, OPCODES,
+        OP_ADD, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_DEFINE_GETTER, OP_DROP, OP_DUP, OP_EQ,
+        OP_FCLOSURE, OP_GET_LOC0, OP_GET_LOC1, OP_GET_VAR_REF, OP_GOTO, OP_IF_FALSE, OP_IF_TRUE,
+        OP_INC, OP_LT, OP_MUL, OP_PUT_LOC, OP_PUT_LOC0, OP_PUT_LOC1, OP_PUT_VAR_REF,
+        OP_PUT_VAR_REF_NOCHECK, OP_PUSH_0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_FALSE,
+        OP_PUSH_TRUE, OP_RETURN, OP_RETURN_UNDEF, OP_STRICT_EQ, OP_THIS_FUNC, OPCODES,
     };
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
@@ -3202,6 +3204,41 @@ mod tests {
             .expect("bytecode")
             .buf();
         decode_ops(byte_code)
+    }
+
+    fn function_ops(parser: &ExprParser<'_, '_>, func: &FunctionBytecode) -> Vec<OpCode> {
+        let byte_code = parser
+            .byte_array_ref(func.byte_code())
+            .expect("func bytecode")
+            .buf();
+        decode_ops(byte_code)
+    }
+
+    fn find_function_by_name<'a>(
+        parser: &'a ExprParser<'_, '_>,
+        root: &FunctionBytecode,
+        name: &[u8],
+    ) -> Option<&'a FunctionBytecode> {
+        let cpool_val = root.cpool();
+        if cpool_val != JS_NULL {
+            let cpool = parser.value_array_ref(cpool_val).ok()?;
+            for &entry in cpool.values() {
+                let Some(ptr) = parser.func_ptr(entry) else {
+                    continue;
+                };
+                // SAFETY: parser owns the function allocations referenced by cpool entries.
+                let func = unsafe { ptr.as_ref() };
+                if value_matches_bytes(func.func_name(), name) {
+                    return Some(func);
+                }
+            }
+        }
+
+        parser
+            .nested_funcs
+            .iter()
+            .map(|func| func.as_ref())
+            .find(|func| value_matches_bytes(func.func_name(), name))
     }
 
     #[test]
@@ -3339,5 +3376,190 @@ mod tests {
 
         let ops = parse_program_ops(&parser);
         assert!(ops.contains(&OP_DEFINE_GETTER));
+    }
+
+    #[test]
+    fn eval_program_var_assignment_matches_c_bytecode() {
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, b"var x = 1; x = x + 2;");
+        parser.attach_parse_state();
+        parser
+            .parse_program_with_flags(true, false, false)
+            .expect("parse");
+
+        let ops = parse_program_ops(&parser);
+        assert_eq!(
+            ops,
+            [
+                OP_PUSH_1,
+                OP_PUT_VAR_REF_NOCHECK,
+                OP_GET_VAR_REF,
+                OP_PUSH_2,
+                OP_ADD,
+                OP_PUT_VAR_REF,
+                OP_RETURN_UNDEF,
+            ]
+        );
+    }
+
+    #[test]
+    fn eval_program_loop_functions_match_c_bytecode() {
+        let source = br#"
+function test_while()
+{
+    var i, c;
+    i = 0;
+    c = 0;
+    while (i < 3) {
+        c++;
+        i++;
+    }
+    assert(c === 3);
+}
+
+function test_while_break()
+{
+    var i, c;
+    i = 0;
+    c = 0;
+    while (i < 3) {
+        c++;
+        if (i == 1)
+            break;
+        i++;
+    }
+    assert(c === 2 && i === 1);
+}
+
+function test_do_while()
+{
+    var i, c;
+    i = 0;
+    c = 0;
+    do {
+        c++;
+        i++;
+    } while (i < 3);
+    assert(c === 3 && i === 3);
+}
+"#;
+
+        let mut ctx = new_context();
+        let mut parser = ExprParser::new(&mut ctx, source);
+        parser.attach_parse_state();
+        parser
+            .parse_program_with_flags(true, false, false)
+            .expect("parse");
+
+        let root = parser
+            .function_ref(parser.func.value())
+            .expect("root func");
+
+        let func = find_function_by_name(&parser, root, b"test_while").expect("test_while");
+        let ops = function_ops(&parser, func);
+        assert_eq!(
+            ops,
+            [
+                OP_PUSH_0,
+                OP_PUT_LOC0,
+                OP_PUSH_0,
+                OP_PUT_LOC1,
+                OP_GET_LOC0,
+                OP_PUSH_3,
+                OP_LT,
+                OP_IF_FALSE,
+                OP_GET_LOC1,
+                OP_INC,
+                OP_PUT_LOC1,
+                OP_GET_LOC0,
+                OP_INC,
+                OP_PUT_LOC0,
+                OP_GOTO,
+                OP_GET_VAR_REF,
+                OP_GET_LOC1,
+                OP_PUSH_3,
+                OP_STRICT_EQ,
+                OP_CALL,
+                OP_DROP,
+                OP_RETURN_UNDEF,
+            ]
+        );
+
+        let func = find_function_by_name(&parser, root, b"test_while_break")
+            .expect("test_while_break");
+        let ops = function_ops(&parser, func);
+        assert_eq!(
+            ops,
+            [
+                OP_PUSH_0,
+                OP_PUT_LOC0,
+                OP_PUSH_0,
+                OP_PUT_LOC1,
+                OP_GET_LOC0,
+                OP_PUSH_3,
+                OP_LT,
+                OP_IF_FALSE,
+                OP_GET_LOC1,
+                OP_INC,
+                OP_PUT_LOC1,
+                OP_GET_LOC0,
+                OP_PUSH_1,
+                OP_EQ,
+                OP_IF_FALSE,
+                OP_GOTO,
+                OP_GET_LOC0,
+                OP_INC,
+                OP_PUT_LOC0,
+                OP_GOTO,
+                OP_GET_VAR_REF,
+                OP_GET_LOC1,
+                OP_PUSH_2,
+                OP_STRICT_EQ,
+                OP_DUP,
+                OP_IF_FALSE,
+                OP_DROP,
+                OP_GET_LOC0,
+                OP_PUSH_1,
+                OP_STRICT_EQ,
+                OP_CALL,
+                OP_DROP,
+                OP_RETURN_UNDEF,
+            ]
+        );
+
+        let func = find_function_by_name(&parser, root, b"test_do_while").expect("test_do_while");
+        let ops = function_ops(&parser, func);
+        assert_eq!(
+            ops,
+            [
+                OP_PUSH_0,
+                OP_PUT_LOC0,
+                OP_PUSH_0,
+                OP_PUT_LOC1,
+                OP_GET_LOC1,
+                OP_INC,
+                OP_PUT_LOC1,
+                OP_GET_LOC0,
+                OP_INC,
+                OP_PUT_LOC0,
+                OP_GET_LOC0,
+                OP_PUSH_3,
+                OP_LT,
+                OP_IF_TRUE,
+                OP_GET_VAR_REF,
+                OP_GET_LOC1,
+                OP_PUSH_3,
+                OP_STRICT_EQ,
+                OP_DUP,
+                OP_IF_FALSE,
+                OP_DROP,
+                OP_GET_LOC0,
+                OP_PUSH_3,
+                OP_STRICT_EQ,
+                OP_CALL,
+                OP_DROP,
+                OP_RETURN_UNDEF,
+            ]
+        );
     }
 }
