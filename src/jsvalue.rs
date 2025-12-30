@@ -148,7 +148,7 @@ impl JSValue {
 
     #[cfg(target_pointer_width = "64")]
     pub fn short_float_to_f64(&self) -> f64 {
-        let bits = self.raw_bits() as u64;
+        let bits = self.raw_bits();
         uint64_as_float64(bits.rotate_left(60).wrapping_add(Self::JS_FLOAT64_VALUE_ADDEND))
     }
 

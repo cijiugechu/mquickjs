@@ -474,7 +474,7 @@ fn decode_stack_ptr(stack_top: *mut JSValue, val: JSValue) -> Result<*mut JSValu
     if offset < 0 {
         return Err(InterpreterError::InvalidValue("saved fp"));
     }
-    Ok(unsafe { stack_top.offset(-(offset as isize)) })
+    Ok(unsafe { stack_top.offset(-offset) })
 }
 
 fn call_argc(call_flags: i32) -> usize {

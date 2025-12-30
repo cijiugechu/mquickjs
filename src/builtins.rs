@@ -2984,6 +2984,7 @@ pub fn js_array_splice(
 // Magic values for array iterator methods
 const JS_SPECIAL_EVERY: i32 = 0;
 const JS_SPECIAL_SOME: i32 = 1;
+#[allow(unused)]
 const JS_SPECIAL_FOR_EACH: i32 = 2;
 const JS_SPECIAL_MAP: i32 = 3;
 const JS_SPECIAL_FILTER: i32 = 4;
@@ -3068,6 +3069,7 @@ pub fn js_array_every(
 }
 
 // Magic values for reduce methods
+#[allow(unused)]
 const JS_SPECIAL_REDUCE: i32 = 0;
 const JS_SPECIAL_REDUCE_RIGHT: i32 = 1;
 
@@ -4527,6 +4529,7 @@ mod tests {
         assert_eq!(string_from_value(stack), "    at test.js:3:5\n");
     }
 
+    #[allow(unused)]
     #[cfg(all(test, not(miri)))]
     // MIRI: unsupported operation: `clock_gettime` with `REALTIME` clocks not available when isolation is enabled
     fn date_now_returns_number() {
