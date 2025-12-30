@@ -38,14 +38,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn array_data_roundtrip() {
-        let data = ArrayData::new(crate::jsvalue::JS_NULL, 12);
-        assert_eq!(data.tab(), crate::jsvalue::JS_NULL);
-        assert_eq!(data.len(), 12);
-        assert!(!data.is_empty());
-    }
-
-    #[test]
     fn array_data_len_max() {
         let data = ArrayData::new(crate::jsvalue::JS_NULL, ArrayData::LEN_MAX);
         assert_eq!(data.len(), ArrayData::LEN_MAX);

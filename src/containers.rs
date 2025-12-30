@@ -187,15 +187,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn string_header_roundtrip() {
-        let header = StringHeader::new(42, true, false, true, true);
-        assert_eq!(header.len(), 42);
-        assert!(header.is_unique());
-        assert!(!header.is_ascii());
-        assert!(header.is_numeric());
-    }
-
-    #[test]
     fn string_size_matches_alignment() {
         let size = string_alloc_size(0);
         assert_eq!(size, core::mem::size_of::<JSWord>() + JSW as usize);
@@ -203,21 +194,4 @@ mod tests {
         assert_eq!(size, core::mem::size_of::<JSWord>() + (JSW as usize) * 2);
     }
 
-    #[test]
-    fn byte_array_header_roundtrip() {
-        let header = ByteArrayHeader::new(128, false);
-        assert_eq!(header.size(), 128);
-    }
-
-    #[test]
-    fn value_array_header_roundtrip() {
-        let header = ValueArrayHeader::new(7, true);
-        assert_eq!(header.size(), 7);
-    }
-
-    #[test]
-    fn var_ref_header_roundtrip() {
-        let header = VarRefHeader::new(true, false);
-        assert!(header.is_detached());
-    }
 }

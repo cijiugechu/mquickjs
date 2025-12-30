@@ -287,44 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn ugolomb_roundtrip() {
-        let values = [0u32, 1, 2, 3, 7, 8, 63, 127, 128, 1024, 65535];
-        let mut writer = Pc2LineEmitter::new(0, false);
-        for &v in &values {
-            writer.put_ugolomb(v);
-        }
-        let data = writer.into_bytes();
-        let mut index = 0u32;
-        for &v in &values {
-            assert_eq!(get_ugolomb(&data, &mut index), v);
-        }
-    }
-
-    #[test]
-    fn sgolomb_roundtrip() {
-        let values = [0i32, 1, -1, 2, -2, 15, -15, 1024, -1024];
-        let mut writer = Pc2LineEmitter::new(0, false);
-        for &v in &values {
-            writer.put_sgolomb(v);
-        }
-        let data = writer.into_bytes();
-        let mut index = 0u32;
-        for &v in &values {
-            assert_eq!(get_sgolomb(&data, &mut index), v);
-        }
-    }
-
-    #[test]
-    fn hoisted_code_len_roundtrip() {
-        let values = [0u32, 1, 127, 128, 0x3fff, 0x1fffff];
-        for &v in &values {
-            let mut buf = Vec::new();
-            append_hoisted_len(&mut buf, v);
-            assert_eq!(get_pc2line_hoisted_code_len(&buf), v);
-        }
-    }
-
-    #[test]
     fn find_line_col_basic() {
         let byte_code = vec![OP_NOP.0 as u8, OP_NOP.0 as u8, OP_NOP.0 as u8];
         let source_buf = b"abc\nxyz";

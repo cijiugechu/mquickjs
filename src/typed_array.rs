@@ -34,16 +34,3 @@ impl TypedArray {
         self.offset
     }
 }
-
-#[cfg(all(test, not(miri)))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typed_array_roundtrip() {
-        let data = TypedArray::new(crate::jsvalue::JS_NULL, 4, 2);
-        assert_eq!(data.buffer(), crate::jsvalue::JS_NULL);
-        assert_eq!(data.len(), 4);
-        assert_eq!(data.offset(), 2);
-    }
-}

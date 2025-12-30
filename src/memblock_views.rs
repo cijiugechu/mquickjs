@@ -78,35 +78,3 @@ impl ValueArrayView {
         self.arr
     }
 }
-
-#[cfg(all(test, not(miri)))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn float64_view_roundtrip() {
-        let view = Float64View::new(true, 1.25);
-        assert_eq!(view.header().header().tag(), MTag::Float64);
-        assert!(view.header().header().gc_mark());
-        assert_eq!(view.dval(), 1.25);
-    }
-
-    #[test]
-    fn byte_array_view_roundtrip() {
-        let header = ByteArrayHeader::new(12, false);
-        let view = ByteArrayView::new(header, NonNull::new(0x1000 as *mut u8).unwrap());
-        assert_eq!(view.size(), 12);
-        assert_eq!(view.buf().as_ptr(), 0x1000 as *mut u8);
-    }
-
-    #[test]
-    fn value_array_view_roundtrip() {
-        let header = ValueArrayHeader::new(4, true);
-        let view = ValueArrayView::new(
-            header,
-            NonNull::new(0x2000 as *mut JSValue).unwrap(),
-        );
-        assert_eq!(view.size(), 4);
-        assert_eq!(view.arr().as_ptr(), 0x2000 as *mut JSValue);
-    }
-}

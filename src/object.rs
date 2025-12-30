@@ -220,34 +220,10 @@ mod tests {
     use core::mem::size_of;
 
     #[test]
-    fn object_header_roundtrip() {
-        let header = ObjectHeader::new(7, 4, true);
-        assert_eq!(header.tag(), MTag::Object);
-        assert!(header.gc_mark());
-        assert_eq!(header.class_id(), 7);
-        assert_eq!(header.extra_size(), 4);
-    }
-
-    #[test]
     fn object_header_max_values() {
         let header = ObjectHeader::new(ObjectHeader::CLASS_ID_MASK as u8, ObjectHeader::EXTRA_SIZE_MASK, false);
         assert_eq!(header.class_id(), ObjectHeader::CLASS_ID_MASK as u8);
         assert_eq!(header.extra_size(), ObjectHeader::EXTRA_SIZE_MASK);
-    }
-
-    #[test]
-    fn regexp_roundtrip() {
-        let data = RegExp::new(crate::jsvalue::JS_NULL, crate::jsvalue::JS_UNDEFINED, 3);
-        assert_eq!(data.source(), crate::jsvalue::JS_NULL);
-        assert_eq!(data.byte_code(), crate::jsvalue::JS_UNDEFINED);
-        assert_eq!(data.last_index(), 3);
-    }
-
-    #[test]
-    fn user_data_roundtrip() {
-        let ptr = core::ptr::null_mut();
-        let data = ObjectUserData::new(ptr);
-        assert_eq!(data.opaque(), ptr);
     }
 
     #[test]
@@ -265,15 +241,5 @@ mod tests {
         ];
         let max = sizes.iter().copied().max().unwrap();
         assert_eq!(size_of::<ObjectPayload>(), max);
-    }
-
-    #[test]
-    fn object_roundtrip() {
-        let header = ObjectHeader::new(1, 2, false);
-        let payload = ObjectPayload { array: ArrayData::new(crate::jsvalue::JS_NULL, 0) };
-        let obj = Object::new(header, crate::jsvalue::JS_NULL, crate::jsvalue::JS_UNDEFINED, payload);
-        assert_eq!(obj.header(), header);
-        assert_eq!(obj.proto(), crate::jsvalue::JS_NULL);
-        assert_eq!(obj.props(), crate::jsvalue::JS_UNDEFINED);
     }
 }

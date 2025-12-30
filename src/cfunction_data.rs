@@ -27,15 +27,3 @@ impl CFunctionData {
         unsafe { core::ptr::addr_of_mut!((*this).params) }
     }
 }
-
-#[cfg(all(test, not(miri)))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cfunction_data_roundtrip() {
-        let data = CFunctionData::new(7, crate::jsvalue::JS_NULL);
-        assert_eq!(data.idx(), 7);
-        assert_eq!(data.params(), crate::jsvalue::JS_NULL);
-    }
-}

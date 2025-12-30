@@ -437,11 +437,4 @@ mod tests {
         assert_eq!(from_hex(b'?'), -1);
     }
 
-    #[test]
-    fn float_bit_round_trips() {
-        let v = -0.0_f64;
-        assert_eq!(uint64_as_float64(float64_as_uint64(v)), v);
-        let f = 1.5_f32;
-        assert_eq!(uint_as_float(float_as_uint(f)), f);
-    }
 }

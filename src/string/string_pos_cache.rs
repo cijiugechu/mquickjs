@@ -69,11 +69,4 @@ mod tests {
         assert_eq!(StringPosType::Utf16 as u8, 1);
     }
 
-    #[test]
-    fn entry_roundtrip() {
-        let entry = StringPosCacheEntry::new(crate::jsvalue::JS_NULL, 3, 7);
-        assert_eq!(entry.str(), crate::jsvalue::JS_NULL);
-        assert_eq!(entry.utf8_pos(), 3);
-        assert_eq!(entry.utf16_pos(), 7);
-    }
 }

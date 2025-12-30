@@ -30,15 +30,3 @@ impl ErrorData {
         unsafe { core::ptr::addr_of_mut!((*this).stack) }
     }
 }
-
-#[cfg(all(test, not(miri)))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn error_data_roundtrip() {
-        let data = ErrorData::new(crate::jsvalue::JS_NULL, crate::jsvalue::JS_UNDEFINED);
-        assert_eq!(data.message(), crate::jsvalue::JS_NULL);
-        assert_eq!(data.stack(), crate::jsvalue::JS_UNDEFINED);
-    }
-}

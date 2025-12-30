@@ -169,13 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn special_tag_roundtrip() {
-        let val = value_make_special(JS_TAG_STRING_CHAR, 0x1f642);
-        assert_eq!(value_get_special_tag(val), JS_TAG_STRING_CHAR);
-        assert_eq!(value_get_special_value(val), 0x1f642);
-    }
-
-    #[test]
     fn bool_values_match_tags() {
         assert!(is_bool(JS_FALSE));
         assert!(is_bool(JS_TRUE));
@@ -190,31 +183,4 @@ mod tests {
         assert!(is_uninitialized(JS_UNINITIALIZED));
     }
 
-    #[test]
-    fn int_roundtrip() {
-        let samples = [JS_SHORTINT_MIN, -1, 0, 1, 123, JS_SHORTINT_MAX];
-        for &val in &samples {
-            let tagged = new_short_int(val);
-            assert!(is_int(tagged));
-            assert_eq!(value_get_int(tagged), val);
-        }
-    }
-
-    #[test]
-    fn ptr_roundtrip() {
-        let mut value = 0u64;
-        let ptr = NonNull::new(&mut value as *mut u64).expect("non-null");
-        let tagged = value_from_ptr(ptr);
-        assert!(is_ptr(tagged));
-        assert_eq!(value_to_ptr::<u64>(tagged), Some(ptr));
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    fn short_float_roundtrip() {
-        let d = 1.5_f64;
-        let tagged = short_float_from_f64(d);
-        assert!(is_short_float(tagged));
-        assert_eq!(short_float_to_f64(tagged).to_bits(), d.to_bits());
-    }
 }

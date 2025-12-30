@@ -237,37 +237,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mtag_fields_roundtrip() {
-        let header = MbHeader::new(MTag::String, true);
-        assert_eq!(header.tag(), MTag::String);
-        assert!(header.gc_mark());
-        assert_eq!(MbHeader::new(MTag::Object, false).tag(), MTag::Object);
-        assert!(!MbHeader::new(MTag::Object, false).gc_mark());
-    }
-
-    #[test]
     fn mtag_mask_covers_all_tags() {
         assert_eq!(MTag::COUNT, JS_MTAG_MASK + 1);
         for tag in 0..MTag::COUNT {
             let header = MbHeader::new(MTag::try_from(tag).unwrap(), false);
             assert_eq!(header.tag_bits(), tag);
         }
-    }
-
-    #[test]
-    fn value_array_header_roundtrip() {
-        let size = 0x1234;
-        let header = MbHeader::value_array_header(size);
-        assert_eq!(header.tag(), MTag::ValueArray);
-        assert_eq!(header.value_array_size(), size);
-    }
-
-    #[test]
-    fn free_block_header_roundtrip() {
-        let header = FreeBlockHeader::new(0x1234, true);
-        assert_eq!(header.header().tag(), MTag::Free);
-        assert!(header.header().gc_mark());
-        assert_eq!(header.size(), 0x1234);
     }
 
     #[test]

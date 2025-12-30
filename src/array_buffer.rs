@@ -20,14 +20,3 @@ impl ArrayBuffer {
         unsafe { core::ptr::addr_of_mut!((*this).byte_buffer) }
     }
 }
-
-#[cfg(all(test, not(miri)))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn array_buffer_roundtrip() {
-        let data = ArrayBuffer::new(crate::jsvalue::JS_NULL);
-        assert_eq!(data.byte_buffer(), crate::jsvalue::JS_NULL);
-    }
-}

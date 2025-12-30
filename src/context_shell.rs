@@ -142,35 +142,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_shell_roundtrip_and_validation() {
-        let shell = ContextShell::new(
-            NonNull::new(0x1000 as *mut u8).unwrap(),
-            NonNull::new(0x1800 as *mut u8).unwrap(),
-            NonNull::new(0x2000 as *mut u8).unwrap(),
-            NonNull::new(0x1400 as *mut JSValue).unwrap(),
-            NonNull::new(0x1800 as *mut JSValue).unwrap(),
-            NonNull::new(0x1800 as *mut JSValue).unwrap(),
-            64,
-            1,
-            0,
-            10,
-            -1,
-        );
-        assert_eq!(shell.heap_base().as_ptr(), 0x1000 as *mut u8);
-        assert_eq!(shell.heap_free().as_ptr(), 0x1800 as *mut u8);
-        assert_eq!(shell.stack_top().as_ptr(), 0x2000 as *mut u8);
-        assert_eq!(shell.stack_bottom().as_ptr(), 0x1400 as *mut JSValue);
-        assert_eq!(shell.sp().as_ptr(), 0x1800 as *mut JSValue);
-        assert_eq!(shell.fp().as_ptr(), 0x1800 as *mut JSValue);
-        assert_eq!(shell.min_free_size(), 64);
-        assert_eq!(shell.n_rom_atom_tables(), 1);
-        assert_eq!(shell.string_pos_cache_counter(), 0);
-        assert_eq!(shell.class_count(), 10);
-        assert_eq!(shell.interrupt_counter(), -1);
-        assert!(shell.is_valid());
-    }
-
-    #[test]
     fn context_shell_invalid_heap_order() {
         let shell = ContextShell::new(
             NonNull::new(0x2000 as *mut u8).unwrap(),

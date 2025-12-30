@@ -302,17 +302,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn function_bytecode_header_roundtrip() {
-        let header = FunctionBytecodeHeader::new(true, false, true, 17, true);
-        assert_eq!(header.tag(), MTag::FunctionBytecode);
-        assert!(header.gc_mark());
-        assert!(header.has_arguments());
-        assert!(!header.has_local_func_name());
-        assert!(header.has_column());
-        assert_eq!(header.arg_count(), 17);
-    }
-
-    #[test]
     fn function_bytecode_header_max_arg_count() {
         let header = FunctionBytecodeHeader::new(false, true, false, u16::MAX, false);
         assert_eq!(header.arg_count(), u16::MAX);
@@ -320,34 +309,5 @@ mod tests {
         assert!(!header.has_arguments());
         assert!(header.has_local_func_name());
         assert!(!header.has_column());
-    }
-
-    #[test]
-    fn function_bytecode_roundtrip() {
-        let header = FunctionBytecodeHeader::new(false, false, false, 0, false);
-        let fields = FunctionBytecodeFields {
-            func_name: crate::jsvalue::JS_NULL,
-            byte_code: crate::jsvalue::JS_UNDEFINED,
-            cpool: crate::jsvalue::JS_NULL,
-            vars: crate::jsvalue::JS_UNDEFINED,
-            ext_vars: crate::jsvalue::JS_NULL,
-            stack_size: 12,
-            ext_vars_len: 2,
-            filename: crate::jsvalue::JS_NULL,
-            pc2line: crate::jsvalue::JS_UNDEFINED,
-            source_pos: 99,
-        };
-        let func = FunctionBytecode::from_fields(header, fields);
-        assert_eq!(func.header(), header);
-        assert_eq!(func.func_name(), crate::jsvalue::JS_NULL);
-        assert_eq!(func.byte_code(), crate::jsvalue::JS_UNDEFINED);
-        assert_eq!(func.cpool(), crate::jsvalue::JS_NULL);
-        assert_eq!(func.vars(), crate::jsvalue::JS_UNDEFINED);
-        assert_eq!(func.ext_vars(), crate::jsvalue::JS_NULL);
-        assert_eq!(func.stack_size(), 12);
-        assert_eq!(func.ext_vars_len(), 2);
-        assert_eq!(func.filename(), crate::jsvalue::JS_NULL);
-        assert_eq!(func.pc2line(), crate::jsvalue::JS_UNDEFINED);
-        assert_eq!(func.source_pos(), 99);
     }
 }

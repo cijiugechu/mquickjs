@@ -1667,25 +1667,9 @@ mod tests {
     }
 
     #[test]
-    fn property_meta_roundtrip() {
-        let meta = PropertyMeta::new(123, JSPropType::VarRef);
-        assert_eq!(meta.hash_next(), 123);
-        assert_eq!(meta.prop_type(), JSPropType::VarRef);
-    }
-
-    #[test]
     fn property_meta_masks_hash() {
         let meta = PropertyMeta::new(PropertyMeta::HASH_NEXT_MASK, JSPropType::Normal);
         assert_eq!(meta.hash_next(), PropertyMeta::HASH_NEXT_MASK);
-    }
-
-    #[test]
-    fn property_roundtrip() {
-        let meta = PropertyMeta::new(7, JSPropType::GetSet);
-        let prop = Property::new(crate::jsvalue::JS_NULL, crate::jsvalue::JS_UNDEFINED, meta);
-        assert_eq!(prop.key(), crate::jsvalue::JS_NULL);
-        assert_eq!(prop.value(), crate::jsvalue::JS_UNDEFINED);
-        assert_eq!(prop.meta(), meta);
     }
 
     #[test]

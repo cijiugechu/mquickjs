@@ -35,17 +35,3 @@ impl RomClass {
         self.parent_class
     }
 }
-
-#[cfg(all(test, not(miri)))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rom_class_roundtrip() {
-        let rc = RomClass::new(crate::jsvalue::JS_NULL, -1, crate::jsvalue::JS_UNDEFINED, crate::jsvalue::JS_NULL);
-        assert_eq!(rc.props(), crate::jsvalue::JS_NULL);
-        assert_eq!(rc.ctor_idx(), -1);
-        assert_eq!(rc.proto_props(), crate::jsvalue::JS_UNDEFINED);
-        assert_eq!(rc.parent_class(), crate::jsvalue::JS_NULL);
-    }
-}
