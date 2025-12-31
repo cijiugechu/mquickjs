@@ -9,6 +9,7 @@ use crate::dtoa::{
     JS_DTOA_FORMAT_FREE,
 };
 use crate::enums::JSObjectClass;
+use crate::gc_ref::GcRef;
 use crate::js_libm;
 use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
@@ -20,10 +21,16 @@ use crate::property::{
 };
 use crate::regexp::{regexp_exec, RegExpError, RegExpExecMode};
 use crate::string::runtime::string_view;
+use core::cell::RefCell;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::slice;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{fs, thread};
+use std::sync::OnceLock;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+use std::ffi::OsStr;
 
 fn alloc_number(ctx: &mut JSContext, value: f64) -> JSValue {
     ctx.new_float64(value).unwrap_or(JSValue::JS_EXCEPTION)
@@ -166,6 +173,74 @@ fn to_int32_internal(val: JSValue, sat_flag: bool) -> i32 {
     } else {
         0x7fff_ffff
     }
+}
+
+const MAX_TIMERS: usize = 16;
+
+struct JsTimer {
+    allocated: bool,
+    timeout_ms: i64,
+    func: GcRef,
+}
+
+impl JsTimer {
+    fn new() -> Self {
+        Self {
+            allocated: false,
+            timeout_ms: 0,
+            func: GcRef::new(JSValue::JS_UNDEFINED),
+        }
+    }
+}
+
+thread_local! {
+    static TIMERS: RefCell<Vec<JsTimer>> = RefCell::new(init_timers());
+}
+
+fn init_timers() -> Vec<JsTimer> {
+    let mut timers = Vec::with_capacity(MAX_TIMERS);
+    for _ in 0..MAX_TIMERS {
+        timers.push(JsTimer::new());
+    }
+    timers
+}
+
+fn with_timers<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut [JsTimer]) -> R,
+{
+    TIMERS.with(|timers| {
+        let mut timers = timers.borrow_mut();
+        f(&mut timers)
+    })
+}
+
+fn monotonic_ms() -> i64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    let elapsed = start.elapsed();
+    let ms = elapsed.as_millis();
+    if ms > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        ms as i64
+    }
+}
+
+fn load_file_bytes(path: &[u8]) -> Vec<u8> {
+    #[cfg(unix)]
+    let os_path = OsStr::from_bytes(path);
+    #[cfg(not(unix))]
+    let os_path = {
+        let lossy = String::from_utf8_lossy(path);
+        OsStr::new(lossy.as_ref())
+    };
+
+    fs::read(os_path).unwrap_or_else(|err| {
+        let display = String::from_utf8_lossy(path);
+        eprintln!("{display}: {err}");
+        std::process::exit(1);
+    })
 }
 
 fn to_int32(val: JSValue) -> i32 {
@@ -467,6 +542,11 @@ pub fn js_math_random(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]
     alloc_number(ctx, d)
 }
 
+pub fn js_gc(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]) -> JSValue {
+    ctx.gc();
+    JSValue::JS_UNDEFINED
+}
+
 pub fn js_date_now(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]) -> JSValue {
     let now = SystemTime::now();
     let Ok(duration) = now.duration_since(UNIX_EPOCH) else {
@@ -476,8 +556,27 @@ pub fn js_date_now(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]) -
     alloc_number(ctx, ms)
 }
 
+pub fn js_performance_now(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]) -> JSValue {
+    alloc_number(ctx, monotonic_ms() as f64)
+}
+
 pub fn js_date_constructor(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSValue]) -> JSValue {
     ctx.throw_type_error("only Date.now() is supported")
+}
+
+pub fn js_load(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
+    let filename_val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let filename = match conversion::to_string(ctx, filename_val) {
+        Ok(val) => val,
+        Err(_) => return JSValue::JS_EXCEPTION,
+    };
+    let mut scratch = [0u8; 5];
+    let Some(view) = string_view(filename, &mut scratch) else {
+        return JSValue::JS_EXCEPTION;
+    };
+    let buf = load_file_bytes(view.bytes());
+    let filename_str = String::from_utf8_lossy(view.bytes());
+    crate::api::js_eval_with_filename(ctx, &buf, 0, filename_str.as_ref())
 }
 
 pub fn js_print(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
@@ -504,6 +603,105 @@ pub fn js_print(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JS
     }
     ctx.write_log(b"\n");
     JSValue::JS_UNDEFINED
+}
+
+pub fn js_setTimeout(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
+    let func = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    if !func.is_function() {
+        return ctx.throw_type_error("not a function");
+    }
+    let delay_val = args.get(1).copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let delay = match conversion::to_int32(ctx, delay_val) {
+        Ok(delay) => delay,
+        Err(_) => return JSValue::JS_EXCEPTION,
+    };
+    let deadline = monotonic_ms().saturating_add(delay as i64);
+    let mut timer_id = None;
+    with_timers(|timers| {
+        for (idx, timer) in timers.iter_mut().enumerate() {
+            if timer.allocated {
+                continue;
+            }
+            let slot = ctx.add_gc_ref(&mut timer.func);
+            unsafe {
+                // SAFETY: slot points at the GC ref value storage.
+                *slot = func;
+            }
+            timer.timeout_ms = deadline;
+            timer.allocated = true;
+            timer_id = Some(idx as i32);
+            break;
+        }
+    });
+    match timer_id {
+        Some(id) => ctx.new_int32(id).unwrap_or(JSValue::JS_EXCEPTION),
+        None => ctx.throw_internal_error("too many timers"),
+    }
+}
+
+pub fn js_clearTimeout(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
+    let id_val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let timer_id = match conversion::to_int32(ctx, id_val) {
+        Ok(id) => id,
+        Err(_) => return JSValue::JS_EXCEPTION,
+    };
+    if timer_id < 0 {
+        return JSValue::JS_UNDEFINED;
+    }
+    let timer_id = timer_id as usize;
+    with_timers(|timers| {
+        if let Some(timer) = timers.get_mut(timer_id)
+            && timer.allocated
+        {
+            ctx.delete_gc_ref(&timer.func);
+            timer.func.set_val(JSValue::JS_UNDEFINED);
+            timer.allocated = false;
+        }
+    });
+    JSValue::JS_UNDEFINED
+}
+
+#[allow(clippy::result_unit_err)]
+pub fn js_run_timers(ctx: &mut JSContext) -> Result<(), ()> {
+    loop {
+        let now = monotonic_ms();
+        let mut to_call = None;
+        let mut min_delay: Option<i64> = None;
+        with_timers(|timers| {
+            for timer in timers.iter_mut() {
+                if !timer.allocated {
+                    continue;
+                }
+                let delay = timer.timeout_ms.saturating_sub(now);
+                if delay <= 0 {
+                    let func = timer.func.val();
+                    ctx.delete_gc_ref(&timer.func);
+                    timer.func.set_val(JSValue::JS_UNDEFINED);
+                    timer.allocated = false;
+                    to_call = Some(func);
+                    break;
+                }
+                min_delay = Some(match min_delay {
+                    Some(current) => current.min(delay),
+                    None => delay,
+                });
+            }
+        });
+        if let Some(func) = to_call {
+            let ret = crate::api::js_call(ctx, func, JSValue::JS_NULL, &[]);
+            if ret.is_exception() {
+                return Err(());
+            }
+            continue;
+        }
+        let Some(delay) = min_delay else {
+            break;
+        };
+        if delay > 0 {
+            thread::sleep(Duration::from_millis(delay as u64));
+        }
+    }
+    Ok(())
 }
 
 pub fn js_global_eval(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
@@ -4251,6 +4449,70 @@ mod tests {
         );
         assert_eq!(out, JSValue::JS_UNDEFINED);
         assert_eq!(log.buf, b"hello 42\n");
+    }
+
+    #[test]
+    fn performance_now_returns_number() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+
+        let val = js_performance_now(&mut ctx, JSValue::JS_UNDEFINED, &[]);
+        assert!(val.is_number());
+    }
+
+    #[test]
+    fn load_reads_and_evaluates_script() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("mquickjs_load_test_{}.js", std::process::id()));
+        std::fs::write(&path, "1 + 2").expect("write temp");
+
+        let filename = path.to_string_lossy();
+        let filename_val = ctx.new_string(&filename).expect("filename");
+        let result = js_load(&mut ctx, JSValue::JS_UNDEFINED, &[filename_val]);
+        assert_eq!(crate::api::js_to_int32(&mut ctx, result), 3);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_timeout_runs_callback() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+
+        let func = crate::api::js_eval(
+            &mut ctx,
+            b"(function(){ globalThis.__timer = 7; })",
+            crate::capi_defs::JS_EVAL_RETVAL,
+        );
+        assert!(func.is_function());
+
+        let delay = ctx.new_int32(0).expect("delay");
+        let timer_id = js_setTimeout(&mut ctx, JSValue::JS_UNDEFINED, &[func, delay]);
+        assert!(timer_id.is_int());
+
+        assert!(js_run_timers(&mut ctx).is_ok());
+
+        let global = crate::api::js_get_global_object(&ctx);
+        let value = crate::api::js_get_property_str(&mut ctx, global, "__timer");
+        assert_eq!(crate::api::js_to_int32(&mut ctx, value), 7);
     }
 
     #[test]

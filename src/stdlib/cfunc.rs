@@ -84,13 +84,20 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_math_atan2" => BuiltinCFunction::Generic(builtins::js_math_atan2),
             "js_math_pow" => BuiltinCFunction::Generic(builtins::js_math_pow),
             "js_math_random" => BuiltinCFunction::Generic(builtins::js_math_random),
+            // GC
+            "js_gc" => BuiltinCFunction::Generic(builtins::js_gc),
             // Date
             "js_date_now" => BuiltinCFunction::Generic(builtins::js_date_now),
+            // Performance
+            "js_performance_now" => BuiltinCFunction::Generic(builtins::js_performance_now),
             // Global
             "js_global_eval" => BuiltinCFunction::Generic(builtins::js_global_eval),
             "js_global_isNaN" => BuiltinCFunction::Generic(builtins::js_global_isNaN),
             "js_global_isFinite" => BuiltinCFunction::Generic(builtins::js_global_isFinite),
             "js_print" => BuiltinCFunction::Generic(builtins::js_print),
+            "js_load" => BuiltinCFunction::Generic(builtins::js_load),
+            "js_setTimeout" => BuiltinCFunction::Generic(builtins::js_setTimeout),
+            "js_clearTimeout" => BuiltinCFunction::Generic(builtins::js_clearTimeout),
             // Object
             "js_object_hasOwnProperty" => {
                 BuiltinCFunction::Generic(builtins::js_object_hasOwnProperty)

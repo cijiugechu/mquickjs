@@ -8,6 +8,8 @@ license = "MIT"
 [dependencies]
 clap = { version = "4.5.32", features = ["derive"] }
 mquickjs = { path = "../.." }
+libc = "0.2.170"
+cfg-if = "1.0.0"
 
 [[bin]]
 name = "mquickjs-cli"

@@ -6,12 +6,14 @@
 //! - `js_call` - Call a JavaScript function with arguments
 //! - `js_run` - Execute parsed bytecode
 
-use crate::bytecode::{is_bytecode, relocate_bytecode_in_place, BytecodeRelocError};
+use crate::bytecode::{is_bytecode, relocate_bytecode, relocate_bytecode_in_place, BytecodeRelocError};
 use crate::containers::ValueArrayHeader;
-use crate::context::{BacktraceLocation, JSContext};
+use crate::context::{BacktraceLocation, ContextError, JSContext};
 pub use crate::exception::JsFormatArg;
 use crate::conversion;
 use crate::enums::JSObjectClass;
+use crate::gc::GcMarkConfig;
+use crate::gc_ref::GcRef;
 use crate::interpreter::{call, call_with_this, call_with_this_flags, create_closure};
 use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
@@ -19,12 +21,16 @@ use crate::object::{Object, ObjectHeader, ObjectUserData};
 use crate::parser::entry::{parse_source, ParseError, ParseOutput};
 use crate::parser::json::JsonValue;
 use crate::parser::regexp::RegExpBytecode;
-use crate::stdlib::stdlib_def::BytecodeHeader;
+use crate::stdlib::stdlib_def::{BytecodeHeader, JS_BYTECODE_MAGIC, JS_BYTECODE_VERSION};
 use crate::string::runtime::string_view;
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::slice;
+#[cfg(target_pointer_width = "64")]
+use crate::bytecode::{prepare_bytecode_64to32, BytecodePrepareError};
+#[cfg(target_pointer_width = "64")]
+use crate::stdlib::stdlib_def::BytecodeHeader32;
 
 /// Error type for API operations.
 #[derive(Clone, Debug)]
@@ -33,6 +39,48 @@ pub enum ApiError {
     Runtime(String),
     NotAFunction,
     NotABytecode,
+}
+
+#[derive(Clone, Debug)]
+pub enum BytecodeExportError {
+    Context(ContextError),
+    InvalidBytecodeFunction,
+    #[cfg(target_pointer_width = "64")]
+    Prepare32(BytecodePrepareError),
+    Relocation(BytecodeRelocError),
+}
+
+impl From<ContextError> for BytecodeExportError {
+    fn from(err: ContextError) -> Self {
+        BytecodeExportError::Context(err)
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+impl From<BytecodePrepareError> for BytecodeExportError {
+    fn from(err: BytecodePrepareError) -> Self {
+        BytecodeExportError::Prepare32(err)
+    }
+}
+
+impl From<BytecodeRelocError> for BytecodeExportError {
+    fn from(err: BytecodeRelocError) -> Self {
+        BytecodeExportError::Relocation(err)
+    }
+}
+
+impl core::fmt::Display for BytecodeExportError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BytecodeExportError::Context(err) => write!(f, "context error: {err:?}"),
+            BytecodeExportError::InvalidBytecodeFunction => {
+                write!(f, "bytecode function expected")
+            }
+            #[cfg(target_pointer_width = "64")]
+            BytecodeExportError::Prepare32(err) => write!(f, "bytecode 32-bit prepare error: {err:?}"),
+            BytecodeExportError::Relocation(err) => write!(f, "bytecode relocation error: {err:?}"),
+        }
+    }
 }
 
 impl From<ParseError> for ApiError {
@@ -102,6 +150,18 @@ enum ParsedResult {
     Bytecode(JSValue),               // function bytecode pointer
 }
 
+fn is_function_bytecode(val: JSValue) -> bool {
+    let Some(ptr) = val.to_ptr::<u8>() else {
+        return false;
+    };
+    let header_word = unsafe {
+        // SAFETY: ptr points at a readable memblock header.
+        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+    };
+    let header = MbHeader::from_word(header_word);
+    header.tag() == MTag::FunctionBytecode
+}
+
 fn js_eval_internal(
     ctx: &mut JSContext,
     source: &[u8],
@@ -168,6 +228,27 @@ pub fn js_parse(ctx: &mut JSContext, source: &[u8], eval_flags: u32) -> JSValue 
     }
 }
 
+/// Parse JavaScript source code and return raw bytecode (no closure).
+pub fn js_parse_bytecode(ctx: &mut JSContext, source: &[u8], eval_flags: u32) -> JSValue {
+    match js_parse_bytecode_internal(ctx, source, eval_flags) {
+        Ok(val) => val,
+        Err(err) => handle_api_error(ctx, err),
+    }
+}
+
+/// Parse JavaScript source code and return raw bytecode with a custom filename.
+pub fn js_parse_bytecode_with_filename(
+    ctx: &mut JSContext,
+    source: &[u8],
+    eval_flags: u32,
+    filename: &str,
+) -> JSValue {
+    match js_parse_bytecode_internal(ctx, source, eval_flags) {
+        Ok(val) => val,
+        Err(err) => handle_api_error_with_filename(ctx, err, filename),
+    }
+}
+
 /// Parse JavaScript source code without execution, with a custom filename.
 pub fn js_parse_with_filename(
     ctx: &mut JSContext,
@@ -227,6 +308,26 @@ fn js_parse_internal(
     }
 }
 
+fn js_parse_bytecode_internal(
+    ctx: &mut JSContext,
+    source: &[u8],
+    eval_flags: u32,
+) -> Result<JSValue, ApiError> {
+    let output = parse_source(ctx, source, eval_flags)?;
+    match output {
+        ParseOutput::Program(mut parser) => {
+            let func_bytecode = parser
+                .materialize_bytecode()
+                .map_err(|err| ApiError::Runtime(err.message().into_owned()))?;
+            if func_bytecode == JSValue::JS_NULL {
+                return Err(ApiError::NotABytecode);
+            }
+            Ok(func_bytecode)
+        }
+        _ => Err(ApiError::NotABytecode),
+    }
+}
+
 /// Call a JavaScript function with arguments.
 ///
 /// # Arguments
@@ -256,7 +357,7 @@ pub fn js_call(
     }
 }
 
-/// Execute a parsed function (closure).
+/// Execute a parsed function (closure or raw bytecode).
 ///
 /// # Arguments
 /// * `ctx` - The JavaScript context
@@ -265,9 +366,16 @@ pub fn js_call(
 /// # Returns
 /// The result of executing the function, or `JSValue::JS_EXCEPTION` on error.
 pub fn js_run(ctx: &mut JSContext, func: JSValue) -> JSValue {
-    if !func.is_function() {
-        return ctx.throw_type_error("not a function");
-    }
+    let func = if func.is_function() {
+        func
+    } else if is_function_bytecode(func) {
+        match create_closure(ctx, func, None) {
+            Ok(closure) => closure,
+            Err(_) => return JSValue::JS_EXCEPTION,
+        }
+    } else {
+        return ctx.throw_type_error("bytecode function expected");
+    };
     let _guard = match CallDepth::enter(ctx) {
         Some(guard) => guard,
         None => return ctx.throw_internal_error("C stack overflow"),
@@ -751,6 +859,149 @@ pub fn js_load_bytecode(ctx: &mut JSContext, buf: &[u8]) -> JSValue {
     header.main_func
 }
 
+/// Prepare a bytecode buffer for saving to disk (header + heap bytes).
+pub fn js_prepare_bytecode(
+    ctx: &mut JSContext,
+    main_func: JSValue,
+) -> Result<Vec<u8>, BytecodeExportError> {
+    if !is_function_bytecode(main_func) {
+        return Err(BytecodeExportError::InvalidBytecodeFunction);
+    }
+
+    ctx.clear_roots_for_bytecode();
+
+    let mut func_ref = GcRef::new(JSValue::JS_UNDEFINED);
+    let func_slot = ctx.add_gc_ref(&mut func_ref);
+    unsafe {
+        // SAFETY: func_slot is the GC root slot for func_ref.
+        *func_slot = main_func;
+    }
+
+    let unique_strings = build_unique_strings_array(ctx)?;
+    let mut unique_ref = GcRef::new(JSValue::JS_UNDEFINED);
+    let unique_slot = ctx.add_gc_ref(&mut unique_ref);
+    unsafe {
+        // SAFETY: unique_slot is the GC root slot for unique_ref.
+        *unique_slot = unique_strings;
+    }
+
+    ctx.gc_collect_with_config(GcMarkConfig::default());
+    let unique_strings = unsafe {
+        // SAFETY: unique_slot remains valid while the GC ref is registered.
+        *unique_slot
+    };
+    let main_func = unsafe {
+        // SAFETY: func_slot remains valid while the GC ref is registered.
+        *func_slot
+    };
+
+    let result = (|| {
+        let base = ctx.heap().heap_base().as_ptr();
+        let heap_free = ctx.heap().heap_free().as_ptr();
+        let data_len = heap_free as usize - base as usize;
+
+        let header = BytecodeHeader {
+            magic: JS_BYTECODE_MAGIC,
+            version: JS_BYTECODE_VERSION,
+            base_addr: base as usize,
+            unique_strings,
+            main_func,
+        };
+
+        let mut buf = Vec::with_capacity(size_of::<BytecodeHeader>() + data_len);
+        buf.resize(size_of::<BytecodeHeader>(), 0);
+        unsafe {
+            // SAFETY: buffer has header space and is writable.
+            ptr::write_unaligned(buf.as_mut_ptr().cast::<BytecodeHeader>(), header);
+            let data_slice = slice::from_raw_parts(base, data_len);
+            buf.extend_from_slice(data_slice);
+        }
+
+        unsafe {
+            let header_ptr = buf.as_mut_ptr().cast::<BytecodeHeader>();
+            let mut header = ptr::read_unaligned(header_ptr);
+            let data = &mut buf[size_of::<BytecodeHeader>()..];
+            relocate_bytecode(&mut header, data, 0, None)?;
+            ptr::write_unaligned(header_ptr, header);
+        }
+
+        Ok(buf)
+    })();
+
+    ctx.delete_gc_ref(&unique_ref);
+    ctx.delete_gc_ref(&func_ref);
+
+    result
+}
+
+#[cfg(target_pointer_width = "64")]
+/// Prepare a 32-bit bytecode buffer for saving to disk.
+pub fn js_prepare_bytecode_64to32(
+    ctx: &mut JSContext,
+    main_func: JSValue,
+) -> Result<Vec<u8>, BytecodeExportError> {
+    if !is_function_bytecode(main_func) {
+        return Err(BytecodeExportError::InvalidBytecodeFunction);
+    }
+
+    ctx.clear_roots_for_bytecode();
+
+    let mut func_ref = GcRef::new(JSValue::JS_UNDEFINED);
+    let func_slot = ctx.add_gc_ref(&mut func_ref);
+    unsafe {
+        // SAFETY: func_slot is the GC root slot for func_ref.
+        *func_slot = main_func;
+    }
+
+    let unique_strings = build_unique_strings_array(ctx)?;
+    let mut unique_ref = GcRef::new(JSValue::JS_UNDEFINED);
+    let unique_slot = ctx.add_gc_ref(&mut unique_ref);
+    unsafe {
+        // SAFETY: unique_slot is the GC root slot for unique_ref.
+        *unique_slot = unique_strings;
+    }
+
+    let result = (|| {
+        let heap = ctx.heap_mut() as *mut _;
+        let mut roots = ctx.gc_roots_for_export();
+        let unique_slot_ref = unsafe {
+            // SAFETY: unique_slot points at a valid JSValue slot.
+            &mut *unique_slot
+        };
+        let func_slot_ref = unsafe {
+            // SAFETY: func_slot points at a valid JSValue slot.
+            &mut *func_slot
+        };
+        let image = unsafe {
+            // SAFETY: heap points at the active heap layout and roots cover all live values.
+            prepare_bytecode_64to32(
+                &mut *heap,
+                &mut roots,
+                unique_slot_ref,
+                func_slot_ref,
+                GcMarkConfig::default(),
+            )?
+        };
+
+        let base = ctx.heap().heap_base().as_ptr();
+        let data_len = image.len;
+        let mut buf = Vec::with_capacity(size_of::<BytecodeHeader32>() + data_len);
+        buf.resize(size_of::<BytecodeHeader32>(), 0);
+        unsafe {
+            // SAFETY: buffer has header space and is writable.
+            ptr::write_unaligned(buf.as_mut_ptr().cast::<BytecodeHeader32>(), image.header);
+            let data_slice = slice::from_raw_parts(base, data_len);
+            buf.extend_from_slice(data_slice);
+        }
+        Ok(buf)
+    })();
+
+    ctx.delete_gc_ref(&unique_ref);
+    ctx.delete_gc_ref(&func_ref);
+
+    result
+}
+
 /// Set the log function used by debug printing.
 pub fn js_set_log_func(ctx: &mut JSContext, write_func: Option<crate::capi_defs::JSWriteFunc>) {
     ctx.set_log_func(write_func);
@@ -858,6 +1109,22 @@ fn bytecode_value_array(val: JSValue) -> Option<Vec<JSValue>> {
         slice::from_raw_parts(arr_ptr, len)
     };
     Some(slice.to_vec())
+}
+
+fn build_unique_strings_array(ctx: &mut JSContext) -> Result<JSValue, ContextError> {
+    let unique = ctx.atom_tables().unique_strings().to_vec();
+    if unique.is_empty() {
+        return Ok(JSValue::JS_NULL);
+    }
+    let ptr = ctx.alloc_value_array(unique.len())?;
+    unsafe {
+        // SAFETY: value array payload is writable for unique.len() entries.
+        let arr = ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue;
+        for (idx, &val) in unique.iter().enumerate() {
+            ptr::write_unaligned(arr.add(idx), val);
+        }
+    }
+    Ok(JSValue::from_ptr(ptr))
 }
 
 fn object_ptr_and_header(val: JSValue) -> Option<(NonNull<Object>, ObjectHeader)> {
@@ -1162,6 +1429,74 @@ mod tests {
         let main_func = js_load_bytecode(&mut ctx, bytecode_bytes);
         assert_eq!(main_func, JSValue::JS_NULL);
         assert_eq!(ctx.n_rom_atom_tables(), 2);
+    }
+
+    #[test]
+    fn parse_bytecode_and_run() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
+        let func = js_parse_bytecode(&mut ctx, b"1 + 2", 0);
+        assert!(!func.is_exception());
+        let result = js_run(&mut ctx, func);
+        assert_eq!(js_to_number(&mut ctx, result), 3.0);
+    }
+
+    #[test]
+    fn prepare_bytecode_roundtrip() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 128 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
+        let func = js_parse_bytecode(&mut ctx, b"1 + 2", 0);
+        let mut buf = js_prepare_bytecode(&mut ctx, func).expect("bytecode");
+        assert!(js_is_bytecode(&buf));
+        js_relocate_bytecode(&mut buf).expect("relocate");
+
+        let mut ctx_run = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 128 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+        let main = js_load_bytecode(&mut ctx_run, &buf);
+        let result = js_run(&mut ctx_run, main);
+        assert_eq!(js_to_number(&mut ctx_run, result), 3.0);
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn prepare_bytecode_64to32_roundtrip() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 128 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
+        let func = js_parse_bytecode(&mut ctx, b"1 + 2", 0);
+        let mut buf = js_prepare_bytecode_64to32(&mut ctx, func).expect("bytecode");
+        assert!(js_is_bytecode(&buf));
+        js_relocate_bytecode(&mut buf).expect("relocate");
+
+        let mut ctx_run = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 128 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+        let main = js_load_bytecode(&mut ctx_run, &buf);
+        let result = js_run(&mut ctx_run, main);
+        assert_eq!(js_to_number(&mut ctx_run, result), 3.0);
     }
 
 }

@@ -430,7 +430,8 @@ pub fn is_bytecode(buf: &[u8]) -> bool {
 /// `header` and `data` must describe a valid bytecode heap buffer with
 /// contiguous memblocks. All pointer-valued `JSValue`s must be non-null
 /// and point within the original heap base recorded in `header`. The
-/// `new_base_addr` must match the address of `data`.
+/// `new_base_addr` is the desired base address for pointers in the buffer.
+/// It may differ from `data` when producing deterministic bytecode output.
 pub unsafe fn relocate_bytecode(
     header: &mut BytecodeHeader,
     data: &mut [u8],
@@ -445,7 +446,6 @@ pub unsafe fn relocate_bytecode(
     }
 
     let data_base = data.as_mut_ptr();
-    debug_assert_eq!(data_base.addr(), new_base_addr);
     let old_base_addr = header.base_addr;
     relocate_value(
         &mut header.unique_strings,

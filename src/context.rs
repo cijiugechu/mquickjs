@@ -117,7 +117,7 @@ pub struct ContextConfig<'a> {
     pub finalizers: &'a [Option<crate::capi_defs::JSCFinalizer>],
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ContextError {
     MemoryTooSmall { min: usize, actual: usize },
     MemoryUnaligned { addr: usize, align: usize },
@@ -628,6 +628,54 @@ impl JSContext {
         if new_sp.as_ptr() < self.heap.stack_bottom().as_ptr() {
             self.heap.set_stack_bottom(new_sp);
         }
+    }
+
+    pub(crate) fn clear_roots_for_bytecode(&mut self) {
+        self.class_roots[ROOT_EMPTY_PROPS] = JSValue::JS_NULL;
+        self.class_roots[ROOT_GLOBAL_OBJ] = JSValue::JS_NULL;
+        for idx in 0..self.class_count as usize {
+            let proto_idx = self.class_proto_offset + idx;
+            let obj_idx = self.class_obj_offset + idx;
+            self.class_roots[proto_idx] = JSValue::JS_NULL;
+            self.class_roots[obj_idx] = JSValue::JS_NULL;
+        }
+    }
+
+    pub(crate) fn gc_collect_with_config(&mut self, config: GcMarkConfig) {
+        let heap = &mut self.heap as *mut HeapLayout;
+        let ctx_ptr = self as *mut JSContext;
+        unsafe {
+            // SAFETY: ctx_ptr/heap remain valid for the duration of the GC call.
+            (*ctx_ptr).run_gc_with_config(&mut *heap, config);
+        }
+    }
+
+    pub(crate) fn gc_roots_for_export(&mut self) -> GcRuntimeRoots<'_> {
+        let sp = self.sp.as_ptr();
+        let stack_top = self.heap.stack_top().as_ptr() as *mut JSValue;
+        debug_assert!(sp <= stack_top);
+        let len = (stack_top as usize)
+            .saturating_sub(sp as usize)
+            / size_of::<JSValue>();
+        let stack_roots = unsafe {
+            // SAFETY: sp..stack_top is the active JS stack range.
+            slice::from_raw_parts_mut(sp, len)
+        };
+        let gc_refs = &self.gc_refs as *const GcRefState;
+        let parse_state = self.parse_state;
+        let mut roots = GcRuntimeRoots::new(&mut self.class_roots, stack_roots).with_gc_refs(unsafe {
+            // SAFETY: gc_refs is stable for the duration of this call.
+            &*gc_refs
+        });
+        if let Some(state) = parse_state {
+            roots = roots.with_parse_state(unsafe {
+                // SAFETY: parse_state remains valid while borrowed.
+                state.as_ref()
+            });
+        }
+        roots
+            .with_atom_tables(&mut self.atom_tables)
+            .with_string_pos_cache(&mut self.string_pos_cache)
     }
 
     pub(crate) fn enter_call(&mut self) -> bool {
