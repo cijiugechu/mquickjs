@@ -1,0 +1,14 @@
+[package]
+name = "mquickjs-cli"
+version = "0.0.1"
+edition = "2024"
+description = "CLI for mquickjs (port of mqjs)"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.5.32", features = ["derive"] }
+mquickjs = { path = "../.." }
+
+[[bin]]
+name = "mquickjs-cli"
+path = "src/main.rs"

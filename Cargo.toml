@@ -9,6 +9,7 @@ license = "MIT"
 members = [
     ".",
     "crates/mquickjs-build",
+    "crates/mquickjs-cli",
 ]
 
 [dependencies]
