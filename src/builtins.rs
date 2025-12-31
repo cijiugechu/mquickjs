@@ -480,6 +480,32 @@ pub fn js_date_constructor(ctx: &mut JSContext, _this_val: JSValue, _args: &[JSV
     ctx.throw_type_error("only Date.now() is supported")
 }
 
+pub fn js_print(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
+    let mut first = true;
+    for &arg in args {
+        if !first {
+            ctx.write_log(b" ");
+        }
+        first = false;
+        let mut scratch = [0u8; 5];
+        let view = if let Some(view) = string_view(arg, &mut scratch) {
+            view
+        } else {
+            let val = match conversion::to_string(ctx, arg) {
+                Ok(val) => val,
+                Err(_) => return JSValue::JS_EXCEPTION,
+            };
+            match string_view(val, &mut scratch) {
+                Some(view) => view,
+                None => return JSValue::JS_EXCEPTION,
+            }
+        };
+        ctx.write_log(view.bytes());
+    }
+    ctx.write_log(b"\n");
+    JSValue::JS_UNDEFINED
+}
+
 pub fn js_global_eval(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
     let val = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
     if !val.is_string() {
@@ -4120,6 +4146,7 @@ mod tests {
     use crate::parser::regexp::compile_regexp;
     use crate::parser::regexp_flags::LRE_FLAG_GLOBAL;
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
+    use core::ffi::c_void;
     use core::ptr;
 
     fn string_from_value(val: JSValue) -> String {
@@ -4149,6 +4176,24 @@ mod tests {
         let mut scratch = [0u8; 5];
         let view = string_view(val, &mut scratch).expect("string view");
         assert_eq!(view.bytes(), expected);
+    }
+
+    #[derive(Default)]
+    struct TestLog {
+        buf: Vec<u8>,
+    }
+
+    unsafe extern "C" fn test_write_func(
+        opaque: *mut c_void,
+        buf: *const c_void,
+        buf_len: usize,
+    ) {
+        if opaque.is_null() || buf.is_null() {
+            return;
+        }
+        let log = unsafe { &mut *(opaque as *mut TestLog) };
+        let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, buf_len) };
+        log.buf.extend_from_slice(bytes);
     }
 
     #[test]
@@ -4182,6 +4227,30 @@ mod tests {
         let fixed_neg_val = ctx.new_float64(-1e-10).unwrap();
         let fixed_neg = js_number_toFixed(&mut ctx, fixed_neg_val, &[JSValue::new_short_int(0)]);
         assert_eq!(string_from_value(fixed_neg), "-0");
+    }
+
+    #[test]
+    fn print_outputs_to_log() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 32 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+
+        let mut log = TestLog::default();
+        ctx.set_opaque((&mut log as *mut TestLog).cast::<c_void>());
+        ctx.set_log_func(Some(test_write_func));
+
+        let hello = ctx.new_string("hello").expect("string");
+        let out = js_print(
+            &mut ctx,
+            JSValue::JS_UNDEFINED,
+            &[hello, JSValue::new_short_int(42)],
+        );
+        assert_eq!(out, JSValue::JS_UNDEFINED);
+        assert_eq!(log.buf, b"hello 42\n");
     }
 
     #[test]

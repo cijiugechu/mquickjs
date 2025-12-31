@@ -113,6 +113,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported Boolean builtin constructor (`js_boolean_constructor`) with C-aligned truthiness semantics and stdlib dispatch wiring, plus unit tests.
 - Ported RegExp builtins (`js_regexp_constructor`, `js_regexp_get_lastIndex`/`set_lastIndex`, `js_regexp_get_source`, `js_regexp_get_flags`, `js_regexp_exec`/test) into `src/builtins.rs` with stdlib dispatch wiring and unit tests.
 - Wired global `eval` builtin (`js_global_eval`) to run JS_EVAL_RETVAL parses and added integration tests for indirect eval behavior.
+- Added `js_print` builtin wired into stdlib dispatch, routing output through the context log function with a unit test capture.
 
 ## Known gaps (non-CLI/REPL)
 - Date builtin partial: only `Date.now`; constructor throws TypeError and prototype methods are unsupported.

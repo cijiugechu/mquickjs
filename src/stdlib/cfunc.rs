@@ -90,6 +90,7 @@ fn resolve_builtin_func(func_name: &str, proto: BuiltinProto) -> BuiltinCFunctio
             "js_global_eval" => BuiltinCFunction::Generic(builtins::js_global_eval),
             "js_global_isNaN" => BuiltinCFunction::Generic(builtins::js_global_isNaN),
             "js_global_isFinite" => BuiltinCFunction::Generic(builtins::js_global_isFinite),
+            "js_print" => BuiltinCFunction::Generic(builtins::js_print),
             // Object
             "js_object_hasOwnProperty" => {
                 BuiltinCFunction::Generic(builtins::js_object_hasOwnProperty)
