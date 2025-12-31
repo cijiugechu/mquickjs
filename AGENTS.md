@@ -8,12 +8,15 @@ Current porting status located at [STATUS.md](./STATUS.md).
 - Before porting functions and structures, first find out what their invariant is.
 
 - Always port the implementation and tests together.
+
 - If a C feature has no meaningful tests to port, do not add placeholder roundtrip tests just to have tests.
+
 - When behavior diverges, add a focused Catch2 test under `ctests/` to dump/inspect the C output (e.g., bytecode) and compare against Rust to drive alignment; keep the test as a regression oracle.
 
 - When using constants for mathematical operations, give priority to whether rust core provides them.
 
 - Do not port trivial one-line wrappers or renamings that add no semantics; use Rust std/core APIs directly to keep the port lean.
+
 - For JSString storage in Rust, do not rely on implicit NUL-termination. Store raw bytes and use explicit length; if a C API needs NUL-terminated data, introduce a local/temporary buffer or helper instead of embedding trailing NULs in JSString.
 
 - Run `cargo check --all-features`, `cargo test --all-features` and `cargo clippy` automatically after making code changes, you need to make sure no errors.
@@ -64,49 +67,3 @@ Use the `memblock` + `containers` refactor as a template for migrating C-style b
 
 Reference implementation: `src/memblock.rs` and `src/containers.rs`.
 
-## Rust src tree
-
-```
-src/
-  array_buffer.rs
-  array_data.rs
-  capi_defs.rs
-  cfunction_data.rs
-  closure_data.rs
-  containers.rs
-  context_shell.rs
-  cutils.rs
-  dtoa.rs
-  enums.rs
-  error_data.rs
-  function_bytecode.rs
-  gc_ref.rs
-  js_libm.rs
-  jsvalue.rs
-  lib.rs
-  list.rs
-  memblock.rs
-  memblock_views.rs
-  object.rs
-  opcode.rs
-  parser/
-    lexer.rs
-    mod.rs
-    pos.rs
-    regexp_flags.rs
-    tokens.rs
-    types.rs
-  property.rs
-  rom_class.rs
-  softfp.rs
-  stdlib/
-    mod.rs
-    stdlib_def.rs
-    stdlib_image.rs
-  string/
-    mod.rs
-    string_char_buf.rs
-    string_pos_cache.rs
-  tagged_ptr.rs
-  typed_array.rs
-```
