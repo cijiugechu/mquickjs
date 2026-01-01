@@ -4470,6 +4470,7 @@ mod tests {
         assert!(val.is_number());
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn load_reads_and_evaluates_script() {
         let mut ctx = JSContext::new(ContextConfig {

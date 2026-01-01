@@ -1531,6 +1531,7 @@ mod tests {
         assert_eq!(function_idx, Some(idx));
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn prepare_bytecode_roundtrip() {
         let mut ctx = JSContext::new(ContextConfig {
