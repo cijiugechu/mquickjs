@@ -650,7 +650,7 @@ impl JSContext {
         }
     }
 
-    pub(crate) fn gc_roots_for_export(&mut self) -> GcRuntimeRoots<'_> {
+    pub(crate) fn gc_roots_for_export_with_heap(&mut self) -> (GcRuntimeRoots<'_>, *mut HeapLayout) {
         let sp = self.sp.as_ptr();
         let stack_top = self.heap.stack_top().as_ptr() as *mut JSValue;
         debug_assert!(sp <= stack_top);
@@ -673,9 +673,11 @@ impl JSContext {
                 state.as_ref()
             });
         }
-        roots
+        let roots = roots
             .with_atom_tables(&mut self.atom_tables)
-            .with_string_pos_cache(&mut self.string_pos_cache)
+            .with_string_pos_cache(&mut self.string_pos_cache);
+        let heap = &mut self.heap as *mut HeapLayout;
+        (roots, heap)
     }
 
     pub(crate) fn enter_call(&mut self) -> bool {

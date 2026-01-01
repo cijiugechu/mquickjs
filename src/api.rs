@@ -943,8 +943,7 @@ pub fn js_prepare_bytecode_64to32(
     }
 
     let result = (|| {
-        let heap = ctx.heap_mut() as *mut _;
-        let mut roots = ctx.gc_roots_for_export();
+        let (mut roots, heap) = ctx.gc_roots_for_export_with_heap();
         let unique_slot_ref = unsafe {
             // SAFETY: unique_slot points at a valid JSValue slot.
             &mut *unique_slot
