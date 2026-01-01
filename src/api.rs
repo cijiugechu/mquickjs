@@ -92,26 +92,13 @@ impl From<ParseError> for ApiError {
 const FRAME_CF_ARGC_MASK: i32 = 0xffff;
 const N_ROM_ATOM_TABLES_MAX: u8 = 2;
 
-struct CallDepth {
-    ctx: *mut JSContext,
-}
-
-impl CallDepth {
-    fn enter(ctx: &mut JSContext) -> Option<Self> {
-        if !ctx.enter_call() {
-            return None;
-        }
-        Some(Self { ctx })
+fn with_call_depth<T>(ctx: &mut JSContext, f: impl FnOnce(&mut JSContext) -> T) -> Option<T> {
+    if !ctx.enter_call() {
+        return None;
     }
-}
-
-impl Drop for CallDepth {
-    fn drop(&mut self) {
-        unsafe {
-            // SAFETY: ctx stays valid for the duration of the guard.
-            (*self.ctx).exit_call();
-        }
-    }
+    let result = f(ctx);
+    ctx.exit_call();
+    Some(result)
 }
 
 /// Parse and execute JavaScript source code.
@@ -205,9 +192,10 @@ fn js_eval_internal(
             let closure = create_closure(ctx, func_bytecode, None)
                 .map_err(|e| ApiError::Runtime(format!("{:?}", e)))?;
             // Execute the closure
-            let _guard = CallDepth::enter(ctx)
-                .ok_or_else(|| ApiError::Runtime("C stack overflow".to_string()))?;
-            call(ctx, closure, &[]).map_err(|e| ApiError::Runtime(format!("{:?}", e)))
+            match with_call_depth(ctx, |ctx| call(ctx, closure, &[])) {
+                Some(result) => result.map_err(|e| ApiError::Runtime(format!("{:?}", e))),
+                None => Err(ApiError::Runtime("C stack overflow".to_string())),
+            }
         }
     }
 }
@@ -347,13 +335,10 @@ pub fn js_call(
     if !func.is_function() {
         return ctx.throw_type_error("not a function");
     }
-    let _guard = match CallDepth::enter(ctx) {
-        Some(guard) => guard,
-        None => return ctx.throw_internal_error("C stack overflow"),
-    };
-    match call_with_this(ctx, func, this_obj, args) {
-        Ok(val) => val,
-        Err(_) => JSValue::JS_EXCEPTION,
+    match with_call_depth(ctx, |ctx| call_with_this(ctx, func, this_obj, args)) {
+        Some(Ok(val)) => val,
+        Some(Err(_)) => JSValue::JS_EXCEPTION,
+        None => ctx.throw_internal_error("C stack overflow"),
     }
 }
 
@@ -376,13 +361,10 @@ pub fn js_run(ctx: &mut JSContext, func: JSValue) -> JSValue {
     } else {
         return ctx.throw_type_error("bytecode function expected");
     };
-    let _guard = match CallDepth::enter(ctx) {
-        Some(guard) => guard,
-        None => return ctx.throw_internal_error("C stack overflow"),
-    };
-    match call(ctx, func, &[]) {
-        Ok(val) => val,
-        Err(_) => JSValue::JS_EXCEPTION,
+    match with_call_depth(ctx, |ctx| call(ctx, func, &[])) {
+        Some(Ok(val)) => val,
+        Some(Err(_)) => JSValue::JS_EXCEPTION,
+        None => ctx.throw_internal_error("C stack overflow"),
     }
 }
 
@@ -403,13 +385,12 @@ pub fn js_call_stack(ctx: &mut JSContext, call_flags: i32) -> JSValue {
         // SAFETY: caller guarantees argc arguments are on the stack.
         slice::from_raw_parts(base.add(2), argc)
     };
-    let _guard = match CallDepth::enter(ctx) {
-        Some(guard) => guard,
+    let result = match with_call_depth(ctx, |ctx| {
+        call_with_this_flags(ctx, func, this_obj, args, call_flags)
+    }) {
+        Some(Ok(val)) => val,
+        Some(Err(_)) => JSValue::JS_EXCEPTION,
         None => return ctx.throw_internal_error("C stack overflow"),
-    };
-    let result = match call_with_this_flags(ctx, func, this_obj, args, call_flags) {
-        Ok(val) => val,
-        Err(_) => JSValue::JS_EXCEPTION,
     };
     let new_sp = unsafe { base.add(argc + 2) };
     ctx.set_sp(NonNull::new(new_sp).expect("stack pointer"));
