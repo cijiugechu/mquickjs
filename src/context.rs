@@ -577,7 +577,7 @@ impl JSContext {
         let ctx_ptr = self as *mut JSContext;
         unsafe {
             // SAFETY: ctx_ptr/heap remain valid for the duration of the GC call.
-            (*ctx_ptr).run_gc_with_config(&mut *heap, config);
+            JSContext::run_gc_with_config(ctx_ptr, heap, config);
         }
     }
 
@@ -598,16 +598,16 @@ impl JSContext {
         let size = len * size_of::<JSValue>();
         let ctx_ptr = self as *mut JSContext;
         let ok = self.heap.check_free_mem(new_bottom, size, |heap| unsafe {
-            let ctx = &mut *ctx_ptr;
-            if ctx.in_out_of_memory {
+            let in_out_of_memory = ptr::addr_of_mut!((*ctx_ptr).in_out_of_memory);
+            if *in_out_of_memory {
                 return;
             }
-            ctx.in_out_of_memory = true;
-            ctx.run_gc_with_config(heap, GcMarkConfig {
+            *in_out_of_memory = true;
+            JSContext::run_gc_with_config(ctx_ptr, heap as *mut HeapLayout, GcMarkConfig {
                 keep_atoms: true,
                 ..GcMarkConfig::default()
             });
-            ctx.in_out_of_memory = false;
+            *in_out_of_memory = false;
         });
         if !ok {
             let _ = self.throw_out_of_memory();
@@ -646,7 +646,7 @@ impl JSContext {
         let ctx_ptr = self as *mut JSContext;
         unsafe {
             // SAFETY: ctx_ptr/heap remain valid for the duration of the GC call.
-            (*ctx_ptr).run_gc_with_config(&mut *heap, config);
+            JSContext::run_gc_with_config(ctx_ptr, heap, config);
         }
     }
 
@@ -1480,14 +1480,30 @@ impl JSContext {
         Ok(())
     }
 
-    fn run_gc(&mut self, heap: &mut HeapLayout) {
-        self.run_gc_with_config(heap, GcMarkConfig::default());
+    unsafe fn run_gc(ctx_ptr: *mut JSContext, heap: *mut HeapLayout) {
+        // SAFETY: caller ensures ctx_ptr/heap are valid for the duration of the GC call.
+        unsafe {
+            Self::run_gc_with_config(ctx_ptr, heap, GcMarkConfig::default());
+        }
     }
 
-    fn run_gc_with_config(&mut self, heap: &mut HeapLayout, mark_config: GcMarkConfig) {
-        let parse_state = self.parse_state;
-        let gc_refs = &self.gc_refs as *const GcRefState;
-        let sp = self.sp.as_ptr();
+    unsafe fn run_gc_with_config(
+        ctx_ptr: *mut JSContext,
+        heap: *mut HeapLayout,
+        mark_config: GcMarkConfig,
+    ) {
+        // SAFETY: caller ensures ctx_ptr/heap are valid and refer to the same context.
+        let (parse_state, gc_refs, sp, class_roots, atom_tables, string_pos_cache) = unsafe {
+            (
+                (*ctx_ptr).parse_state,
+                &*ptr::addr_of!((*ctx_ptr).gc_refs),
+                (*ctx_ptr).sp.as_ptr(),
+                &mut *ptr::addr_of_mut!((*ctx_ptr).class_roots),
+                &mut *ptr::addr_of_mut!((*ctx_ptr).atom_tables),
+                &mut *ptr::addr_of_mut!((*ctx_ptr).string_pos_cache),
+            )
+        };
+        let heap = unsafe { &mut *heap };
         let stack_top = heap.stack_top().as_ptr() as *mut JSValue;
         debug_assert!(sp <= stack_top);
         let len = (stack_top as usize)
@@ -1497,16 +1513,8 @@ impl JSContext {
             // SAFETY: sp..stack_top is the active JS stack range.
             slice::from_raw_parts_mut(sp, len)
         };
-        let (class_roots, atom_tables, string_pos_cache) = (
-            &mut self.class_roots,
-            &mut self.atom_tables,
-            &mut self.string_pos_cache,
-        );
         let mut roots = GcRuntimeRoots::new(class_roots, stack_roots)
-            .with_gc_refs(unsafe {
-                // SAFETY: gc_refs is a stable reference for the duration of this call.
-                &*gc_refs
-            })
+            .with_gc_refs(gc_refs)
             .with_atom_tables(atom_tables)
             .with_string_pos_cache(string_pos_cache);
         if let Some(state) = parse_state {
@@ -1524,13 +1532,13 @@ impl JSContext {
     pub(crate) fn alloc_mblock(&mut self, size: usize, tag: MTag) -> Result<NonNull<u8>, ContextError> {
         let ctx_ptr = self as *mut JSContext;
         let ptr = self.heap.malloc(size, tag, |heap| unsafe {
-            let ctx = &mut *ctx_ptr;
-            if ctx.in_out_of_memory {
+            let in_out_of_memory = ptr::addr_of_mut!((*ctx_ptr).in_out_of_memory);
+            if *in_out_of_memory {
                 return;
             }
-            ctx.in_out_of_memory = true;
-            ctx.run_gc(heap);
-            ctx.in_out_of_memory = false;
+            *in_out_of_memory = true;
+            JSContext::run_gc(ctx_ptr, heap as *mut HeapLayout);
+            *in_out_of_memory = false;
         });
         ptr.ok_or(ContextError::OutOfMemory)
     }
