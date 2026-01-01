@@ -60,8 +60,8 @@ pub trait BytecodeAtomResolver {
 pub unsafe fn prepare_bytecode_64to32(
     heap: &mut HeapLayout,
     roots: &mut GcRuntimeRoots<'_>,
-    unique_strings: &mut JSValue,
-    main_func: &mut JSValue,
+    unique_strings: *mut JSValue,
+    main_func: *mut JSValue,
     mark_config: GcMarkConfig,
 ) -> Result<BytecodeImage32, BytecodePrepareError> {
     let mark_config = GcMarkConfig {
@@ -85,12 +85,20 @@ pub unsafe fn prepare_bytecode_64to32(
         // SAFETY: caller guarantees roots and heap are valid for conversion.
         compact_heap_64to32(heap, roots)?
     };
+    let unique_strings = unsafe {
+        // SAFETY: caller guarantees unique_strings points at a live JSValue slot.
+        ptr::read_unaligned(unique_strings)
+    };
+    let main_func = unsafe {
+        // SAFETY: caller guarantees main_func points at a live JSValue slot.
+        ptr::read_unaligned(main_func)
+    };
     let header = BytecodeHeader32 {
         magic: JS_BYTECODE_MAGIC,
         version: JS_BYTECODE_VERSION_32,
         base_addr: 0,
-        unique_strings: jsvalue_to_u32(*unique_strings)?,
-        main_func: jsvalue_to_u32(*main_func)?,
+        unique_strings: jsvalue_to_u32(unique_strings)?,
+        main_func: jsvalue_to_u32(main_func)?,
     };
     Ok(BytecodeImage32 { header, len })
 }

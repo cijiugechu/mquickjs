@@ -944,21 +944,13 @@ pub fn js_prepare_bytecode_64to32(
 
     let result = (|| {
         let (mut roots, heap) = ctx.gc_roots_for_export_with_heap();
-        let unique_slot_ref = unsafe {
-            // SAFETY: unique_slot points at a valid JSValue slot.
-            &mut *unique_slot
-        };
-        let func_slot_ref = unsafe {
-            // SAFETY: func_slot points at a valid JSValue slot.
-            &mut *func_slot
-        };
         let image = unsafe {
             // SAFETY: heap points at the active heap layout and roots cover all live values.
             prepare_bytecode_64to32(
                 &mut *heap,
                 &mut roots,
-                unique_slot_ref,
-                func_slot_ref,
+                unique_slot,
+                func_slot,
                 GcMarkConfig::default(),
             )?
         };
