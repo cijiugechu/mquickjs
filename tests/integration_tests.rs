@@ -231,6 +231,7 @@ fn test_typed_array_js_eval() {
 // mquickjs-c test script coverage
 // ---------------------------------------------------------------------------
 
+#[cfg(not(miri))]
 #[test]
 fn test_mandelbrot_js() {
     let mut output: Vec<u8> = Vec::new();

@@ -118,6 +118,7 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Adjusted bytecode export relocation to use a non-zero base address (avoids null pointer encoding) and updated roundtrip tests accordingly.
 - CLI port stabilized: `js_load` returns evaluation results, timers are run after eval/include, and readline/TTY integration compiles with proper FFI signatures.
 - Added an integration test that executes `mquickjs-c/tests/mandelbrot.js` with a console shim and captured output validation.
+- Skipped the `mandelbrot.js` integration test under Miri because filesystem reads are not allowed in Miri isolation (test still runs in regular CI).
 - Reworked GC entry points to pass raw context/heap pointers, avoiding Miri stacked-borrow violations when GC runs from stack checks or allocation pressure.
 
 ## Known gaps (non-CLI/REPL)

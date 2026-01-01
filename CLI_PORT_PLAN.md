@@ -43,4 +43,5 @@
 ## Current status
 - CLI build + all Rust tests are passing.
 - Added integration coverage for `mquickjs-c/tests/mandelbrot.js` (requires `git submodule update --init mquickjs-c`).
+- Miri CI: skip the `mandelbrot.js` integration test because Miri disallows filesystem reads in isolation.
 - Miri CI fix: GC entry points now use raw context/heap pointers to avoid stacked-borrow violations during GC triggers.
