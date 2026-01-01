@@ -607,7 +607,7 @@ fn relocate_value(
 ) {
     let val = unsafe {
         // SAFETY: caller guarantees `pval` is a valid JSValue slot.
-        *pval
+        ptr::read_unaligned(pval)
     };
     let Some(ptr) = val.to_ptr::<u8>() else {
         return;
@@ -630,7 +630,7 @@ fn relocate_value(
     }
     unsafe {
         // SAFETY: caller guarantees `pval` is writable.
-        *pval = new_val;
+        ptr::write_unaligned(pval, new_val);
     }
 }
 
