@@ -576,7 +576,12 @@ pub fn js_load(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSV
     };
     let buf = load_file_bytes(view.bytes());
     let filename_str = String::from_utf8_lossy(view.bytes());
-    crate::api::js_eval_with_filename(ctx, &buf, 0, filename_str.as_ref())
+    crate::api::js_eval_with_filename(
+        ctx,
+        &buf,
+        crate::capi_defs::JS_EVAL_RETVAL,
+        filename_str.as_ref(),
+    )
 }
 
 pub fn js_print(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {

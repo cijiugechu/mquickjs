@@ -1567,7 +1567,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                     parse_expect(&mut self.lexer, ')' as i32)?;
 
                     self.emitter.emit_label(&mut label_catch);
-                    let arg_count = self.func.as_ref().arg_count() as i32;
+                    let arg_count = self.current_func_ref()?.arg_count() as i32;
                     let idx = i32::from(var_idx) - arg_count;
                     self.emitter
                         .emit_var(OP_PUT_LOC, idx as u32, self.emitter.pc2line_source_pos());
@@ -1790,7 +1790,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn cpool_add(&mut self, val: JSValue) -> Result<u16, ParserError> {
         let len = self.parse_state_ref().cpool_len() as usize;
-        let mut cpool_val = self.func.as_ref().cpool();
+        let mut cpool_val = self.current_func_ref()?.cpool();
         if cpool_val != JSValue::JS_NULL {
             let ptr = cpool_val.to_ptr::<ValueArray>().ok_or_else(|| {
                 ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0)
@@ -1811,7 +1811,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
         let new_size = (len + 1).max(4);
         if cpool_val == JSValue::JS_NULL {
             cpool_val = self.alloc.alloc_value_array(new_size);
-            self.func.as_mut().set_cpool(cpool_val);
+            self.current_func_mut()?.set_cpool(cpool_val);
         } else {
             let mut ptr = cpool_val.to_ptr::<ValueArray>().ok_or_else(|| {
                 ParserError::new(ParserErrorKind::Static(ERR_NO_MEM), 0)
@@ -2059,7 +2059,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
                             let name = token.value();
                             let var_idx = find_var(self.parse_state_ref(), name);
                             if let Some(var_idx) = var_idx {
-                                let arg_count = self.func.as_ref().arg_count() as i32;
+                            let arg_count = self.current_func_ref()?.arg_count() as i32;
                                 let mut idx = i32::from(var_idx);
                                 let opcode = if idx < arg_count {
                                     OP_GET_ARG

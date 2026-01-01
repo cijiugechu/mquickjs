@@ -114,6 +114,10 @@ Based on local `#include "..."` dependencies (considering both `.c` and `.h`), t
 - Ported RegExp builtins (`js_regexp_constructor`, `js_regexp_get_lastIndex`/`set_lastIndex`, `js_regexp_get_source`, `js_regexp_get_flags`, `js_regexp_exec`/test) into `src/builtins.rs` with stdlib dispatch wiring and unit tests.
 - Wired global `eval` builtin (`js_global_eval`) to run JS_EVAL_RETVAL parses and added integration tests for indirect eval behavior.
 - Added `js_print` builtin wired into stdlib dispatch, routing output through the context log function with a unit test capture.
+- Fixed nested-function parsing to use the current function’s constant pool (prevents top-level cpool clobbering) and added a regression test for function-expression bytecode entries.
+- Adjusted bytecode export relocation to use a non-zero base address (avoids null pointer encoding) and updated roundtrip tests accordingly.
+- CLI port stabilized: `js_load` returns evaluation results, timers are run after eval/include, and readline/TTY integration compiles with proper FFI signatures.
+- Added an integration test that executes `mquickjs-c/tests/mandelbrot.js` with a console shim and captured output validation.
 
 ## Known gaps (non-CLI/REPL)
 - Date builtin partial: only `Date.now`; constructor throws TypeError and prototype methods are unsupported.

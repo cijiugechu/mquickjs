@@ -7,6 +7,10 @@ use mquickjs::api::{
     js_eval, js_get_global_object, js_get_property_str, js_is_exception, js_is_number,
     js_is_object, js_is_string, js_to_number,
 };
+use std::ffi::c_void;
+use std::fs;
+use std::path::Path;
+use std::slice;
 use mquickjs::capi_defs::{JS_EVAL_JSON, JS_EVAL_RETVAL};
 use mquickjs::context::{ContextConfig, JSContext};
 use mquickjs::jsvalue::JSValue;
@@ -184,6 +188,21 @@ fn assert_js_true(ctx: &mut JSContext, code: &[u8]) {
     assert_eq!(result.get_special_value(), 1);
 }
 
+unsafe extern "C" fn test_write_func(opaque: *mut c_void, buf: *const c_void, buf_len: usize) {
+    if opaque.is_null() || buf.is_null() {
+        return;
+    }
+    let out = unsafe {
+        // SAFETY: opaque is set to a valid Vec<u8> for the duration of the test.
+        &mut *(opaque as *mut Vec<u8>)
+    };
+    let bytes = unsafe {
+        // SAFETY: buf points at buf_len bytes per JSWriteFunc contract.
+        slice::from_raw_parts(buf.cast::<u8>(), buf_len)
+    };
+    out.extend_from_slice(bytes);
+}
+
 // Note: More comprehensive tests can be added here once the bytecode
 // evaluation is fully working. The tests above validate the JSON parsing
 // and basic API functionality.
@@ -206,6 +225,45 @@ fn test_typed_array_js_eval() {
     assert!(!js_is_exception(result), "TypedArray creation failed");
     assert!(js_is_number(result));
     assert_eq!(js_to_number(&mut ctx, result), 4.0);
+}
+
+// ---------------------------------------------------------------------------
+// mquickjs-c test script coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_mandelbrot_js() {
+    let mut output: Vec<u8> = Vec::new();
+    let mut ctx = JSContext::new(ContextConfig {
+        image: &MQUICKJS_STDLIB_IMAGE,
+        memory_size: 4 * 1024 * 1024,
+        prepare_compilation: false,
+        finalizers: &[],
+    })
+    .expect("context init");
+    ctx.set_opaque(&mut output as *mut _ as *mut c_void);
+    ctx.set_log_func(Some(test_write_func));
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("mquickjs-c/tests/mandelbrot.js");
+    let code =
+        fs::read(&path).expect("mandelbrot.js (run `git submodule update --init mquickjs-c`)");
+    let source = String::from_utf8(code).expect("mandelbrot.js utf8");
+    let mut script = Vec::with_capacity(source.len() + 128);
+    script.extend_from_slice(
+        b"var console = (typeof console === \"undefined\") ? { log: print } : console;\n",
+    );
+    script.extend_from_slice(source.as_bytes());
+    let result = js_eval(&mut ctx, &script, 0);
+    assert!(!js_is_exception(result));
+    assert!(!output.is_empty());
+
+    let line_count = output.iter().filter(|&&b| b == b'\n').count();
+    assert_eq!(line_count, 25);
+    assert!(output.windows(2).any(|w| w == [0x1b, b'[']));
+    assert!(output.windows(3).any(|w| w == [0xE2, 0x96, 0x80]));
+
+    ctx.set_log_func(None);
+    ctx.set_opaque(core::ptr::null_mut());
 }
 
 #[test]

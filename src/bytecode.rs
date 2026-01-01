@@ -446,12 +446,14 @@ pub unsafe fn relocate_bytecode(
     }
 
     let data_base = data.as_mut_ptr();
+    let data_len = data.len();
     let old_base_addr = header.base_addr;
     relocate_value(
         &mut header.unique_strings,
         old_base_addr,
         new_base_addr,
         data_base,
+        data_len,
         &mut resolver,
     );
     relocate_value(
@@ -459,6 +461,7 @@ pub unsafe fn relocate_bytecode(
         old_base_addr,
         new_base_addr,
         data_base,
+        data_len,
         &mut resolver,
     );
 
@@ -482,6 +485,7 @@ pub unsafe fn relocate_bytecode(
                     old_base_addr,
                     new_base_addr,
                     data_base,
+                    data_len,
                     &mut resolver,
                 );
                 relocate_value(
@@ -489,6 +493,7 @@ pub unsafe fn relocate_bytecode(
                     old_base_addr,
                     new_base_addr,
                     data_base,
+                    data_len,
                     &mut resolver,
                 );
                 relocate_value(
@@ -496,6 +501,7 @@ pub unsafe fn relocate_bytecode(
                     old_base_addr,
                     new_base_addr,
                     data_base,
+                    data_len,
                     &mut resolver,
                 );
                 relocate_value(
@@ -503,6 +509,7 @@ pub unsafe fn relocate_bytecode(
                     old_base_addr,
                     new_base_addr,
                     data_base,
+                    data_len,
                     &mut resolver,
                 );
                 relocate_value(
@@ -510,6 +517,7 @@ pub unsafe fn relocate_bytecode(
                     old_base_addr,
                     new_base_addr,
                     data_base,
+                    data_len,
                     &mut resolver,
                 );
                 relocate_value(
@@ -517,6 +525,7 @@ pub unsafe fn relocate_bytecode(
                     old_base_addr,
                     new_base_addr,
                     data_base,
+                    data_len,
                     &mut resolver,
                 );
                 relocate_value(
@@ -524,6 +533,7 @@ pub unsafe fn relocate_bytecode(
                     old_base_addr,
                     new_base_addr,
                     data_base,
+                    data_len,
                     &mut resolver,
                 );
             },
@@ -536,6 +546,7 @@ pub unsafe fn relocate_bytecode(
                         old_base_addr,
                         new_base_addr,
                         data_base,
+                        data_len,
                         &mut resolver,
                     );
                 }
@@ -583,6 +594,7 @@ fn relocate_value(
     old_base_addr: usize,
     new_base_addr: usize,
     data_base: *mut u8,
+    data_len: usize,
     resolver: &mut Option<&mut dyn BytecodeAtomResolver>,
 ) {
     let val = unsafe {
@@ -593,10 +605,18 @@ fn relocate_value(
         return;
     };
     let old_addr = ptr.as_ptr().addr();
+    let old_end = old_base_addr.saturating_add(data_len);
+    if old_addr < old_base_addr || old_addr >= old_end {
+        return;
+    }
     let offset = old_addr.wrapping_sub(old_base_addr);
     let new_addr = new_base_addr.wrapping_add(offset);
     let new_ptr = data_base.with_addr(new_addr);
-    let mut new_val = JSValue::from_ptr_raw(new_ptr).expect("relocated pointer must be non-null");
+    let mut new_val = JSValue::from_ptr_raw(new_ptr).unwrap_or_else(|| {
+        panic!(
+            "relocated pointer must be non-null (old_base={old_base_addr:#x}, new_base={new_base_addr:#x}, old_addr={old_addr:#x}, data_len={data_len})"
+        )
+    });
     if let Some(resolver) = resolver.as_deref_mut() {
         new_val = resolve_unique_string(new_val, resolver);
     }

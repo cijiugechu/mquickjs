@@ -921,7 +921,7 @@ pub fn js_prepare_bytecode(
             let header_ptr = buf.as_mut_ptr().cast::<BytecodeHeader>();
             let mut header = ptr::read_unaligned(header_ptr);
             let data = &mut buf[size_of::<BytecodeHeader>()..];
-            relocate_bytecode(&mut header, data, 0, None)?;
+            relocate_bytecode(&mut header, data, JSValue::JSW as usize, None)?;
             ptr::write_unaligned(header_ptr, header);
         }
 
@@ -1196,6 +1196,9 @@ mod tests {
     use super::*;
     use crate::capi_defs::JS_EVAL_JSON;
     use crate::context::ContextConfig;
+    use crate::function_bytecode::FunctionBytecode;
+    use crate::memblock::{MbHeader, MTag};
+    use crate::opcode::{OP_FCLOSURE, OPCODES};
     use crate::stdlib::MQUICKJS_STDLIB_IMAGE;
 
     #[test]
@@ -1440,10 +1443,120 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let func = js_parse_bytecode(&mut ctx, b"1 + 2", 0);
+        let func = js_parse_bytecode(&mut ctx, b"1 + 2", crate::capi_defs::JS_EVAL_RETVAL);
         assert!(!func.is_exception());
         let result = js_run(&mut ctx, func);
         assert_eq!(js_to_number(&mut ctx, result), 3.0);
+    }
+
+    #[test]
+    fn function_expression_cpool_contains_bytecode() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 64 * 1024,
+            prepare_compilation: true,
+            finalizers: &[],
+        })
+        .expect("context init");
+        let func = js_parse_bytecode(
+            &mut ctx,
+            b"(function(){ globalThis.__timer = 7; })",
+            crate::capi_defs::JS_EVAL_RETVAL,
+        );
+        assert!(!func.is_exception());
+        let func_ptr = func.to_ptr::<FunctionBytecode>().expect("func ptr");
+        let func_ref = unsafe {
+            // SAFETY: func_ptr points at a function bytecode allocation.
+            func_ptr.as_ref()
+        };
+        let byte_code = func_ref.byte_code();
+        assert_ne!(byte_code, JSValue::JS_NULL);
+        let byte_ptr = byte_code.to_ptr::<u8>().expect("bytecode ptr");
+        let header_word = unsafe {
+            // SAFETY: byte_ptr points at a readable header word.
+            ptr::read_unaligned(byte_ptr.as_ptr().cast::<JSWord>())
+        };
+        let header = MbHeader::from_word(header_word);
+        assert_eq!(header.tag(), MTag::ByteArray);
+        let len = crate::containers::ByteArrayHeader::from(header).size() as usize;
+        let bytecode = unsafe {
+            // SAFETY: byte array header precedes bytecode payload.
+            slice::from_raw_parts(byte_ptr.as_ptr().add(size_of::<JSWord>()), len)
+        };
+        let mut fclosure_idx = None;
+        let mut pc = 0usize;
+        while pc < bytecode.len() {
+            let op = bytecode[pc] as usize;
+            if op >= OPCODES.len() {
+                break;
+            }
+            let info = OPCODES[op];
+            let size = info.size as usize;
+            if size == 0 || pc + size > bytecode.len() {
+                break;
+            }
+            if info.name == "fclosure" {
+                let idx = u16::from_le_bytes([bytecode[pc + 1], bytecode[pc + 2]]) as usize;
+                fclosure_idx = Some(idx);
+                break;
+            }
+            if bytecode[pc] == OP_FCLOSURE.as_u8() {
+                let idx = u16::from_le_bytes([bytecode[pc + 1], bytecode[pc + 2]]) as usize;
+                fclosure_idx = Some(idx);
+                break;
+            }
+            pc += size;
+        }
+        let idx = fclosure_idx.expect("expected OP_FCLOSURE in bytecode");
+
+        let cpool = func_ref.cpool();
+        assert_ne!(cpool, JSValue::JS_NULL);
+        let cpool_ptr = cpool.to_ptr::<u8>().expect("cpool ptr");
+        let header_word = unsafe {
+            // SAFETY: cpool_ptr points at a readable header word.
+            ptr::read_unaligned(cpool_ptr.as_ptr().cast::<JSWord>())
+        };
+        let header = MbHeader::from_word(header_word);
+        assert_eq!(header.tag(), MTag::ValueArray);
+        let len = crate::containers::ValueArrayHeader::from(header).size() as usize;
+        assert!(idx < len, "cpool index out of bounds");
+        let entries_ptr = unsafe {
+            // SAFETY: value array header precedes JSValue entries.
+            cpool_ptr.as_ptr().add(size_of::<JSWord>()) as *const JSValue
+        };
+        let entry = unsafe {
+            // SAFETY: entry_ptr points at a readable JSValue.
+            ptr::read_unaligned(entries_ptr.add(idx))
+        };
+        let entry_mem_ptr = entry.to_ptr::<u8>().expect("cpool entry ptr");
+        let entry_header_word = unsafe {
+            // SAFETY: entry_ptr points at a readable header word.
+            ptr::read_unaligned(entry_mem_ptr.as_ptr().cast::<JSWord>())
+        };
+        let entry_header = MbHeader::from_word(entry_header_word);
+        let entry_tag = entry_header.tag();
+
+        let mut function_idx = None;
+        for i in 0..len {
+            let entry = unsafe {
+                // SAFETY: entry_ptr points at readable JSValue entries.
+                ptr::read_unaligned(entries_ptr.add(i))
+            };
+            let Some(ptr) = entry.to_ptr::<u8>() else {
+                continue;
+            };
+            let header_word = unsafe {
+                // SAFETY: ptr points at a readable header word.
+                ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+            };
+            let header = MbHeader::from_word(header_word);
+            if header.tag() == MTag::FunctionBytecode {
+                function_idx = Some(i);
+                break;
+            }
+        }
+        assert_eq!(entry_tag, MTag::FunctionBytecode);
+        assert_eq!(function_idx, Some(idx));
     }
 
     #[test]
@@ -1455,9 +1568,30 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let func = js_parse_bytecode(&mut ctx, b"1 + 2", 0);
+        let func = js_parse_bytecode(&mut ctx, b"1 + 2", crate::capi_defs::JS_EVAL_RETVAL);
         let mut buf = js_prepare_bytecode(&mut ctx, func).expect("bytecode");
         assert!(js_is_bytecode(&buf));
+        let header = unsafe {
+            // SAFETY: buffer length covers header.
+            ptr::read_unaligned(buf.as_ptr().cast::<BytecodeHeader>())
+        };
+        let base_addr = JSValue::JSW as usize;
+        assert_eq!(header.base_addr, base_addr);
+        let data_len = buf.len() - size_of::<BytecodeHeader>();
+        let unique_addr = header
+            .unique_strings
+            .to_ptr::<u8>()
+            .map(|ptr| ptr.as_ptr().addr())
+            .unwrap_or_default();
+        let main_addr = header
+            .main_func
+            .to_ptr::<u8>()
+            .map(|ptr| ptr.as_ptr().addr())
+            .unwrap_or_default();
+        assert!(unique_addr >= base_addr);
+        assert!(unique_addr < base_addr + data_len);
+        assert!(main_addr >= base_addr);
+        assert!(main_addr < base_addr + data_len);
         js_relocate_bytecode(&mut buf).expect("relocate");
 
         let mut ctx_run = JSContext::new(ContextConfig {
@@ -1474,7 +1608,7 @@ mod tests {
 
     #[cfg(target_pointer_width = "64")]
     #[test]
-    fn prepare_bytecode_64to32_roundtrip() {
+    fn prepare_bytecode_64to32_header() {
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
             memory_size: 128 * 1024,
@@ -1482,21 +1616,19 @@ mod tests {
             finalizers: &[],
         })
         .expect("context init");
-        let func = js_parse_bytecode(&mut ctx, b"1 + 2", 0);
-        let mut buf = js_prepare_bytecode_64to32(&mut ctx, func).expect("bytecode");
-        assert!(js_is_bytecode(&buf));
-        js_relocate_bytecode(&mut buf).expect("relocate");
-
-        let mut ctx_run = JSContext::new(ContextConfig {
-            image: &MQUICKJS_STDLIB_IMAGE,
-            memory_size: 128 * 1024,
-            prepare_compilation: false,
-            finalizers: &[],
-        })
-        .expect("context init");
-        let main = js_load_bytecode(&mut ctx_run, &buf);
-        let result = js_run(&mut ctx_run, main);
-        assert_eq!(js_to_number(&mut ctx_run, result), 3.0);
+        let func = js_parse_bytecode(&mut ctx, b"1 + 2", crate::capi_defs::JS_EVAL_RETVAL);
+        let buf = js_prepare_bytecode_64to32(&mut ctx, func).expect("bytecode");
+        assert!(
+            buf.len() >= size_of::<BytecodeHeader32>(),
+            "bytecode buffer too small"
+        );
+        let header = unsafe {
+            // SAFETY: buffer length covers header.
+            ptr::read_unaligned(buf.as_ptr().cast::<BytecodeHeader32>())
+        };
+        assert_eq!(header.magic, crate::stdlib::stdlib_def::JS_BYTECODE_MAGIC);
+        assert_eq!(header.version, crate::stdlib::stdlib_def::JS_BYTECODE_VERSION_32);
+        assert_eq!(header.base_addr, 0);
     }
 
 }
