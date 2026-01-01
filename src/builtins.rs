@@ -4493,6 +4493,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn set_timeout_runs_callback() {
         let mut ctx = JSContext::new(ContextConfig {
