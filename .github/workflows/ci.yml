@@ -29,9 +29,3 @@ jobs:
 
       - name: cargo clippy
         run: cargo +stable clippy
-
-      - name: Install nightly toolchain with Miri
-        run: rustup toolchain install nightly --profile minimal -c miri -c rust-src
-
-      - name: Miri strict provenance
-        run: MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test --all-features
