@@ -871,6 +871,49 @@ fn map_property_error(err: PropertyError) -> InterpreterError {
     }
 }
 
+fn take_exception_value(ctx: &mut JSContext) -> JSValue {
+    let thrown = ctx.take_current_exception();
+    if thrown == JSValue::JS_NULL {
+        JSValue::JS_EXCEPTION
+    } else {
+        thrown
+    }
+}
+
+fn throw_type_error_value(ctx: &mut JSContext, message: &str) -> JSValue {
+    let _ = ctx.throw_type_error(message);
+    take_exception_value(ctx)
+}
+
+fn throw_reference_error_value(ctx: &mut JSContext, message: &str) -> JSValue {
+    let _ = ctx.throw_reference_error(message);
+    take_exception_value(ctx)
+}
+
+fn property_error_to_exception(ctx: &mut JSContext, err: &PropertyError) -> Option<JSValue> {
+    match err {
+        PropertyError::OutOfMemory => {
+            let _ = ctx.throw_out_of_memory();
+            Some(take_exception_value(ctx))
+        }
+        PropertyError::Unsupported(_) | PropertyError::NotObject => {
+            Some(throw_type_error_value(ctx, "property"))
+        }
+        PropertyError::Interpreter(interpreter_err) => match interpreter_err {
+            InterpreterError::Thrown(val) => Some(*val),
+            InterpreterError::TypeError(msg) => Some(throw_type_error_value(ctx, msg)),
+            InterpreterError::ReferenceError(msg) => Some(throw_reference_error_value(ctx, msg)),
+            InterpreterError::NotAFunction => Some(throw_type_error_value(ctx, "not a function")),
+            InterpreterError::Context(ContextError::OutOfMemory) => {
+                let _ = ctx.throw_out_of_memory();
+                Some(take_exception_value(ctx))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn var_ref_ptr(val: JSValue) -> Result<NonNull<u8>, InterpreterError> {
     let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::InvalidValue("varref ptr"))?;
     let header_word = unsafe {
@@ -1355,11 +1398,7 @@ pub fn call_with_this_flags(
             push(ctx, &mut sp, func);
             push(ctx, &mut sp, this_obj);
         }
-        let mut temp_args = args.to_vec();
-        if def.arg_count as usize > temp_args.len() {
-            temp_args.resize(def.arg_count as usize, JSValue::JS_UNDEFINED);
-        }
-        let result = call_cfunction_def(ctx, &def, this_obj, &temp_args, JSValue::JS_UNDEFINED);
+        let result = call_cfunction_def(ctx, &def, this_obj, args, JSValue::JS_UNDEFINED);
         ctx.set_sp(prev_sp);
         if let Ok(val) = result
             && (call_flags & FRAME_CF_CTOR) != 0
@@ -1397,11 +1436,7 @@ pub fn call_with_this_flags(
                 push(ctx, &mut sp, func);
                 push(ctx, &mut sp, this_obj);
             }
-            let mut temp_args = args.to_vec();
-            if def.arg_count as usize > temp_args.len() {
-                temp_args.resize(def.arg_count as usize, JSValue::JS_UNDEFINED);
-            }
-            let result = call_cfunction_def(ctx, &def, this_obj, &temp_args, params);
+            let result = call_cfunction_def(ctx, &def, this_obj, args, params);
             ctx.set_sp(prev_sp);
             return result;
         }
@@ -1543,31 +1578,10 @@ pub fn call_with_this_flags(
                     break Err(InterpreterError::TypeError("not a constructor"));
                 }
                 let argc = call_argc(call_flags);
-                let mut pushed_argc = argc;
-                if def.arg_count as usize > argc {
-                    let extra = def.arg_count as usize - argc;
-                    try_or_break!(stack_check(ctx, sp, extra));
-                    unsafe {
-                        sp = sp.sub(extra);
-                        for i in 0..(FRAME_OFFSET_ARG0 as usize + argc) {
-                            let val = ptr::read_unaligned(sp.add(i + extra));
-                            ptr::write_unaligned(sp.add(i), val);
-                        }
-                        for i in 0..extra {
-                            ptr::write_unaligned(
-                                sp.add(FRAME_OFFSET_ARG0 as usize + argc + i),
-                                JSValue::JS_UNDEFINED,
-                            );
-                        }
-                    }
-                    pushed_argc = def.arg_count as usize;
-                    ctx.set_sp(NonNull::new(sp).expect("stack pointer"));
-                    fp = sp;
-                    ctx.set_fp(NonNull::new(fp).expect("frame pointer"));
-                }
+                let pushed_argc = argc;
                 let this_val = unsafe { ptr::read_unaligned(fp.offset(FRAME_OFFSET_THIS_OBJ)) };
                 let argv_ptr = unsafe { fp.add(FRAME_OFFSET_ARG0 as usize) };
-                let argv = unsafe { core::slice::from_raw_parts(argv_ptr, pushed_argc) };
+                let argv = unsafe { core::slice::from_raw_parts(argv_ptr, argc) };
                 let val = try_or_break!(call_cfunction_def(ctx, &def, this_val, argv, cfunc_params));
                 let flow = {
                     let mut frame_state = FrameState {
@@ -2038,6 +2052,25 @@ pub fn call_with_this_flags(
             },
             op if op == crate::opcode::OP_PUSH_TRUE.as_u8() => unsafe {
                 push(ctx, &mut sp, JSValue::new_bool(1));
+            },
+            op if op == crate::opcode::OP_PUSH_THIS.as_u8() => unsafe {
+                let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_THIS_OBJ));
+                push(ctx, &mut sp, val);
+            },
+            op if op == crate::opcode::OP_OBJECT.as_u8() => unsafe {
+                if pc + 1 >= byte_slice.len() {
+                    break Err(InterpreterError::InvalidBytecode("object"));
+                }
+                let count = u16::from_le_bytes([byte_slice[pc], byte_slice[pc + 1]]) as usize;
+                pc += 2;
+                let obj = try_or_break!(ctx.alloc_object_default());
+                push(ctx, &mut sp, obj);
+                if count > 0 {
+                    try_or_break!(
+                        crate::property::prealloc_object_props(ctx, obj, count)
+                            .map_err(map_property_error)
+                    );
+                }
             },
             op if op == crate::opcode::OP_THIS_FUNC.as_u8() => unsafe {
                 let val = ptr::read_unaligned(fp.offset(FRAME_OFFSET_FUNC_OBJ));
@@ -2589,8 +2622,8 @@ pub fn call_with_this_flags(
                 push(ctx, &mut sp, JSValue::new_bool(has as i32));
             },
             op if op == crate::opcode::OP_INSTANCEOF.as_u8() => unsafe {
-                let obj = pop(ctx, &mut sp);
                 let ctor = pop(ctx, &mut sp);
+                let obj = pop(ctx, &mut sp);
                 if !is_function_object(ctor) {
                     break Err(InterpreterError::TypeError(
                         "invalid 'instanceof' right operand",
@@ -2612,9 +2645,33 @@ pub fn call_with_this_flags(
                 let cpool = try_or_break!(ValueArrayRaw::from_value(b.cpool()));
                 let prop = try_or_break!(cpool.read(idx));
                 let obj = ptr::read_unaligned(sp);
-                let val = try_or_break!(
-                    crate::property::get_property(ctx, obj, prop).map_err(ConversionError::from)
-                );
+                let val = match crate::property::get_property(ctx, obj, prop) {
+                    Ok(val) => val,
+                    Err(err) => {
+                        if let Some(thrown) = property_error_to_exception(ctx, &err) {
+                            let flow = {
+                                let mut frame_state = FrameState {
+                                    stack_top,
+                                    initial_fp,
+                                    sp: &mut sp,
+                                    fp: &mut fp,
+                                    pc: &mut pc,
+                                    func_ptr: &mut func_ptr,
+                                    byte_slice: &mut byte_slice,
+                                    n_vars: &mut n_vars,
+                                };
+                                try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                            };
+                            if let ReturnFlow::Done(val) = flow {
+                                break Ok(val);
+                            }
+                            b = func_ptr.as_ref();
+                            continue;
+                        } else {
+                            break Err(ConversionError::from(err).into());
+                        }
+                    }
+                };
                 ptr::write_unaligned(sp, val);
             },
             op if op == crate::opcode::OP_GET_FIELD2.as_u8() => unsafe {
@@ -2627,9 +2684,33 @@ pub fn call_with_this_flags(
                 let prop = try_or_break!(cpool.read(idx));
                 let obj = ptr::read_unaligned(sp);
                 push(ctx, &mut sp, obj);
-                let val = try_or_break!(
-                    crate::property::get_property(ctx, obj, prop).map_err(ConversionError::from)
-                );
+                let val = match crate::property::get_property(ctx, obj, prop) {
+                    Ok(val) => val,
+                    Err(err) => {
+                        if let Some(thrown) = property_error_to_exception(ctx, &err) {
+                            let flow = {
+                                let mut frame_state = FrameState {
+                                    stack_top,
+                                    initial_fp,
+                                    sp: &mut sp,
+                                    fp: &mut fp,
+                                    pc: &mut pc,
+                                    func_ptr: &mut func_ptr,
+                                    byte_slice: &mut byte_slice,
+                                    n_vars: &mut n_vars,
+                                };
+                                try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                            };
+                            if let ReturnFlow::Done(val) = flow {
+                                break Ok(val);
+                            }
+                            b = func_ptr.as_ref();
+                            continue;
+                        } else {
+                            break Err(ConversionError::from(err).into());
+                        }
+                    }
+                };
                 ptr::write_unaligned(sp, val);
             },
             op if op == crate::opcode::OP_PUT_FIELD.as_u8() => unsafe {
@@ -2642,27 +2723,99 @@ pub fn call_with_this_flags(
                 let prop = try_or_break!(cpool.read(idx));
                 let val = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
-                try_or_break!(
-                    crate::property::set_property(ctx, obj, prop, val).map_err(ConversionError::from)
-                );
-                let _ = pop(ctx, &mut sp);
+                match crate::property::set_property(ctx, obj, prop, val) {
+                    Ok(()) => {
+                        let _ = pop(ctx, &mut sp);
+                    }
+                    Err(err) => {
+                        if let Some(thrown) = property_error_to_exception(ctx, &err) {
+                            let flow = {
+                                let mut frame_state = FrameState {
+                                    stack_top,
+                                    initial_fp,
+                                    sp: &mut sp,
+                                    fp: &mut fp,
+                                    pc: &mut pc,
+                                    func_ptr: &mut func_ptr,
+                                    byte_slice: &mut byte_slice,
+                                    n_vars: &mut n_vars,
+                                };
+                                try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                            };
+                            if let ReturnFlow::Done(val) = flow {
+                                break Ok(val);
+                            }
+                            b = func_ptr.as_ref();
+                        } else {
+                            break Err(ConversionError::from(err).into());
+                        }
+                    }
+                }
             },
             op if op == crate::opcode::OP_GET_ARRAY_EL.as_u8() => unsafe {
                 let prop = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
                 let prop = try_or_break!(conversion::to_property_key(ctx, prop));
-                let val = try_or_break!(
-                    crate::property::get_property(ctx, obj, prop).map_err(ConversionError::from)
-                );
+                let val = match crate::property::get_property(ctx, obj, prop) {
+                    Ok(val) => val,
+                    Err(err) => {
+                        if let Some(thrown) = property_error_to_exception(ctx, &err) {
+                            let flow = {
+                                let mut frame_state = FrameState {
+                                    stack_top,
+                                    initial_fp,
+                                    sp: &mut sp,
+                                    fp: &mut fp,
+                                    pc: &mut pc,
+                                    func_ptr: &mut func_ptr,
+                                    byte_slice: &mut byte_slice,
+                                    n_vars: &mut n_vars,
+                                };
+                                try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                            };
+                            if let ReturnFlow::Done(val) = flow {
+                                break Ok(val);
+                            }
+                            b = func_ptr.as_ref();
+                            continue;
+                        } else {
+                            break Err(ConversionError::from(err).into());
+                        }
+                    }
+                };
                 ptr::write_unaligned(sp, val);
             },
             op if op == crate::opcode::OP_GET_ARRAY_EL2.as_u8() => unsafe {
                 let prop = ptr::read_unaligned(sp);
                 let obj = ptr::read_unaligned(sp.add(1));
                 let prop = try_or_break!(conversion::to_property_key(ctx, prop));
-                let val = try_or_break!(
-                    crate::property::get_property(ctx, obj, prop).map_err(ConversionError::from)
-                );
+                let val = match crate::property::get_property(ctx, obj, prop) {
+                    Ok(val) => val,
+                    Err(err) => {
+                        if let Some(thrown) = property_error_to_exception(ctx, &err) {
+                            let flow = {
+                                let mut frame_state = FrameState {
+                                    stack_top,
+                                    initial_fp,
+                                    sp: &mut sp,
+                                    fp: &mut fp,
+                                    pc: &mut pc,
+                                    func_ptr: &mut func_ptr,
+                                    byte_slice: &mut byte_slice,
+                                    n_vars: &mut n_vars,
+                                };
+                                try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                            };
+                            if let ReturnFlow::Done(val) = flow {
+                                break Ok(val);
+                            }
+                            b = func_ptr.as_ref();
+                            continue;
+                        } else {
+                            break Err(ConversionError::from(err).into());
+                        }
+                    }
+                };
                 ptr::write_unaligned(sp, val);
             },
             op if op == crate::opcode::OP_PUT_ARRAY_EL.as_u8() => unsafe {
@@ -2670,10 +2823,34 @@ pub fn call_with_this_flags(
                 let prop = pop(ctx, &mut sp);
                 let obj = ptr::read_unaligned(sp);
                 let prop = try_or_break!(conversion::to_property_key(ctx, prop));
-                try_or_break!(
-                    crate::property::set_property(ctx, obj, prop, val).map_err(ConversionError::from)
-                );
-                let _ = pop(ctx, &mut sp);
+                match crate::property::set_property(ctx, obj, prop, val) {
+                    Ok(()) => {
+                        let _ = pop(ctx, &mut sp);
+                    }
+                    Err(err) => {
+                        if let Some(thrown) = property_error_to_exception(ctx, &err) {
+                            let flow = {
+                                let mut frame_state = FrameState {
+                                    stack_top,
+                                    initial_fp,
+                                    sp: &mut sp,
+                                    fp: &mut fp,
+                                    pc: &mut pc,
+                                    func_ptr: &mut func_ptr,
+                                    byte_slice: &mut byte_slice,
+                                    n_vars: &mut n_vars,
+                                };
+                                try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                            };
+                            if let ReturnFlow::Done(val) = flow {
+                                break Ok(val);
+                            }
+                            b = func_ptr.as_ref();
+                        } else {
+                            break Err(ConversionError::from(err).into());
+                        }
+                    }
+                }
             },
             op if op == crate::opcode::OP_GET_LENGTH.as_u8() => unsafe {
                 let obj = ptr::read_unaligned(sp);
@@ -2902,7 +3079,25 @@ pub fn call_with_this_flags(
                 };
                 let val = try_or_break!(var_ref_get(var_ref));
                 if val.is_uninitialized() && op == crate::opcode::OP_GET_VAR_REF.as_u8() {
-                    break Err(InterpreterError::ReferenceError("varref uninitialized"));
+                    let thrown = throw_reference_error_value(ctx, "varref uninitialized");
+                    let flow = {
+                        let mut frame_state = FrameState {
+                            stack_top,
+                            initial_fp,
+                            sp: &mut sp,
+                            fp: &mut fp,
+                            pc: &mut pc,
+                            func_ptr: &mut func_ptr,
+                            byte_slice: &mut byte_slice,
+                            n_vars: &mut n_vars,
+                        };
+                        try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                    };
+                    if let ReturnFlow::Done(val) = flow {
+                        break Ok(val);
+                    }
+                    b = func_ptr.as_ref();
+                    continue;
                 }
                 push(ctx, &mut sp, val);
             },
@@ -2933,7 +3128,25 @@ pub fn call_with_this_flags(
                 };
                 let current = try_or_break!(var_ref_get(var_ref));
                 if current.is_uninitialized() && op == crate::opcode::OP_PUT_VAR_REF.as_u8() {
-                    break Err(InterpreterError::ReferenceError("varref uninitialized"));
+                    let thrown = throw_reference_error_value(ctx, "varref uninitialized");
+                    let flow = {
+                        let mut frame_state = FrameState {
+                            stack_top,
+                            initial_fp,
+                            sp: &mut sp,
+                            fp: &mut fp,
+                            pc: &mut pc,
+                            func_ptr: &mut func_ptr,
+                            byte_slice: &mut byte_slice,
+                            n_vars: &mut n_vars,
+                        };
+                        try_or_break!(unwind_exception(ctx, &mut frame_state, thrown))
+                    };
+                    if let ReturnFlow::Done(val) = flow {
+                        break Ok(val);
+                    }
+                    b = func_ptr.as_ref();
+                    continue;
                 }
                 let val = pop(ctx, &mut sp);
                 try_or_break!(var_ref_set(var_ref, val));
@@ -2950,6 +3163,7 @@ pub fn call_with_this_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{js_is_error, js_to_cstring};
     use crate::array_data::ArrayData;
     use crate::closure_data::ClosureData;
     use crate::context::{ContextConfig, JSContext};
@@ -2962,9 +3176,9 @@ mod tests {
         OP_FCLOSURE, OP_FOR_IN_START, OP_FOR_OF_NEXT, OP_FOR_OF_START, OP_GET_ARG0, OP_GET_ARG1,
         OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD, OP_GET_FIELD2, OP_GET_LENGTH,
         OP_GET_LENGTH2, OP_GET_VAR_REF, OP_GET_VAR_REF_NOCHECK, OP_GOSUB, OP_GOTO, OP_IF_FALSE,
-        OP_IF_TRUE, OP_INSERT2, OP_INSERT3, OP_LT, OP_NEW_TARGET, OP_NIP, OP_PERM3, OP_PERM4,
-        OP_PUSH_0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4, OP_PUSH_5, OP_PUSH_CONST,
-        OP_PUSH_I8, OP_PUSH_TRUE, OP_PUT_ARRAY_EL, OP_PUT_FIELD, OP_PUT_VAR_REF,
+        OP_IF_TRUE, OP_INSERT2, OP_INSERT3, OP_LT, OP_NEW_TARGET, OP_NIP, OP_OBJECT, OP_PERM3,
+        OP_PERM4, OP_PUSH_0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4, OP_PUSH_5, OP_PUSH_CONST,
+        OP_PUSH_I8, OP_PUSH_THIS, OP_PUSH_TRUE, OP_PUT_ARRAY_EL, OP_PUT_FIELD, OP_PUT_VAR_REF,
         OP_PUT_VAR_REF_NOCHECK, OP_REGEXP, OP_RET, OP_RETURN, OP_ROT3L, OP_SET_PROTO,
         OP_STRICT_EQ, OP_SUB, OP_SWAP, OP_THIS_FUNC, OP_THROW,
     };
@@ -3589,6 +3803,48 @@ mod tests {
     }
 
     #[test]
+    fn object_preallocates_props() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_OBJECT.as_u8());
+        emit_u16(&mut bytecode, 2);
+        bytecode.push(OP_RETURN.as_u8());
+
+        let result = call_bytecode(&mut ctx, bytecode);
+        let obj_ptr = object_ptr(result).expect("object");
+        let props = object_props(obj_ptr);
+        assert_ne!(props, ctx.empty_props());
+    }
+
+    #[test]
+    fn object_zero_count_uses_empty_props() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_OBJECT.as_u8());
+        emit_u16(&mut bytecode, 0);
+        bytecode.push(OP_RETURN.as_u8());
+
+        let result = call_bytecode(&mut ctx, bytecode);
+        let obj_ptr = object_ptr(result).expect("object");
+        let props = object_props(obj_ptr);
+        assert_eq!(props, ctx.empty_props());
+    }
+
+    #[test]
     fn define_getter_sets_getset_entry() {
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -4052,6 +4308,30 @@ mod tests {
     }
 
     #[test]
+    fn push_this_returns_global() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+        let bytecode = vec![OP_PUSH_THIS.as_u8(), OP_RETURN.as_u8()];
+        let func = make_function_bytecode(
+            &mut ctx,
+            bytecode,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0,
+            2,
+        );
+        let closure = ctx.alloc_closure(func, 0).expect("closure");
+        let result = call(&mut ctx, closure, &[]).expect("call");
+        assert_eq!(result, ctx.global_obj());
+    }
+
+    #[test]
     fn new_target_tracks_constructor_calls() {
         let mut ctx = JSContext::new(ContextConfig {
             image: &MQUICKJS_STDLIB_IMAGE,
@@ -4365,6 +4645,14 @@ mod tests {
         );
         let closure = create_closure(&mut ctx, func, None).expect("closure");
         let err = call(&mut ctx, closure, &[]).unwrap_err();
-        assert!(matches!(err, InterpreterError::ReferenceError(_)));
+        match err {
+            InterpreterError::Thrown(val) => {
+                assert!(js_is_error(val));
+                let msg_val = ctx.get_error_message(val).expect("message");
+                let msg = js_to_cstring(&mut ctx, msg_val).expect("message string");
+                assert_eq!(msg, "varref uninitialized");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

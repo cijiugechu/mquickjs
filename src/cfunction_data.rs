@@ -1,6 +1,7 @@
 use crate::jsvalue::JSValue;
 
 // C: `JSCFunctionData` in mquickjs.c.
+#[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct CFunctionData {
     idx: u32,

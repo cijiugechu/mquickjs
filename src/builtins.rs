@@ -20,7 +20,7 @@ use crate::property::{
     has_property, object_keys,
 };
 use crate::regexp::{regexp_exec, RegExpError, RegExpExecMode};
-use crate::string::runtime::string_view;
+use crate::string::runtime::{append_utf8_with_surrogate_merge, string_view};
 use core::cell::RefCell;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
@@ -1432,10 +1432,43 @@ pub fn js_function_constructor(
     args: &[JSValue],
 ) -> JSValue {
     // Function(arg1, arg2, ..., body) constructor
-    // For now, return an exception since dynamic function compilation
-    // requires the parser and JS_Eval which will be implemented in phase 5
-    let _ = (ctx, args);
-    JSValue::JS_EXCEPTION
+    let argc = args.len();
+    let mut source = Vec::new();
+    source.extend_from_slice(b"(function anonymous(");
+    let mut scratch = [0u8; 5];
+    if argc > 1 {
+        for (idx, arg) in args[..argc - 1].iter().enumerate() {
+            let param = match conversion::to_string(ctx, *arg) {
+                Ok(val) => val,
+                Err(_) => return JSValue::JS_EXCEPTION,
+            };
+            let Some(view) = string_view(param, &mut scratch) else {
+                return JSValue::JS_EXCEPTION;
+            };
+            if idx != 0 {
+                source.push(b',');
+            }
+            source.extend_from_slice(view.bytes());
+        }
+    }
+    source.extend_from_slice(b"){\n");
+    let body = if argc == 0 {
+        None
+    } else {
+        Some(args[argc - 1])
+    };
+    if let Some(body_arg) = body {
+        let body_val = match conversion::to_string(ctx, body_arg) {
+            Ok(val) => val,
+            Err(_) => return JSValue::JS_EXCEPTION,
+        };
+        let Some(view) = string_view(body_val, &mut scratch) else {
+            return JSValue::JS_EXCEPTION;
+        };
+        source.extend_from_slice(view.bytes());
+    }
+    source.extend_from_slice(b"\n})");
+    crate::api::js_eval(ctx, &source, crate::capi_defs::JS_EVAL_RETVAL)
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,9 +1538,9 @@ pub fn js_string_charAt(
     }
 }
 
-const MAGIC_CHAR_AT: i32 = 0;
-const MAGIC_CHAR_CODE_AT: i32 = 1;
-const MAGIC_CODEPOINT_AT: i32 = 2;
+const MAGIC_CHAR_AT: i32 = 1;
+const MAGIC_CHAR_CODE_AT: i32 = 2;
+const MAGIC_CODEPOINT_AT: i32 = 3;
 
 fn char_at_undefined(ctx: &mut JSContext, magic: i32) -> JSValue {
     match magic {
@@ -1592,7 +1625,7 @@ pub fn js_string_concat(
         };
         let mut scratch = [0u8; 5];
         if let Some(view) = string_view(s, &mut scratch) {
-            result.extend_from_slice(view.bytes());
+            append_utf8_with_surrogate_merge(&mut result, view.bytes());
         }
     }
     ctx.new_string_len(&result).unwrap_or(JSValue::JS_EXCEPTION)
@@ -1950,7 +1983,7 @@ pub fn js_string_toLowerCase(
     _args: &[JSValue],
     magic: i32,
 ) -> JSValue {
-    let to_lower = magic == 0;
+    let to_lower = magic != 0;
     let s = match to_string_check_object(ctx, this_val) {
         Ok(s) => s,
         Err(_) => return JSValue::JS_EXCEPTION,
@@ -3371,15 +3404,25 @@ pub fn js_array_sort(
         return this_val;
     }
 
-    let compare_fn = args.first().copied().filter(|v| v.is_function());
+    let compare_arg = args.first().copied().unwrap_or(JSValue::JS_UNDEFINED);
+    let compare_fn = if compare_arg.is_undefined() {
+        None
+    } else if compare_arg.is_function() {
+        Some(compare_arg)
+    } else {
+        return JSValue::JS_EXCEPTION;
+    };
 
     // Build array of (value, original_index) pairs for stable sort
     let mut pairs: Vec<(JSValue, u32)> = Vec::with_capacity(len as usize);
     for i in 0..len {
         let val = crate::property::get_property(ctx, this_val, JSValue::new_short_int(i as i32))
             .unwrap_or(JSValue::JS_UNDEFINED);
-        pairs.push((val, i));
+        if !val.is_undefined() {
+            pairs.push((val, i));
+        }
     }
+    let defined_len = pairs.len();
 
     // Sort using a simple stable sort
     // Note: For production, this should use heapsort like C version for stability guarantees
@@ -3456,9 +3499,12 @@ pub fn js_array_sort(
         return JSValue::JS_EXCEPTION;
     }
 
-    // Write sorted values back
+    // Write sorted values back (undefined values go at the end)
     for (i, (val, _)) in pairs.iter().enumerate() {
         let _ = crate::property::set_property(ctx, this_val, JSValue::new_short_int(i as i32), *val);
+    }
+    for i in defined_len..(len as usize) {
+        let _ = crate::property::set_property(ctx, this_val, JSValue::new_short_int(i as i32), JSValue::JS_UNDEFINED);
     }
 
     this_val

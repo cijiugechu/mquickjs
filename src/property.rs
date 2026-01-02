@@ -359,6 +359,20 @@ fn set_object_props(ptr: NonNull<Object>, value: JSValue) {
     }
 }
 
+pub(crate) fn prealloc_object_props(
+    ctx: &mut JSContext,
+    obj: JSValue,
+    count: usize,
+) -> Result<(), PropertyError> {
+    if count == 0 {
+        return Ok(());
+    }
+    let obj_ptr = object_ptr(obj)?;
+    let props = alloc_props(ctx, count)?;
+    set_object_props(obj_ptr, props);
+    Ok(())
+}
+
 fn array_data_ptr(ptr: NonNull<Object>) -> *mut ArrayData {
     let payload = unsafe {
         // SAFETY: ptr points to a valid Object payload.
@@ -506,6 +520,28 @@ fn typed_array_get_element_ctx(
     Ok(result)
 }
 
+fn to_uint8_clamp(val: f64) -> u8 {
+    if val.is_nan() || val <= 0.0 {
+        return 0;
+    }
+    if val >= 255.0 {
+        return 255;
+    }
+    let floored = val.floor();
+    let frac = val - floored;
+    if frac > 0.5 {
+        return (floored + 1.0) as u8;
+    }
+    if frac < 0.5 {
+        return floored as u8;
+    }
+    if (floored as i64) & 1 == 1 {
+        (floored + 1.0) as u8
+    } else {
+        floored as u8
+    }
+}
+
 // Write element to TypedArray at given index
 fn typed_array_set_element(
     ctx: &mut JSContext,
@@ -539,9 +575,10 @@ fn typed_array_set_element(
         let ptr = data_ptr.as_ptr().add(byte_idx);
         match class_id {
             c if c == JSObjectClass::Uint8CArray as u8 => {
-                // Uint8ClampedArray: clamp to 0-255
-                let n = conversion::to_number(ctx, val).map_err(|_| PropertyError::Unsupported("number conversion"))? as i32;
-                let clamped = n.clamp(0, 255) as u8;
+                // Uint8ClampedArray: clamp and round per ToUint8Clamp
+                let n = conversion::to_number(ctx, val)
+                    .map_err(|_| PropertyError::Unsupported("number conversion"))?;
+                let clamped = to_uint8_clamp(n);
                 *ptr = clamped;
             }
             c if c == JSObjectClass::Uint8Array as u8 => {
@@ -1225,7 +1262,83 @@ pub fn get_property(
     let receiver = obj;
     let mut current = obj;
     loop {
-        let obj_ptr = object_ptr(current)?;
+        let obj_ptr = match object_ptr(current) {
+            Ok(ptr) => ptr,
+            Err(_) => {
+                // Mirror JS_GetPropertyInternal: primitives map to their prototypes.
+                if current.is_int() {
+                    current = ctx.class_proto()[JSObjectClass::Number as usize];
+                    continue;
+                }
+                #[cfg(target_pointer_width = "64")]
+                if current.is_short_float() {
+                    current = ctx.class_proto()[JSObjectClass::Number as usize];
+                    continue;
+                }
+                if !current.is_ptr() {
+                    match current.get_special_tag() {
+                        tag if tag == JSValue::JS_TAG_BOOL => {
+                            current = ctx.class_proto()[JSObjectClass::Boolean as usize];
+                            continue;
+                        }
+                        tag if tag == JSValue::JS_TAG_SHORT_FUNC => {
+                            current = ctx.class_proto()[JSObjectClass::Closure as usize];
+                            continue;
+                        }
+                        tag if tag == JSValue::JS_TAG_STRING_CHAR => {
+                            if let Some(idx) = prop_index_from_value(prop) {
+                                let len = ctx.string_len(current);
+                                if idx < len {
+                                    let c = ctx.string_getc(current, idx);
+                                    if c >= 0 {
+                                        let ch = ctx
+                                            .new_string_char(c as u32)
+                                            .map_err(|_| PropertyError::OutOfMemory)?;
+                                        return Ok(ch);
+                                    }
+                                }
+                            }
+                            current = ctx.class_proto()[JSObjectClass::String as usize];
+                            continue;
+                        }
+                        tag if tag == JSValue::JS_TAG_NULL || tag == JSValue::JS_TAG_UNDEFINED => {
+                            return Err(PropertyError::Interpreter(InterpreterError::TypeError(
+                                "null or undefined",
+                            )));
+                        }
+                        _ => return Err(PropertyError::NotObject),
+                    }
+                }
+                let ptr = current.to_ptr::<u8>().ok_or(PropertyError::NotObject)?;
+                let header_word = unsafe {
+                    // SAFETY: ptr points at a readable memblock header.
+                    ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+                };
+                match MbHeader::from_word(header_word).tag() {
+                    MTag::Float64 => {
+                        current = ctx.class_proto()[JSObjectClass::Number as usize];
+                        continue;
+                    }
+                    MTag::String => {
+                        if let Some(idx) = prop_index_from_value(prop) {
+                            let len = ctx.string_len(current);
+                            if idx < len {
+                                let c = ctx.string_getc(current, idx);
+                                if c >= 0 {
+                                    let ch = ctx
+                                        .new_string_char(c as u32)
+                                        .map_err(|_| PropertyError::OutOfMemory)?;
+                                    return Ok(ch);
+                                }
+                            }
+                        }
+                        current = ctx.class_proto()[JSObjectClass::String as usize];
+                        continue;
+                    }
+                    _ => return Err(PropertyError::NotObject),
+                }
+            }
+        };
         let header = object_header(obj_ptr);
         let class_id = header.class_id();
         if class_id == JSObjectClass::Array as u8 {
@@ -1447,6 +1560,16 @@ pub fn set_property(
     let header = object_header(obj_ptr);
     let class_id = header.class_id();
     if class_id == JSObjectClass::Array as u8 {
+        if prop_is_bytes(prop, b"length") {
+            let new_len = conversion::to_int32(ctx, val)
+                .map_err(|_| PropertyError::Unsupported("number conversion"))?;
+            if new_len < 0 {
+                return Err(PropertyError::Unsupported("invalid array length"));
+            }
+            ctx.array_set_length(obj, new_len as u32)
+                .map_err(|_| PropertyError::OutOfMemory)?;
+            return Ok(());
+        }
         if let Some(idx) = prop_index_from_value(prop) {
             let data_ptr = array_data_ptr(obj_ptr);
             let mut data = unsafe {

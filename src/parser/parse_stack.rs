@@ -21,20 +21,24 @@ impl ParseStackError {
 }
 
 // C: parse stack helpers from mquickjs.c (stack grows downward).
-pub struct ParseStack<'a> {
-    stack: &'a mut [JSValue],
+pub struct ParseStack {
+    stack: Vec<JSValue>,
     sp: usize,
     stack_bottom: usize,
 }
 
-impl<'a> ParseStack<'a> {
-    pub fn new(stack: &'a mut [JSValue]) -> Self {
+impl ParseStack {
+    pub fn new(stack: Vec<JSValue>) -> Self {
         let sp = stack.len();
         Self {
             stack,
             sp,
             stack_bottom: sp,
         }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::new(vec![JSValue::JS_NULL; capacity])
     }
 
     pub fn sp(&self) -> usize {
@@ -45,10 +49,30 @@ impl<'a> ParseStack<'a> {
         self.stack_bottom
     }
 
+    pub fn depth(&self) -> usize {
+        self.stack.len().saturating_sub(self.sp)
+    }
+
+    fn grow(&mut self, needed: usize) -> Result<(), ParseStackError> {
+        let len = self.stack.len();
+        let required = needed.saturating_sub(self.sp);
+        let new_len = len.saturating_mul(2).max(len + required + JS_STACK_SLACK);
+        if new_len <= len {
+            return Err(ParseStackError::new(ERR_STACK_OVERFLOW));
+        }
+        let extra = new_len - len;
+        let mut new_stack = vec![JSValue::JS_NULL; new_len];
+        new_stack[extra..].copy_from_slice(&self.stack);
+        self.stack = new_stack;
+        self.sp = self.sp.saturating_add(extra);
+        self.stack_bottom = self.stack_bottom.saturating_add(extra);
+        Ok(())
+    }
+
     pub fn ensure_capacity(&mut self, len: usize) -> Result<(), ParseStackError> {
         let needed = len.saturating_add(JS_STACK_SLACK);
         if self.sp < needed {
-            return Err(ParseStackError::new(ERR_STACK_OVERFLOW));
+            self.grow(needed)?;
         }
         self.stack_bottom = self.sp - needed;
         Ok(())
@@ -99,19 +123,19 @@ pub type ParseFunc<S> = fn(&mut S, u8, i32) -> i32;
 
 pub fn parse_call<S>(
     state: &mut S,
-    stack: &mut ParseStack<'_>,
+    stack: &mut ParseStack,
     func_table: &[ParseFunc<S>],
     mut func_idx: u8,
     mut param: i32,
 ) -> Result<(), ParseStackError> {
-    let stack_top = stack.sp();
+    let stack_depth = stack.depth();
     let mut parse_state = PARSE_STATE_INIT;
     loop {
         debug_assert!((func_idx as usize) < func_table.len());
         let ret = func_table[func_idx as usize](state, parse_state, param);
         parse_state = (ret & 0xff) as u8;
         if parse_state == PARSE_STATE_RET {
-            if stack.sp() == stack_top {
+            if stack.depth() == stack_depth {
                 break;
             }
             let saved = stack.pop_int();
@@ -135,8 +159,7 @@ mod tests {
 
     #[test]
     fn parse_stack_grows_and_shrinks_bottom() {
-        let mut storage = [JSValue::JS_UNDEFINED; 64];
-        let mut stack = ParseStack::new(&mut storage);
+        let mut stack = ParseStack::with_capacity(64);
         assert_eq!(stack.sp(), 64);
         assert_eq!(stack.stack_bottom(), 64);
 
@@ -150,11 +173,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_stack_reports_overflow() {
-        let mut storage = [JSValue::JS_UNDEFINED; 8];
-        let mut stack = ParseStack::new(&mut storage);
-        let err = stack.push(JSValue::JS_NULL).unwrap_err();
-        assert_eq!(err.message(), ERR_STACK_OVERFLOW);
+    fn parse_stack_grows_on_overflow() {
+        let mut stack = ParseStack::with_capacity(8);
+        for i in 0..64 {
+            stack.push_int(i).unwrap();
+        }
+        for i in (0..64).rev() {
+            assert_eq!(stack.pop_int(), i);
+        }
     }
 
     #[derive(Default)]
@@ -194,8 +220,7 @@ mod tests {
 
     #[test]
     fn parse_call_returns_to_caller() {
-        let mut storage = [JSValue::JS_UNDEFINED; 64];
-        let mut stack = ParseStack::new(&mut storage);
+        let mut stack = ParseStack::with_capacity(64);
         let mut state = DummyState::default();
         let funcs: [ParseFunc<DummyState>; 2] = [parse_func_a, parse_func_b];
 

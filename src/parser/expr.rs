@@ -308,8 +308,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     pub fn parse_statement(&mut self) -> Result<(), ParserError> {
         self.attach_parse_state();
         self.lexer.next_token().map_err(ParserError::from)?;
-        let mut storage = vec![JSValue::JS_NULL; DEFAULT_STACK_SIZE];
-        let mut stack = ParseStack::new(&mut storage);
+        let mut stack = ParseStack::with_capacity(DEFAULT_STACK_SIZE);
         self.parse_call(&mut stack, ParseExprFunc::JsParseStatement, 0)
     }
 
@@ -588,14 +587,12 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn parse_expr2(&mut self, parse_flags: i32) -> Result<(), ParserError> {
-        let mut storage = vec![JSValue::JS_NULL; DEFAULT_STACK_SIZE];
-        let mut stack = ParseStack::new(&mut storage);
+        let mut stack = ParseStack::with_capacity(DEFAULT_STACK_SIZE);
         self.parse_call(&mut stack, ParseExprFunc::JsParseExprComma, parse_flags)
     }
 
     fn parse_assign_expr2(&mut self, parse_flags: i32) -> Result<(), ParserError> {
-        let mut storage = vec![JSValue::JS_NULL; DEFAULT_STACK_SIZE];
-        let mut stack = ParseStack::new(&mut storage);
+        let mut stack = ParseStack::with_capacity(DEFAULT_STACK_SIZE);
         self.parse_call(&mut stack, ParseExprFunc::JsParseAssignExpr, parse_flags)
     }
 
@@ -635,8 +632,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             self.parse_function_decl(JSParseFunction::Statement, JSValue::JS_NULL)?;
             return Ok(());
         }
-        let mut storage = vec![JSValue::JS_NULL; DEFAULT_STACK_SIZE];
-        let mut stack = ParseStack::new(&mut storage);
+        let mut stack = ParseStack::with_capacity(DEFAULT_STACK_SIZE);
         self.parse_call(&mut stack, ParseExprFunc::JsParseStatement, 0)?;
         Ok(())
     }
@@ -1029,7 +1025,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_block_func(
         &mut self,
-        _stack: &mut ParseStack<'_>,
+        _stack: &mut ParseStack,
         state: u8,
         _param: i32,
     ) -> Result<i32, ParserError> {
@@ -1055,7 +1051,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_switch_body(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         label_case: &mut Label,
         default_label_pos: &mut i32,
     ) -> Result<i32, ParserError> {
@@ -1140,7 +1136,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_statement_func(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         state: u8,
         _param: i32,
     ) -> Result<i32, ParserError> {
@@ -1659,11 +1655,11 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_call(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         func_idx: ParseExprFunc,
         param: i32,
     ) -> Result<(), ParserError> {
-        let stack_top = stack.sp();
+        let stack_depth = stack.depth();
         let mut parse_state = PARSE_STATE_INIT;
         let mut func_idx = func_idx;
         let mut param = param;
@@ -1671,7 +1667,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
             let ret = self.dispatch_parse(stack, func_idx, parse_state, param)?;
             parse_state = (ret & 0xff) as u8;
             if parse_state == PARSE_STATE_RET {
-                if stack.sp() == stack_top {
+                if stack.depth() == stack_depth {
                     break;
                 }
                 let saved = stack.pop_int();
@@ -1691,7 +1687,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn dispatch_parse(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         func_idx: ParseExprFunc,
         state: u8,
         param: i32,
@@ -1844,10 +1840,22 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
     }
 
     fn length_atom_index(&mut self) -> Result<u16, ParserError> {
-        if let Some(idx) = self.atoms.length_cpool {
-            return Ok(idx);
-        }
         let value = self.length_atom_value()?;
+        let cpool_len = self.parse_state_ref().cpool_len() as usize;
+        let cpool_val = self.current_func_ref()?.cpool();
+        if cpool_val != JSValue::JS_NULL {
+            let cpool = self.value_array_ref(cpool_val)?;
+            if let Some(idx) = cpool
+                .values()
+                .iter()
+                .take(cpool_len)
+                .position(|entry| *entry == value)
+            {
+                let idx = idx as u16;
+                self.atoms.length_cpool = Some(idx);
+                return Ok(idx);
+            }
+        }
         let idx = self.cpool_add(value)?;
         self.atoms.length_cpool = Some(idx);
         Ok(idx)
@@ -1914,7 +1922,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_postfix_expr(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         state: u8,
         parse_flags: i32,
     ) -> Result<i32, ParserError> {
@@ -2486,7 +2494,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_unary(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         state: u8,
         parse_flags: i32,
     ) -> Result<i32, ParserError> {
@@ -2655,7 +2663,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_expr_binary(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         state: u8,
         parse_flags: i32,
     ) -> Result<i32, ParserError> {
@@ -2784,7 +2792,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_logical_and_or(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         state: u8,
         parse_flags: i32,
     ) -> Result<i32, ParserError> {
@@ -2878,7 +2886,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_cond_expr(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         state: u8,
         parse_flags: i32,
     ) -> Result<i32, ParserError> {
@@ -2960,7 +2968,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_assign_expr(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         state: u8,
         parse_flags: i32,
     ) -> Result<i32, ParserError> {
@@ -3071,7 +3079,7 @@ impl<'a, 'ctx> ExprParser<'a, 'ctx> {
 
     fn parse_expr_comma(
         &mut self,
-        stack: &mut ParseStack<'_>,
+        stack: &mut ParseStack,
         state: u8,
         parse_flags: i32,
     ) -> Result<i32, ParserError> {
