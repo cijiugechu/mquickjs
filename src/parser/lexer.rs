@@ -394,11 +394,12 @@ impl<'a> ParseState<'a> {
                 b'/' => {
                     let next = self.byte_at(pos + 1);
                     if next == b'*' {
+                        let comment_start = pos;
                         pos += 2;
                         loop {
                             let c0 = self.byte_at(pos);
                             if c0 == 0 {
-                                return Err(ParseError::new(ERR_UNEXPECTED_END_OF_COMMENT, pos));
+                                return Err(ParseError::new(ERR_UNEXPECTED_END_OF_COMMENT, comment_start));
                             }
                             if c0 == b'*' && self.byte_at(pos + 1) == b'/' {
                                 pos += 2;

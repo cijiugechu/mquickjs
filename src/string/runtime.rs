@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::containers::StringHeader;
-use crate::cutils::unicode_to_utf8;
+use crate::cutils::{unicode_to_utf8, utf8_get};
 use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use core::mem::size_of;
@@ -71,7 +71,43 @@ pub(crate) fn is_valid_len4_utf8(buf: &[u8]) -> bool {
     if buf.len() < 2 {
         return false;
     }
-    (((buf[0] & 0x0f) << 6) | (buf[1] & 0x3f)) >= 0x10
+    let top = ((buf[0] & 0x0f) as u32) << 6;
+    let low = (buf[1] & 0x3f) as u32;
+    (top | low) >= 0x10
+}
+
+pub(crate) fn append_utf8_with_surrogate_merge(out: &mut Vec<u8>, bytes: &[u8]) {
+    if out.len() >= 3 && bytes.len() >= 3 {
+        let left = &out[out.len() - 3..];
+        let right = &bytes[..3];
+        if is_utf8_left_surrogate(left) && is_utf8_right_surrogate(right) {
+            let mut clen = 0usize;
+            let left_cp = utf8_get(left, &mut clen);
+            let right_cp = utf8_get(right, &mut clen);
+            if left_cp >= 0 && right_cp >= 0 {
+                let codepoint = 0x10000
+                    + (((left_cp as u32) & 0x3ff) << 10)
+                    + ((right_cp as u32) & 0x3ff);
+                let mut buf = [0u8; 4];
+                let len = unicode_to_utf8(&mut buf, codepoint);
+                if len != 0 {
+                    out.truncate(out.len() - 3);
+                    out.extend_from_slice(&buf[..len]);
+                    out.extend_from_slice(&bytes[3..]);
+                    return;
+                }
+            }
+        }
+    }
+    out.extend_from_slice(bytes);
+}
+
+fn is_utf8_left_surrogate(p: &[u8]) -> bool {
+    p.len() >= 3 && p[0] == 0xed && (0xa0..=0xaf).contains(&p[1]) && p[2] >= 0x80
+}
+
+fn is_utf8_right_surrogate(p: &[u8]) -> bool {
+    p.len() >= 3 && p[0] == 0xed && (0xb0..=0xbf).contains(&p[1]) && p[2] >= 0x80
 }
 
 fn string_header(ptr: NonNull<u8>) -> Option<StringHeader> {

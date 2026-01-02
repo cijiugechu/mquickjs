@@ -1068,6 +1068,24 @@ impl JSContext {
 
     #[allow(dead_code)]
     pub(crate) fn string_getcp(&mut self, val: JSValue, utf16_pos: u32, is_codepoint: bool) -> i32 {
+        if val.get_special_tag() == JSValue::JS_TAG_STRING_CHAR {
+            let codepoint = val.get_special_value() as u32;
+            if codepoint >= 0x10000 {
+                if utf16_pos == 0 {
+                    if is_codepoint {
+                        return codepoint as i32;
+                    }
+                    let hi = 0xd800 + ((codepoint - 0x10000) >> 10);
+                    return hi as i32;
+                }
+                if utf16_pos == 1 {
+                    let lo = 0xdc00 + ((codepoint - 0x10000) & 0x3ff);
+                    return lo as i32;
+                }
+                return -1;
+            }
+            return if utf16_pos == 0 { codepoint as i32 } else { -1 };
+        }
         let utf8_pos = self.string_utf16_to_utf8_pos(val, utf16_pos);
         let surrogate_flag = (utf8_pos & 1) != 0;
         let utf8_pos = (utf8_pos >> 1) as usize;
@@ -1768,6 +1786,9 @@ impl JSContext {
 
         if new_len == old_len {
             return Ok(());
+        }
+        if new_len > old_len {
+            return self.array_resize(arr, new_len as usize);
         }
 
         // Just update the length - the tab will be handled separately if needed

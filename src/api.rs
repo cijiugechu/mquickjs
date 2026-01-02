@@ -14,7 +14,9 @@ use crate::conversion;
 use crate::enums::JSObjectClass;
 use crate::gc::GcMarkConfig;
 use crate::gc_ref::GcRef;
-use crate::interpreter::{call, call_with_this, call_with_this_flags, create_closure};
+use crate::interpreter::{
+    call, call_with_this, call_with_this_flags, create_closure, InterpreterError,
+};
 use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader, ObjectUserData};
@@ -193,7 +195,10 @@ fn js_eval_internal(
                 .map_err(|e| ApiError::Runtime(format!("{:?}", e)))?;
             // Execute the closure
             match with_call_depth(ctx, |ctx| call(ctx, closure, &[])) {
-                Some(result) => result.map_err(|e| ApiError::Runtime(format!("{:?}", e))),
+                Some(result) => match result {
+                    Ok(val) => Ok(val),
+                    Err(err) => map_interpreter_error(ctx, err),
+                },
                 None => Err(ApiError::Runtime("C stack overflow".to_string())),
             }
         }
@@ -337,7 +342,10 @@ pub fn js_call(
     }
     match with_call_depth(ctx, |ctx| call_with_this(ctx, func, this_obj, args)) {
         Some(Ok(val)) => val,
-        Some(Err(_)) => JSValue::JS_EXCEPTION,
+        Some(Err(err)) => match map_interpreter_error(ctx, err) {
+            Ok(val) => val,
+            Err(api_err) => handle_api_error(ctx, api_err),
+        },
         None => ctx.throw_internal_error("C stack overflow"),
     }
 }
@@ -363,7 +371,10 @@ pub fn js_run(ctx: &mut JSContext, func: JSValue) -> JSValue {
     };
     match with_call_depth(ctx, |ctx| call(ctx, func, &[])) {
         Some(Ok(val)) => val,
-        Some(Err(_)) => JSValue::JS_EXCEPTION,
+        Some(Err(err)) => match map_interpreter_error(ctx, err) {
+            Ok(val) => val,
+            Err(api_err) => handle_api_error(ctx, api_err),
+        },
         None => ctx.throw_internal_error("C stack overflow"),
     }
 }
@@ -389,7 +400,10 @@ pub fn js_call_stack(ctx: &mut JSContext, call_flags: i32) -> JSValue {
         call_with_this_flags(ctx, func, this_obj, args, call_flags)
     }) {
         Some(Ok(val)) => val,
-        Some(Err(_)) => JSValue::JS_EXCEPTION,
+        Some(Err(err)) => match map_interpreter_error(ctx, err) {
+            Ok(val) => val,
+            Err(api_err) => handle_api_error(ctx, api_err),
+        },
         None => return ctx.throw_internal_error("C stack overflow"),
     };
     let new_sp = unsafe { base.add(argc + 2) };
@@ -574,6 +588,34 @@ pub fn js_set_property_uint32(
 
 fn handle_api_error(ctx: &mut JSContext, err: ApiError) -> JSValue {
     handle_api_error_with_filename(ctx, err, "<input>")
+}
+
+fn map_interpreter_error(ctx: &mut JSContext, err: InterpreterError) -> Result<JSValue, ApiError> {
+    match err {
+        InterpreterError::Thrown(thrown) => {
+            if thrown != JSValue::JS_EXCEPTION {
+                ctx.set_current_exception(thrown);
+            }
+            Ok(JSValue::JS_EXCEPTION)
+        }
+        InterpreterError::TypeError(msg) => {
+            let _ = ctx.throw_type_error(msg);
+            Ok(JSValue::JS_EXCEPTION)
+        }
+        InterpreterError::ReferenceError(msg) => {
+            let _ = ctx.throw_reference_error(msg);
+            Ok(JSValue::JS_EXCEPTION)
+        }
+        InterpreterError::NotAFunction => {
+            let _ = ctx.throw_type_error("not a function");
+            Ok(JSValue::JS_EXCEPTION)
+        }
+        InterpreterError::Context(ContextError::OutOfMemory) => {
+            let _ = ctx.throw_out_of_memory();
+            Ok(JSValue::JS_EXCEPTION)
+        }
+        err => Err(ApiError::Runtime(format!("{:?}", err))),
+    }
 }
 
 fn handle_api_error_with_filename(ctx: &mut JSContext, err: ApiError, filename: &str) -> JSValue {
@@ -1153,7 +1195,11 @@ fn json_to_jsvalue(ctx: &mut JSContext, json: JsonValue) -> JSValue {
             for (key, val) in obj {
                 let key_val = match ctx.intern_string(key.bytes()) {
                     Ok(k) => k,
-                    Err(_) => continue,
+                    Err(_) => return JSValue::JS_EXCEPTION,
+                };
+                let key_val = match conversion::to_property_key(ctx, key_val) {
+                    Ok(k) => k,
+                    Err(_) => return JSValue::JS_EXCEPTION,
                 };
                 let js_val = json_to_jsvalue(ctx, val);
                 let _ = crate::property::define_property_value(ctx, result, key_val, js_val);

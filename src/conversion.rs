@@ -7,7 +7,7 @@ use crate::jsvalue::{JSValue, JSWord};
 use crate::memblock::{MbHeader, MTag};
 use crate::object::{Object, ObjectHeader, PrimitiveValue};
 use crate::property::{get_property, PropertyError};
-use crate::string::runtime::string_view;
+use crate::string::runtime::{append_utf8_with_surrogate_merge, string_view};
 use core::mem::size_of;
 use core::ptr;
 
@@ -293,7 +293,7 @@ pub(crate) fn concat_strings(
         .ok_or(ConversionError::TypeError("string"))?;
     let mut bytes = Vec::with_capacity(left_view.bytes().len() + right_view.bytes().len());
     bytes.extend_from_slice(left_view.bytes());
-    bytes.extend_from_slice(right_view.bytes());
+    append_utf8_with_surrogate_merge(&mut bytes, right_view.bytes());
     Ok(ctx.new_string_len(&bytes)?)
 }
 

@@ -597,8 +597,17 @@ impl<'a> RegExpParser<'a> {
                 if c2 >= CLASS_RANGE_BASE || c2 < c1 {
                     return Err(self.error(ERR_INVALID_CLASS_RANGE));
                 }
-                self.bytecode.emit_u32(c1);
-                self.bytecode.emit_u32(c2 + 1);
+                let end = c2 + 1;
+                if self.ignore_case {
+                    self.add_interval_intersect(c1, end, 0, b'A' as u32, 0);
+                    self.add_interval_intersect(c1, end, (b'Z' + 1) as u32, b'a' as u32, 0);
+                    self.add_interval_intersect(c1, end, (b'z' + 1) as u32, i32::MAX as u32, 0);
+                    self.add_interval_intersect(c1, end, b'A' as u32, (b'Z' + 1) as u32, 32);
+                    self.add_interval_intersect(c1, end, b'a' as u32, (b'z' + 1) as u32, -32);
+                } else {
+                    self.bytecode.emit_u32(c1);
+                    self.bytecode.emit_u32(end);
+                }
             } else if c1 >= CLASS_RANGE_BASE {
                 self.emit_range_base(c1 - CLASS_RANGE_BASE);
             } else {
