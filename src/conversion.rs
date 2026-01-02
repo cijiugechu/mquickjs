@@ -59,18 +59,18 @@ impl JSValue {
         }
     }
 
-    pub(crate) fn is_object(&self) -> bool {
+    pub fn is_object(&self) -> bool {
         matches!(mtag_from_value(*self), Some(MTag::Object))
     }
 
-    pub(crate) fn is_string(&self) -> bool {
+    pub fn is_string(&self) -> bool {
         if !self.is_ptr() {
             return self.get_special_tag() == JSValue::JS_TAG_STRING_CHAR;
         }
         matches!(mtag_from_value(*self), Some(MTag::String))
     }
 
-    pub(crate) fn is_number(&self) -> bool {
+    pub fn is_number(&self) -> bool {
         if self.is_int() {
             return true;
         }
@@ -81,7 +81,7 @@ impl JSValue {
         matches!(mtag_from_value(*self), Some(MTag::Float64))
     }
 
-    pub(crate) fn is_function(&self) -> bool {
+    pub fn is_function(&self) -> bool {
         if !self.is_ptr() {
             return self.get_special_tag() == JSValue::JS_TAG_SHORT_FUNC;
         }
@@ -93,6 +93,10 @@ impl JSValue {
             header.class_id(),
             class if class == JSObjectClass::Closure as u8 || class == JSObjectClass::CFunction as u8
         )
+    }
+
+    pub fn is_error(&self) -> bool {
+        matches!(object_header(*self), Some(header) if header.class_id() == JSObjectClass::Error as u8)
     }
 }
 

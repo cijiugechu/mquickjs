@@ -792,54 +792,6 @@ pub fn js_get_error_str(ctx: &mut JSContext) -> String {
     out
 }
 
-/// Check if a value is undefined.
-pub fn js_is_undefined(val: JSValue) -> bool {
-    val.is_undefined()
-}
-
-/// Check if a value is null.
-pub fn js_is_null(val: JSValue) -> bool {
-    val.is_null()
-}
-
-/// Check if a value is a boolean.
-pub fn js_is_bool(val: JSValue) -> bool {
-    val.is_bool()
-}
-
-/// Check if a value is a number.
-pub fn js_is_number(val: JSValue) -> bool {
-    val.is_number()
-}
-
-/// Check if a value is a string.
-pub fn js_is_string(val: JSValue) -> bool {
-    val.is_string()
-}
-
-/// Check if a value is an object.
-pub fn js_is_object(val: JSValue) -> bool {
-    val.is_object()
-}
-
-/// Check if a value is a function.
-pub fn js_is_function(val: JSValue) -> bool {
-    val.is_function()
-}
-
-/// Check if a value is an Error object.
-pub fn js_is_error(val: JSValue) -> bool {
-    matches!(
-        js_get_class_id(val),
-        Some(class_id) if class_id == JSObjectClass::Error as u8
-    )
-}
-
-/// Check if a value is an exception marker.
-pub fn js_is_exception(val: JSValue) -> bool {
-    val.is_exception()
-}
-
 /// Check if a buffer contains a bytecode header.
 pub fn js_is_bytecode(buf: &[u8]) -> bool {
     is_bytecode(buf)
@@ -1229,7 +1181,7 @@ mod tests {
         })
         .expect("context init");
         let result = js_eval(&mut ctx, b"null", JS_EVAL_JSON);
-        assert!(js_is_null(result));
+        assert!(result.is_null());
     }
 
     #[test]
@@ -1242,7 +1194,7 @@ mod tests {
         })
         .expect("context init");
         let result = js_eval(&mut ctx, b"42", JS_EVAL_JSON);
-        assert!(js_is_number(result));
+        assert!(result.is_number());
         assert_eq!(js_to_number(&mut ctx, result), 42.0);
     }
 
@@ -1256,7 +1208,7 @@ mod tests {
         })
         .expect("context init");
         let result = js_eval(&mut ctx, b"\"hello\"", JS_EVAL_JSON);
-        assert!(js_is_string(result));
+        assert!(result.is_string());
     }
 
     #[test]
@@ -1269,7 +1221,7 @@ mod tests {
         })
         .expect("context init");
         let result = js_eval(&mut ctx, b"[1, 2, 3]", JS_EVAL_JSON);
-        assert!(js_is_object(result));
+        assert!(result.is_object());
     }
 
     #[test]
@@ -1282,7 +1234,7 @@ mod tests {
         })
         .expect("context init");
         let result = js_eval(&mut ctx, b"{\"a\": 1}", JS_EVAL_JSON);
-        assert!(js_is_object(result));
+        assert!(result.is_object());
     }
 
     #[test]
@@ -1295,7 +1247,7 @@ mod tests {
         })
         .expect("context init");
         let obj = js_new_object(&mut ctx);
-        assert!(js_is_object(obj));
+        assert!(obj.is_object());
 
         let val = JSValue::new_short_int(42);
         js_set_property_str(&mut ctx, obj, "x", val);
@@ -1314,7 +1266,7 @@ mod tests {
         })
         .expect("context init");
         let arr = js_new_array(&mut ctx, 3);
-        assert!(js_is_object(arr));
+        assert!(arr.is_object());
     }
 
     #[test]
@@ -1327,7 +1279,7 @@ mod tests {
         })
         .expect("context init");
         let s = js_new_string(&mut ctx, "hello");
-        assert!(js_is_string(s));
+        assert!(s.is_string());
     }
 
     #[test]
@@ -1340,7 +1292,7 @@ mod tests {
         })
         .expect("context init");
         let global = js_get_global_object(&ctx);
-        assert!(js_is_object(global));
+        assert!(global.is_object());
     }
 
     #[test]
@@ -1387,7 +1339,7 @@ mod tests {
             let patched = ObjectHeader::new(JSObjectClass::User as u8, header.extra_size(), header.gc_mark());
             ptr::write_unaligned(obj_ptr.as_ptr().cast::<JSWord>(), patched.header().word());
         }
-        assert!(js_is_object(obj));
+        assert!(obj.is_object());
         assert_eq!(js_get_class_id(obj), Some(JSObjectClass::User as u8));
 
         let mut value = 7u8;
@@ -1407,8 +1359,8 @@ mod tests {
         .expect("context init");
         let _ = js_throw_type_error(&mut ctx, "boom");
         let err = ctx.current_exception();
-        assert!(js_is_error(err));
-        assert!(!js_is_error(JSValue::JS_NULL));
+        assert!(err.is_error());
+        assert!(!JSValue::JS_NULL.is_error());
     }
 
     #[test]

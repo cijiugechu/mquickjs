@@ -3,10 +3,7 @@
 //! These tests validate the public API and built-in functions by evaluating
 //! JavaScript code and checking the results.
 
-use mquickjs::api::{
-    js_eval, js_get_global_object, js_get_property_str, js_is_exception, js_is_number,
-    js_is_object, js_is_string, js_to_number,
-};
+use mquickjs::api::{js_eval, js_get_global_object, js_get_property_str, js_to_number};
 use std::ffi::c_void;
 use std::fs;
 use std::path::Path;
@@ -36,19 +33,19 @@ fn test_json_parse_basic() {
     
     // Test JSON.parse with simple values
     let result = js_eval(&mut ctx, b"null", JS_EVAL_JSON);
-    assert!(!js_is_exception(result));
+    assert!(!result.is_exception());
     
     let result = js_eval(&mut ctx, b"true", JS_EVAL_JSON);
-    assert!(!js_is_exception(result));
+    assert!(!result.is_exception());
     assert!(result.is_bool());
     assert_eq!(result.get_special_value(), 1);
     
     let result = js_eval(&mut ctx, b"42", JS_EVAL_JSON);
-    assert!(js_is_number(result));
+    assert!(result.is_number());
     assert_eq!(js_to_number(&mut ctx, result), 42.0);
     
     let result = js_eval(&mut ctx, b"\"hello\"", JS_EVAL_JSON);
-    assert!(js_is_string(result));
+    assert!(result.is_string());
 }
 
 #[test]
@@ -56,16 +53,16 @@ fn test_json_parse_object() {
     let mut ctx = new_context();
     
     let result = js_eval(&mut ctx, b"{\"x\":1,\"y\":2}", JS_EVAL_JSON);
-    assert!(!js_is_exception(result));
-    assert!(js_is_object(result));
+    assert!(!result.is_exception());
+    assert!(result.is_object());
     
     // Access properties
     let x = js_get_property_str(&mut ctx, result, "x");
-    assert!(js_is_number(x));
+    assert!(x.is_number());
     assert_eq!(js_to_number(&mut ctx, x), 1.0);
     
     let y = js_get_property_str(&mut ctx, result, "y");
-    assert!(js_is_number(y));
+    assert!(y.is_number());
     assert_eq!(js_to_number(&mut ctx, y), 2.0);
 }
 
@@ -74,8 +71,8 @@ fn test_json_parse_array() {
     let mut ctx = new_context();
     
     let result = js_eval(&mut ctx, b"[1, 2, 3]", JS_EVAL_JSON);
-    assert!(!js_is_exception(result));
-    assert!(js_is_object(result));
+    assert!(!result.is_exception());
+    assert!(result.is_object());
 }
 
 #[test]
@@ -128,7 +125,7 @@ fn test_json_stringify_top_level_undefined() {
 fn test_global_object_exists() {
     let ctx = new_context();
     let global = js_get_global_object(&ctx);
-    assert!(js_is_object(global));
+    assert!(global.is_object());
 }
 
 #[test]
@@ -139,7 +136,7 @@ fn test_global_eval_builtin() {
     assert_js_true(&mut ctx, br#"var g_eval = (1, eval); g_eval('var z=2; z;') === 2"#);
 
     let z = js_eval(&mut ctx, b"z", JS_EVAL_RETVAL);
-    assert!(!js_is_exception(z));
+    assert!(!z.is_exception());
     assert_eq!(js_to_number(&mut ctx, z), 2.0);
 
     assert_js_true(&mut ctx, br#"var g_eval = (1, eval); g_eval('if (1) 2; else 3;') === 2"#);
@@ -168,7 +165,7 @@ fn eval_js_bool(ctx: &mut JSContext, code: &[u8]) -> bool {
     let result = eval_js(ctx, code);
     if result.is_bool() {
         result.get_special_value() != 0
-    } else if js_is_number(result) {
+    } else if result.is_number() {
         js_to_number(ctx, result) != 0.0
     } else {
         false
@@ -183,7 +180,7 @@ fn eval_js_number(ctx: &mut JSContext, code: &[u8]) -> f64 {
 
 fn assert_js_true(ctx: &mut JSContext, code: &[u8]) {
     let result = js_eval(ctx, code, JS_EVAL_RETVAL);
-    assert!(!js_is_exception(result));
+    assert!(!result.is_exception());
     assert!(result.is_bool());
     assert_eq!(result.get_special_value(), 1);
 }
@@ -222,8 +219,8 @@ fn test_typed_array_js_eval() {
         b"var a = new Uint8Array(4); a.length;",
         JS_EVAL_RETVAL,
     );
-    assert!(!js_is_exception(result), "TypedArray creation failed");
-    assert!(js_is_number(result));
+    assert!(!result.is_exception(), "TypedArray creation failed");
+    assert!(result.is_number());
     assert_eq!(js_to_number(&mut ctx, result), 4.0);
 }
 
@@ -255,7 +252,7 @@ fn test_mandelbrot_js() {
     );
     script.extend_from_slice(source.as_bytes());
     let result = js_eval(&mut ctx, &script, 0);
-    assert!(!js_is_exception(result));
+    assert!(!result.is_exception());
     assert!(!output.is_empty());
 
     let line_count = output.iter().filter(|&&b| b == b'\n').count();
@@ -277,8 +274,8 @@ fn test_typed_array_element_access_js() {
         b"var a = new Uint8Array(4); a[0] = 42; a[0];",
         JS_EVAL_RETVAL,
     );
-    assert!(!js_is_exception(result), "TypedArray element access failed");
-    assert!(js_is_number(result));
+    assert!(!result.is_exception(), "TypedArray element access failed");
+    assert!(result.is_number());
     assert_eq!(js_to_number(&mut ctx, result), 42.0);
 }
 
@@ -292,8 +289,8 @@ fn test_typed_array_int8_overflow_js() {
         b"var a = new Int8Array(1); a[0] = 255; a[0];",
         JS_EVAL_RETVAL,
     );
-    assert!(!js_is_exception(result), "Int8Array overflow test failed");
-    assert!(js_is_number(result));
+    assert!(!result.is_exception(), "Int8Array overflow test failed");
+    assert!(result.is_number());
     assert_eq!(js_to_number(&mut ctx, result), -1.0);
 }
 
@@ -307,8 +304,8 @@ fn test_array_buffer_js() {
         b"var buf = new ArrayBuffer(16); buf.byteLength;",
         JS_EVAL_RETVAL,
     );
-    assert!(!js_is_exception(result), "ArrayBuffer creation failed");
-    assert!(js_is_number(result));
+    assert!(!result.is_exception(), "ArrayBuffer creation failed");
+    assert!(result.is_number());
     assert_eq!(js_to_number(&mut ctx, result), 16.0);
 }
 
@@ -322,7 +319,7 @@ fn test_typed_array_from_array_buffer_js() {
         b"var buf = new ArrayBuffer(16); var a = new Uint32Array(buf, 12, 1); a[0] = 42; a[0];",
         JS_EVAL_RETVAL,
     );
-    assert!(!js_is_exception(result), "TypedArray from ArrayBuffer failed");
-    assert!(js_is_number(result));
+    assert!(!result.is_exception(), "TypedArray from ArrayBuffer failed");
+    assert!(result.is_number());
     assert_eq!(js_to_number(&mut ctx, result), 42.0);
 }

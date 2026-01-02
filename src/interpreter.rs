@@ -3170,7 +3170,7 @@ pub fn call_with_this_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{js_is_error, js_to_cstring};
+    use crate::api::js_to_cstring;
     use crate::array_data::ArrayData;
     use crate::closure_data::ClosureData;
     use crate::context::{ContextConfig, JSContext};
@@ -4679,7 +4679,7 @@ mod tests {
         let err = call(&mut ctx, closure, &[]).unwrap_err();
         match err {
             InterpreterError::Thrown(val) => {
-                assert!(js_is_error(val));
+                assert!(val.is_error());
                 let msg_val = ctx.get_error_message(val).expect("message");
                 let msg = js_to_cstring(&mut ctx, msg_val).expect("message string");
                 assert_eq!(msg, "varref uninitialized");
