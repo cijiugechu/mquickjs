@@ -2272,11 +2272,18 @@ pub fn call_with_this_flags(
                 let rhs = pop(ctx, &mut sp);
                 let lhs = pop(ctx, &mut sp);
                 let res = if lhs.is_int() && rhs.is_int() {
-                    let prod = lhs.get_int()
-                        .checked_mul(rhs.get_int())
-                        .unwrap_or(JSValue::JS_SHORTINT_MIN - 1);
-                    if (JSValue::JS_SHORTINT_MIN..=JSValue::JS_SHORTINT_MAX).contains(&prod) {
-                        Ok(JSValue::new_short_int(prod))
+                    let v1 = lhs.get_int();
+                    let v2 = rhs.get_int();
+                    if let Some(prod) = v1.checked_mul(v2) {
+                        if (JSValue::JS_SHORTINT_MIN..=JSValue::JS_SHORTINT_MAX).contains(&prod) {
+                            if prod == 0 && (v1 | v2) < 0 {
+                                Ok(ctx.minus_zero())
+                            } else {
+                                Ok(JSValue::new_short_int(prod))
+                            }
+                        } else {
+                            binary_arith_slow(ctx, opcode, lhs, rhs)
+                        }
                     } else {
                         binary_arith_slow(ctx, opcode, lhs, rhs)
                     }
@@ -3172,15 +3179,15 @@ mod tests {
     use crate::object::Object;
     use crate::opcode::{
         OP_ADD, OP_AND, OP_ARGUMENTS, OP_ARRAY_FROM, OP_CALL, OP_CALL_CONSTRUCTOR, OP_CALL_METHOD,
-        OP_CATCH, OP_DEFINE_FIELD, OP_DEFINE_GETTER, OP_DEFINE_SETTER, OP_DELETE, OP_DUP2, OP_EQ,
-        OP_FCLOSURE, OP_FOR_IN_START, OP_FOR_OF_NEXT, OP_FOR_OF_START, OP_GET_ARG0, OP_GET_ARG1,
-        OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD, OP_GET_FIELD2, OP_GET_LENGTH,
-        OP_GET_LENGTH2, OP_GET_VAR_REF, OP_GET_VAR_REF_NOCHECK, OP_GOSUB, OP_GOTO, OP_IF_FALSE,
-        OP_IF_TRUE, OP_INSERT2, OP_INSERT3, OP_LT, OP_NEW_TARGET, OP_NIP, OP_OBJECT, OP_PERM3,
-        OP_PERM4, OP_PUSH_0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4, OP_PUSH_5, OP_PUSH_CONST,
-        OP_PUSH_I8, OP_PUSH_THIS, OP_PUSH_TRUE, OP_PUT_ARRAY_EL, OP_PUT_FIELD, OP_PUT_VAR_REF,
-        OP_PUT_VAR_REF_NOCHECK, OP_REGEXP, OP_RET, OP_RETURN, OP_ROT3L, OP_SET_PROTO,
-        OP_STRICT_EQ, OP_SUB, OP_SWAP, OP_THIS_FUNC, OP_THROW,
+        OP_CATCH, OP_DEFINE_FIELD, OP_DEFINE_GETTER, OP_DEFINE_SETTER, OP_DELETE, OP_DIV, OP_DUP2,
+        OP_EQ, OP_FCLOSURE, OP_FOR_IN_START, OP_FOR_OF_NEXT, OP_FOR_OF_START, OP_GET_ARG0,
+        OP_GET_ARG1, OP_GET_ARRAY_EL, OP_GET_ARRAY_EL2, OP_GET_FIELD, OP_GET_FIELD2,
+        OP_GET_LENGTH, OP_GET_LENGTH2, OP_GET_VAR_REF, OP_GET_VAR_REF_NOCHECK, OP_GOSUB, OP_GOTO,
+        OP_IF_FALSE, OP_IF_TRUE, OP_INSERT2, OP_INSERT3, OP_LT, OP_MUL, OP_NEW_TARGET, OP_NIP,
+        OP_OBJECT, OP_PERM3, OP_PERM4, OP_PUSH_0, OP_PUSH_1, OP_PUSH_2, OP_PUSH_3, OP_PUSH_4,
+        OP_PUSH_5, OP_PUSH_CONST, OP_PUSH_I8, OP_PUSH_THIS, OP_PUSH_TRUE, OP_PUT_ARRAY_EL,
+        OP_PUT_FIELD, OP_PUT_VAR_REF, OP_PUT_VAR_REF_NOCHECK, OP_REGEXP, OP_RET, OP_RETURN,
+        OP_ROT3L, OP_SET_PROTO, OP_STRICT_EQ, OP_SUB, OP_SWAP, OP_THIS_FUNC, OP_THROW,
     };
     use crate::property::{debug_property, define_property_value, has_property, DebugProperty};
     use crate::parser::regexp::compile_regexp;
@@ -3238,6 +3245,31 @@ mod tests {
             .expect("func");
         let closure = ctx.alloc_closure(func, 0).expect("closure");
         call(ctx, closure, &[]).expect("call")
+    }
+
+    #[test]
+    fn mul_preserves_negative_zero_for_ints() {
+        let mut ctx = JSContext::new(ContextConfig {
+            image: &MQUICKJS_STDLIB_IMAGE,
+            memory_size: 16 * 1024,
+            prepare_compilation: false,
+            finalizers: &[],
+        })
+        .expect("context init");
+
+        let mut bytecode = Vec::new();
+        bytecode.push(OP_PUSH_1.as_u8());
+        bytecode.push(OP_PUSH_0.as_u8());
+        bytecode.push(OP_PUSH_I8.as_u8());
+        bytecode.push((-6i8) as u8);
+        bytecode.push(OP_MUL.as_u8());
+        bytecode.push(OP_DIV.as_u8());
+        bytecode.push(OP_RETURN.as_u8());
+
+        let result = call_bytecode(&mut ctx, bytecode);
+        let num = crate::conversion::to_number(&mut ctx, result).expect("number");
+        assert!(num.is_infinite());
+        assert!(num.is_sign_negative());
     }
 
     fn alloc_value_array(ctx: &mut JSContext, values: &[JSValue]) -> JSValue {

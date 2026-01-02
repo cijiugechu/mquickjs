@@ -266,6 +266,40 @@ TEST_CASE("parser emits bytecode from JS source", "[parser][bytecode]")
     free_program(prog);
 }
 
+TEST_CASE("parser emits dup2 for array element post-inc", "[parser][bytecode]")
+{
+    const char *source = R"JS(
+function test_inc_array()
+{
+    var a;
+    a = [true];
+    a[0]++;
+}
+)JS";
+
+    CompiledProgram prog = compile_source(source);
+    REQUIRE(JS_IsPtr(prog.header.main_func));
+    auto *root = static_cast<JSFunctionBytecode *>(JS_VALUE_TO_PTR(prog.header.main_func));
+
+    const JSFunctionBytecode *func = find_function_by_name(root, "test_inc_array");
+    REQUIRE(func != nullptr);
+    const JSByteArray *byte_array = function_bytecode(func);
+    auto ops = decode_ops(byte_array->buf, static_cast<size_t>(byte_array->size));
+    INFO("ops: " << ops_to_string(ops));
+
+    bool has_dup2_get_array_el = false;
+    for (size_t i = 1; i < ops.size(); i++) {
+        if (ops[i - 1] == static_cast<uint8_t>(OP_dup2)
+            && ops[i] == static_cast<uint8_t>(OP_get_array_el)) {
+            has_dup2_get_array_el = true;
+            break;
+        }
+    }
+    REQUIRE(has_dup2_get_array_el);
+
+    free_program(prog);
+}
+
 TEST_CASE("parser emits bytecode for loop functions", "[parser][bytecode]")
 {
     const char *source = R"JS(

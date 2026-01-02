@@ -1,10 +1,10 @@
 use crate::cutils::{get_u16, get_u8};
 use crate::opcode::{
-    OpCode, OPCODES, OP_DUP, OP_GET_ARG, OP_GET_ARG0, OP_GET_ARG1, OP_GET_ARG2, OP_GET_ARG3,
-    OP_GET_ARRAY_EL, OP_GET_FIELD, OP_GET_FIELD2, OP_GET_LENGTH, OP_GET_LENGTH2, OP_GET_LOC,
-    OP_GET_LOC0, OP_GET_LOC1, OP_GET_LOC2, OP_GET_LOC3, OP_GET_LOC8, OP_GET_VAR_REF, OP_INSERT2,
-    OP_INSERT3, OP_INVALID, OP_PERM3, OP_PERM4, OP_PUT_ARG, OP_PUT_ARRAY_EL, OP_PUT_FIELD,
-    OP_PUT_LOC, OP_PUT_VAR_REF, OP_PUT_VAR_REF_NOCHECK, OP_ROT3L, OP_SWAP,
+    OpCode, OPCODES, OP_DUP, OP_DUP2, OP_GET_ARG, OP_GET_ARG0, OP_GET_ARG1, OP_GET_ARG2,
+    OP_GET_ARG3, OP_GET_ARRAY_EL, OP_GET_FIELD, OP_GET_FIELD2, OP_GET_LENGTH, OP_GET_LENGTH2,
+    OP_GET_LOC, OP_GET_LOC0, OP_GET_LOC1, OP_GET_LOC2, OP_GET_LOC3, OP_GET_LOC8, OP_GET_VAR_REF,
+    OP_INSERT2, OP_INSERT3, OP_INVALID, OP_PERM3, OP_PERM4, OP_PUT_ARG, OP_PUT_ARRAY_EL,
+    OP_PUT_FIELD, OP_PUT_LOC, OP_PUT_VAR_REF, OP_PUT_VAR_REF_NOCHECK, OP_ROT3L, OP_SWAP,
 };
 
 use super::emit::BytecodeEmitter;
@@ -158,7 +158,7 @@ pub fn get_lvalue(
                 emitter.emit_op_pos(OP_GET_LENGTH2, source_pos);
             }
             OP_GET_ARRAY_EL => {
-                emitter.emit_op(OP_DUP);
+                emitter.emit_op(OP_DUP2);
                 emitter.emit_op_pos(OP_GET_ARRAY_EL, source_pos);
             }
             _ => {
@@ -245,7 +245,7 @@ pub fn put_lvalue(
 mod tests {
     use super::*;
     use crate::cutils::get_u16;
-    use crate::opcode::{OP_ADD, OP_GET_LENGTH, OP_GET_LOC0, OP_GET_LOC8, OP_GET_VAR_REF};
+    use crate::opcode::{OP_ADD, OP_DUP2, OP_GET_ARRAY_EL, OP_GET_LENGTH, OP_GET_LOC0, OP_GET_LOC8, OP_GET_VAR_REF};
 
     #[test]
     fn get_lvalue_loc0_without_keep() {
@@ -293,7 +293,7 @@ mod tests {
         let lvalue = get_lvalue(&mut emitter, true).unwrap();
         assert_eq!(lvalue.opcode(), OP_GET_ARRAY_EL);
         assert_eq!(lvalue.var_idx(), -1);
-        assert_eq!(emitter.byte_code()[0], OP_DUP.as_u8());
+        assert_eq!(emitter.byte_code()[0], OP_DUP2.as_u8());
         assert_eq!(emitter.byte_code()[1], OP_GET_ARRAY_EL.as_u8());
     }
 

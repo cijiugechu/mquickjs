@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -152,6 +153,22 @@ TEST_CASE("JS_Call fills missing arguments with undefined", "[js_call]")
     REQUIRE(!JS_IsException(res));
     REQUIRE(JS_IsBool(res));
     CHECK(JS_VALUE_GET_SPECIAL_VALUE(res) == 1);
+
+    free_context(env);
+}
+
+TEST_CASE("multiplication preserves negative zero for int operands", "[js_call]")
+{
+    TestContext env = make_context();
+    JSContext *ctx = env.ctx;
+
+    const char *source = "1 / (0 * -6)";
+    JSValue val = JS_Eval(ctx, source, std::strlen(source), "<test>", JS_EVAL_RETVAL);
+    REQUIRE(!JS_IsException(val));
+    double out = 0.0;
+    REQUIRE(JS_ToNumber(ctx, &out, val) == 0);
+    CHECK(std::isinf(out));
+    CHECK(std::signbit(out));
 
     free_context(env);
 }
