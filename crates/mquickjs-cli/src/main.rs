@@ -98,7 +98,6 @@ enum ParseError {
     TooManyIncludes { max: usize },
     MissingMemoryLimit,
     InvalidMemoryLimit,
-    MissingOutputFile,
     OutputRequiresInputFile,
     Force32RequiresOutput,
 }
@@ -171,11 +170,11 @@ fn parse_memory_limit(input: &str) -> Result<usize, ParseError> {
 
     let mut bytes = trimmed.as_bytes();
     let mut suffix = None;
-    if let Some(last) = bytes.last().copied() {
-        if matches!(last, b'g' | b'G' | b'm' | b'M' | b'k' | b'K') {
-            suffix = Some(last);
-            bytes = &bytes[..bytes.len() - 1];
-        }
+    if let Some(last) = bytes.last().copied()
+        && matches!(last, b'g' | b'G' | b'm' | b'M' | b'k' | b'K')
+    {
+        suffix = Some(last);
+        bytes = &bytes[..bytes.len() - 1];
     }
 
     if bytes.is_empty() {
@@ -209,7 +208,6 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::MissingMemoryLimit => write!(f, "expecting memory limit"),
             ParseError::InvalidMemoryLimit => write!(f, "invalid memory limit"),
-            ParseError::MissingOutputFile => write!(f, "missing filename for -o"),
             ParseError::OutputRequiresInputFile => write!(f, "expecting input filename"),
             ParseError::Force32RequiresOutput => write!(f, "m32 requires -o output"),
         }
@@ -307,7 +305,7 @@ fn seed_random(ctx: &mut JSContext) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let seed = ((now.as_secs() as u64) << 32) | (now.subsec_micros() as u64);
+    let seed = (now.as_secs() << 32) | (now.subsec_micros() as u64);
     ctx.set_random_seed(seed);
 }
 
@@ -564,10 +562,11 @@ struct Readline {
 
 impl Readline {
     fn new() -> Self {
-        let mut state = ReadlineState::default();
-        state.term_cmd_buf_size = 256;
-        state.term_kill_buf_len = 0;
-        state.term_history_buf_size = 512;
+        let state = ReadlineState {
+            term_cmd_buf_size: 256,
+            term_history_buf_size: 512,
+            ..ReadlineState::default()
+        };
         Self {
             state,
             cmd_buf: [0u8; 256],

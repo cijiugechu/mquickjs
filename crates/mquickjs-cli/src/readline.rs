@@ -6,19 +6,11 @@ use std::ptr::NonNull;
 pub type ReadlineGetColor = fn(plen: &mut i32, buf: &[u8], pos: usize, buf_len: usize) -> i32;
 
 pub const COLOR_NONE: i32 = 0;
-pub const COLOR_BLACK: i32 = 1;
-pub const COLOR_RED: i32 = 2;
 pub const COLOR_GREEN: i32 = 3;
-pub const COLOR_YELLOW: i32 = 4;
-pub const COLOR_BLUE: i32 = 5;
-pub const COLOR_MAGENTA: i32 = 6;
-pub const COLOR_CYAN: i32 = 7;
 pub const COLOR_WHITE: i32 = 8;
-pub const COLOR_GRAY: i32 = 9;
 pub const COLOR_BRIGHT_RED: i32 = 10;
 pub const COLOR_BRIGHT_GREEN: i32 = 11;
 pub const COLOR_BRIGHT_YELLOW: i32 = 12;
-pub const COLOR_BRIGHT_BLUE: i32 = 13;
 pub const COLOR_BRIGHT_MAGENTA: i32 = 14;
 pub const COLOR_BRIGHT_CYAN: i32 = 15;
 pub const COLOR_BRIGHT_WHITE: i32 = 16;
@@ -283,19 +275,17 @@ fn term_update(s: &mut ReadlineState) {
             if s.term_cursor_x >= s.term_width {
                 s.term_cursor_x = 0;
             }
-            if !s.term_is_password {
-                if let Some(get_color) = s.get_color {
-                    if color_len == 0 {
-                        let buf = s.cmd_buf_ro();
-                        let color = get_color(&mut color_len, buf, i, s.term_cmd_buf_len);
-                        if color != last_color {
-                            last_color = color;
-                            print_color(COLOR_NONE);
-                            print_color(last_color);
-                        }
+            if !s.term_is_password && let Some(get_color) = s.get_color {
+                if color_len == 0 {
+                    let buf = s.cmd_buf_ro();
+                    let color = get_color(&mut color_len, buf, i, s.term_cmd_buf_len);
+                    if color != last_color {
+                        last_color = color;
+                        print_color(COLOR_NONE);
+                        print_color(last_color);
                     }
-                    color_len -= 1;
                 }
+                color_len -= 1;
             }
             term_write_bytes(&out[..c_len]);
             i += c_len;
@@ -617,23 +607,23 @@ fn term_hist_add(s: &mut ReadlineState, cmdline: &[u8]) {
     cmdline_with_nul.extend_from_slice(cmdline);
     cmdline_with_nul.push(0);
 
-    if let Some(entry) = s.term_hist_entry {
-        if entry < s.term_history_size {
-            let history_size = s.term_history_size;
-            let hist_entry_size = {
-                let history = s.history_buf_ro();
-                history_entry_len(history, entry, history_size) + 1
-            };
-            if hist_entry_size == cmdline_size
-                && s.history_buf_ro()[entry..entry + hist_entry_size] == cmdline_with_nul[..]
+    if let Some(entry) = s.term_hist_entry
+        && entry < s.term_history_size
+    {
+        let history_size = s.term_history_size;
+        let hist_entry_size = {
+            let history = s.history_buf_ro();
+            history_entry_len(history, entry, history_size) + 1
+        };
+        if hist_entry_size == cmdline_size
+            && s.history_buf_ro()[entry..entry + hist_entry_size] == cmdline_with_nul[..]
+        {
             {
-                {
-                    let history_size = s.term_history_size;
-                    let history = s.history_buf();
-                    history.copy_within(entry + hist_entry_size..history_size, entry);
-                }
-                s.term_history_size -= hist_entry_size;
+                let history_size = s.term_history_size;
+                let history = s.history_buf();
+                history.copy_within(entry + hist_entry_size..history_size, entry);
             }
+            s.term_history_size -= hist_entry_size;
         }
     }
 
@@ -761,7 +751,7 @@ fn readline_handle_char(s: &mut ReadlineState, ch: i32) -> i32 {
                     s.term_esc_param = 0;
                     s.term_esc_state = IS_CSI;
                 }
-                c if (b'0'..=b'9').contains(&(c as u8)) => {
+                c if (c as u8).is_ascii_digit() => {
                     s.term_esc_param = s.term_esc_param * 10 + (ch - b'0' as i32);
                     s.term_esc_state = IS_CSI;
                 }
