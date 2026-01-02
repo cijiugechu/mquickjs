@@ -18,13 +18,15 @@ mod unix {
     static mut OLD_TTY_SET: bool = false;
     static mut OLD_FD0_FLAGS: libc::c_int = 0;
 
-    unsafe extern "C" fn term_exit() {
-        if !OLD_TTY_SET {
-            return;
+    extern "C" fn term_exit() {
+        unsafe {
+            if !OLD_TTY_SET {
+                return;
+            }
+            let old = core::ptr::addr_of!(OLD_TTY).read().assume_init();
+            libc::tcsetattr(0, libc::TCSANOW, &old);
+            libc::fcntl(0, libc::F_SETFL, OLD_FD0_FLAGS);
         }
-        let old = OLD_TTY.assume_init_ref();
-        libc::tcsetattr(0, libc::TCSANOW, old);
-        libc::fcntl(0, libc::F_SETFL, OLD_FD0_FLAGS);
     }
 
     extern "C" fn sigint_handler(_signo: libc::c_int) {
@@ -36,7 +38,7 @@ mod unix {
         }
     }
 
-    pub(super) fn readline_tty_init() -> i32 {
+    pub(crate) fn readline_tty_init() -> i32 {
         unsafe {
             let mut tty = MaybeUninit::<libc::termios>::uninit();
             if libc::tcgetattr(0, tty.as_mut_ptr()) != 0 {
@@ -46,7 +48,8 @@ mod unix {
             INIT.call_once(|| {
                 let mut old = MaybeUninit::<libc::termios>::uninit();
                 if libc::tcgetattr(0, old.as_mut_ptr()) == 0 {
-                    OLD_TTY.write(old.assume_init());
+                    let old = old.assume_init();
+                    core::ptr::write(core::ptr::addr_of_mut!(OLD_TTY), MaybeUninit::new(old));
                     OLD_TTY_SET = true;
                     OLD_FD0_FLAGS = libc::fcntl(0, libc::F_GETFL);
                     libc::atexit(term_exit);
@@ -78,7 +81,7 @@ mod unix {
         }
     }
 
-    pub(super) fn readline_tty(
+    pub(crate) fn readline_tty(
         s: &mut ReadlineState,
         prompt: &str,
         _multi_line: bool,
@@ -130,7 +133,7 @@ mod unix {
         None
     }
 
-    pub(super) fn readline_is_interrupted() -> bool {
+    pub(crate) fn readline_is_interrupted() -> bool {
         CTRL_C_PRESSED.swap(0, Ordering::Relaxed) != 0
     }
 }
@@ -139,11 +142,11 @@ mod unix {
 mod windows {
     use super::*;
 
-    pub(super) fn readline_tty_init() -> i32 {
+    pub(crate) fn readline_tty_init() -> i32 {
         80
     }
 
-    pub(super) fn readline_tty(
+    pub(crate) fn readline_tty(
         _s: &mut ReadlineState,
         prompt: &str,
         _multi_line: bool,
@@ -164,13 +167,13 @@ mod windows {
         Some(line.into_bytes())
     }
 
-    pub(super) fn readline_is_interrupted() -> bool {
+    pub(crate) fn readline_is_interrupted() -> bool {
         false
     }
 }
 
 #[cfg(unix)]
-pub use unix::{readline_is_interrupted, readline_tty, readline_tty_init};
+pub(crate) use unix::{readline_is_interrupted, readline_tty, readline_tty_init};
 
 #[cfg(windows)]
-pub use windows::{readline_is_interrupted, readline_tty, readline_tty_init};
+pub(crate) use windows::{readline_is_interrupted, readline_tty, readline_tty_init};

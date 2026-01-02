@@ -5,8 +5,8 @@ use clap::Parser;
 use crate::readline::ReadlineState;
 use mquickjs::api::{
     js_dump_memory, js_eval_with_filename, js_get_error_str, js_get_global_object,
-    js_is_bytecode, js_load_bytecode, js_parse_bytecode_with_filename, js_relocate_bytecode,
-    js_run, js_set_log_func, js_set_property_str, js_prepare_bytecode,
+    js_is_bytecode, js_load_bytecode, js_parse_bytecode_with_filename, js_print_value,
+    js_relocate_bytecode, js_run, js_set_log_func, js_set_property_str, js_prepare_bytecode,
 };
 #[cfg(target_pointer_width = "64")]
 use mquickjs::api::js_prepare_bytecode_64to32;
@@ -249,16 +249,19 @@ fn run_cli(config: CliConfig) -> Result<(), CliError> {
         if eval_file(&mut ctx, include, &[], config.parse_flags)? {
             return Err(CliError::Eval);
         }
+        run_timers_or_error(&mut ctx)?;
     }
 
     if let Some(expr) = config.eval.as_deref() {
         if eval_buf(&mut ctx, expr.as_bytes(), "<cmdline>", false, config.parse_flags | JS_EVAL_REPL)? {
             return Err(CliError::Eval);
         }
+        run_timers_or_error(&mut ctx)?;
     } else if let Some(file) = config.file.as_deref() {
         if eval_file(&mut ctx, file, &config.script_args, config.parse_flags)? {
             return Err(CliError::Eval);
         }
+        run_timers_or_error(&mut ctx)?;
     } else {
         return repl_run(&mut ctx, config.parse_flags, config.dump_memory);
     }
@@ -308,7 +311,10 @@ fn seed_random(ctx: &mut JSContext) {
     ctx.set_random_seed(seed);
 }
 
-unsafe extern "C" fn js_interrupt_handler(_ctx: *mut JSContext, _opaque: *mut c_void) -> i32 {
+unsafe extern "C" fn js_interrupt_handler(
+    _ctx: *mut mquickjs::capi_defs::JSContext,
+    _opaque: *mut c_void,
+) -> i32 {
     i32::from(readline_tty::readline_is_interrupted())
 }
 
@@ -499,7 +505,7 @@ fn compile_file(config: &CliConfig, output: &str) -> Result<(), CliError> {
         .file
         .as_deref()
         .ok_or_else(|| CliError::Bytecode("expecting input filename".into()))?;
-    let mut ctx = create_context(config, true)?;
+    let mut ctx = create_context(config, true).map_err(CliError::Capi)?;
     set_log_stdout(&mut ctx);
     let buf = read_file(filename)?;
     let func = js_parse_bytecode_with_filename(&mut ctx, &buf, config.parse_flags, filename);

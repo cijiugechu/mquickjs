@@ -576,7 +576,12 @@ pub fn js_load(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSV
     };
     let buf = load_file_bytes(view.bytes());
     let filename_str = String::from_utf8_lossy(view.bytes());
-    crate::api::js_eval_with_filename(ctx, &buf, 0, filename_str.as_ref())
+    crate::api::js_eval_with_filename(
+        ctx,
+        &buf,
+        crate::capi_defs::JS_EVAL_RETVAL,
+        filename_str.as_ref(),
+    )
 }
 
 pub fn js_print(ctx: &mut JSContext, _this_val: JSValue, args: &[JSValue]) -> JSValue {
@@ -4465,6 +4470,7 @@ mod tests {
         assert!(val.is_number());
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn load_reads_and_evaluates_script() {
         let mut ctx = JSContext::new(ContextConfig {
@@ -4487,6 +4493,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn set_timeout_runs_callback() {
         let mut ctx = JSContext::new(ContextConfig {

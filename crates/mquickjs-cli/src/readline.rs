@@ -245,8 +245,9 @@ fn term_update(s: &mut ReadlineState) {
         let mut last_color = COLOR_NONE;
         let mut color_len = 0;
         if s.term_cmd_buf_len < s.term_cmd_buf_size {
+            let len = s.term_cmd_buf_len;
             let buf = s.cmd_buf();
-            buf[s.term_cmd_buf_len] = 0;
+            buf[len] = 0;
         }
         let mut i = 0;
         while i < s.term_cmd_buf_len {
@@ -370,8 +371,9 @@ fn term_kill_region(s: &mut ReadlineState, to: usize, kill: bool) {
             }
             s.term_kill_buf_len = len;
         }
+        let cmd_len = s.term_cmd_buf_len;
         let buf = s.cmd_buf();
-        buf.copy_within(end..s.term_cmd_buf_len, start);
+        buf.copy_within(end..cmd_len, start);
         s.term_cmd_buf_len -= len;
         s.term_cmd_buf_index = start;
         s.term_cmd_updated = true;
@@ -626,8 +628,9 @@ fn term_hist_add(s: &mut ReadlineState, cmdline: &[u8]) {
                 && s.history_buf_ro()[entry..entry + hist_entry_size] == cmdline_with_nul[..]
             {
                 {
+                    let history_size = s.term_history_size;
                     let history = s.history_buf();
-                    history.copy_within(entry + hist_entry_size..s.term_history_size, entry);
+                    history.copy_within(entry + hist_entry_size..history_size, entry);
                 }
                 s.term_history_size -= hist_entry_size;
             }
@@ -645,8 +648,9 @@ fn term_hist_add(s: &mut ReadlineState, cmdline: &[u8]) {
             && s.history_buf_ro()[idx..idx + hist_entry_size] == cmdline_with_nul[..];
         if matched {
             {
+                let history_size = s.term_history_size;
                 let history = s.history_buf();
-                history.copy_within(idx + hist_entry_size..s.term_history_size, idx);
+                history.copy_within(idx + hist_entry_size..history_size, idx);
             }
             s.term_history_size -= hist_entry_size;
             break;
@@ -662,13 +666,15 @@ fn term_hist_add(s: &mut ReadlineState, cmdline: &[u8]) {
                 history_entry_len(history, 0, history_size) + 1
             };
             {
+                let history_size = s.term_history_size;
                 let history = s.history_buf();
-                history.copy_within(hist_entry_size..s.term_history_size, 0);
+                history.copy_within(hist_entry_size..history_size, 0);
             }
             s.term_history_size -= hist_entry_size;
         }
+        let history_size = s.term_history_size;
         let history = s.history_buf();
-        history[s.term_history_size..s.term_history_size + cmdline_size]
+        history[history_size..history_size + cmdline_size]
             .copy_from_slice(&cmdline_with_nul);
         s.term_history_size += cmdline_size;
     }
@@ -678,8 +684,9 @@ fn term_hist_add(s: &mut ReadlineState, cmdline: &[u8]) {
 fn term_return(s: &mut ReadlineState) {
     if s.term_cmd_buf_len < s.term_cmd_buf_size {
         {
+            let len = s.term_cmd_buf_len;
             let buf = s.cmd_buf();
-            buf[s.term_cmd_buf_len] = 0;
+            buf[len] = 0;
         }
     }
     if !s.term_is_password {
