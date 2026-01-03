@@ -9,7 +9,7 @@ use crate::function_bytecode::FunctionBytecode;
 use crate::heap::JS_STACK_SLACK;
 use crate::js_libm::{js_fmod, js_pow};
 use crate::jsvalue::{JSValue, JSWord};
-use crate::memblock::{MbHeader, MTag, JS_MTAG_BITS};
+use crate::memblock::{read_mblock_header, MbHeader, MTag, JS_MTAG_BITS};
 use crate::object::{Object, ObjectHeader};
 use crate::property::{define_property_varref, get_own_property_raw, object_keys, PropertyError};
 use crate::heap::set_free_block;
@@ -63,6 +63,21 @@ impl From<ConversionError> for InterpreterError {
     }
 }
 
+fn expect_mblock_tag<T>(
+    ptr: NonNull<T>,
+    expected: MTag,
+    err: InterpreterError,
+) -> Result<MbHeader, InterpreterError> {
+    let header = unsafe {
+        // SAFETY: caller ensures ptr points at a readable memblock header.
+        read_mblock_header(ptr.as_ptr())
+    };
+    if header.tag() != expected {
+        return Err(err);
+    }
+    Ok(header)
+}
+
 struct ByteArrayRaw {
     buf: NonNull<u8>,
     len: usize,
@@ -71,14 +86,11 @@ struct ByteArrayRaw {
 impl ByteArrayRaw {
     unsafe fn from_value(val: JSValue) -> Result<Self, InterpreterError> {
         let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::InvalidValue("byte array ptr"))?;
-        let header_word = unsafe {
-            // SAFETY: ptr points at a readable memblock header.
-            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-        };
-        let header = MbHeader::from_word(header_word);
-        if header.tag() != MTag::ByteArray {
-            return Err(InterpreterError::InvalidValue("byte array tag"));
-        }
+        let header = expect_mblock_tag(
+            ptr,
+            MTag::ByteArray,
+            InterpreterError::InvalidValue("byte array tag"),
+        )?;
         let size = ByteArrayHeader::from(header).size() as usize;
         let buf = unsafe {
             // SAFETY: payload follows the byte array header.
@@ -104,14 +116,11 @@ struct ValueArrayRaw {
 impl ValueArrayRaw {
     unsafe fn from_value(val: JSValue) -> Result<Self, InterpreterError> {
         let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::InvalidValue("value array ptr"))?;
-        let header_word = unsafe {
-            // SAFETY: ptr points at a readable memblock header.
-            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-        };
-        let header = MbHeader::from_word(header_word);
-        if header.tag() != MTag::ValueArray {
-            return Err(InterpreterError::InvalidValue("value array tag"));
-        }
+        let header = expect_mblock_tag(
+            ptr,
+            MTag::ValueArray,
+            InterpreterError::InvalidValue("value array tag"),
+        )?;
         let size = ValueArrayHeader::from(header).size() as usize;
         let arr = unsafe {
             // SAFETY: payload follows the value array header.
@@ -144,21 +153,14 @@ impl ValueArrayRaw {
 
 fn object_ptr(val: JSValue) -> Result<NonNull<Object>, InterpreterError> {
     let ptr = val.to_ptr::<Object>().ok_or(InterpreterError::InvalidValue("object ptr"))?;
-    let header_word = unsafe {
-        // SAFETY: ptr points at a readable object header word.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-    };
-    let header = MbHeader::from_word(header_word);
-    if header.tag() != MTag::Object {
-        return Err(InterpreterError::InvalidValue("object tag"));
-    }
+    expect_mblock_tag(ptr, MTag::Object, InterpreterError::InvalidValue("object tag"))?;
     Ok(ptr)
 }
 
 fn object_header(ptr: NonNull<Object>) -> ObjectHeader {
     let header_word = unsafe {
         // SAFETY: ptr points at a readable object header word.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+        read_mblock_header(ptr.as_ptr()).word()
     };
     ObjectHeader::from_word(header_word)
 }
@@ -296,14 +298,11 @@ fn set_prototype_internal(obj: JSValue, proto: JSValue) -> Result<(), Interprete
 fn function_bytecode_ptr(val: JSValue) -> Result<NonNull<FunctionBytecode>, InterpreterError> {
     let ptr = val.to_ptr::<FunctionBytecode>()
         .ok_or(InterpreterError::InvalidValue("function bytecode ptr"))?;
-    let header_word = unsafe {
-        // SAFETY: ptr points at a readable function bytecode header word.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-    };
-    let header = MbHeader::from_word(header_word);
-    if header.tag() != MTag::FunctionBytecode {
-        return Err(InterpreterError::InvalidValue("function bytecode tag"));
-    }
+    expect_mblock_tag(
+        ptr,
+        MTag::FunctionBytecode,
+        InterpreterError::InvalidValue("function bytecode tag"),
+    )?;
     Ok(ptr)
 }
 
@@ -352,14 +351,7 @@ fn value_to_f64(val: JSValue) -> Result<f64, InterpreterError> {
     }
     if val.is_ptr() {
         let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::TypeError("float ptr"))?;
-        let header_word = unsafe {
-            // SAFETY: ptr points at a readable memblock header.
-            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-        };
-        let header = MbHeader::from_word(header_word);
-        if header.tag() != MTag::Float64 {
-            return Err(InterpreterError::TypeError("float tag"));
-        }
+        expect_mblock_tag(ptr, MTag::Float64, InterpreterError::TypeError("float tag"))?;
         let payload = unsafe {
             // SAFETY: payload follows the float64 header.
             ptr::read_unaligned(ptr.as_ptr().add(size_of::<JSWord>()) as *const f64)
@@ -797,7 +789,7 @@ fn is_function_object(val: JSValue) -> bool {
     };
     let header_word = unsafe {
         // SAFETY: ptr points at a readable object header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+        read_mblock_header(ptr.as_ptr()).word()
     };
     let header = ObjectHeader::from_word(header_word);
     matches!(
@@ -833,11 +825,11 @@ fn instanceof_check(obj: JSValue, proto: JSValue) -> Result<bool, InterpreterErr
 
 fn mtag_from_value(val: JSValue) -> Option<MTag> {
     let ptr = val.to_ptr::<u8>()?;
-    let header_word = unsafe {
+    let header = unsafe {
         // SAFETY: ptr points at a readable memblock header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+        read_mblock_header(ptr.as_ptr())
     };
-    Some(MbHeader::from_word(header_word).tag())
+    Some(header.tag())
 }
 
 fn call_cfunction_def(
@@ -914,53 +906,79 @@ fn property_error_to_exception(ctx: &mut JSContext, err: &PropertyError) -> Opti
     }
 }
 
-fn var_ref_ptr(val: JSValue) -> Result<NonNull<u8>, InterpreterError> {
-    let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::InvalidValue("varref ptr"))?;
-    let header_word = unsafe {
-        // SAFETY: ptr points at a readable memblock header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-    };
-    if MbHeader::from_word(header_word).tag() != MTag::VarRef {
-        return Err(InterpreterError::InvalidValue("varref tag"));
+#[derive(Copy, Clone)]
+struct VarRefPtr(NonNull<u8>);
+
+impl VarRefPtr {
+    fn from_value(val: JSValue) -> Result<Self, InterpreterError> {
+        let ptr = val.to_ptr::<u8>().ok_or(InterpreterError::InvalidValue("varref ptr"))?;
+        expect_mblock_tag(ptr, MTag::VarRef, InterpreterError::InvalidValue("varref tag"))?;
+        Ok(Self(ptr))
     }
-    Ok(ptr)
-}
 
-unsafe fn var_ref_value_ptr(ptr: NonNull<u8>) -> *mut JSValue {
-    unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue }
-}
+    fn header(self) -> VarRefHeader {
+        let header = unsafe {
+            // SAFETY: VarRefPtr guarantees the header word is readable.
+            read_mblock_header(self.0.as_ptr())
+        };
+        VarRefHeader::from(header)
+    }
 
-unsafe fn var_ref_next(ptr: NonNull<u8>) -> JSValue {
-    unsafe { ptr::read_unaligned(var_ref_value_ptr(ptr)) }
-}
+    fn header_word(self) -> JSWord {
+        self.header().header().word()
+    }
 
-unsafe fn var_ref_pvalue_ptr(ptr: NonNull<u8>) -> *mut *mut JSValue {
-    unsafe { ptr.as_ptr().add(size_of::<JSWord>() + size_of::<JSValue>()) as *mut *mut JSValue }
-}
+    fn is_detached(self) -> bool {
+        self.header().is_detached()
+    }
 
-unsafe fn var_ref_pvalue(ptr: NonNull<u8>) -> *mut JSValue {
-    unsafe { ptr::read_unaligned(var_ref_pvalue_ptr(ptr)) }
-}
+    fn raw(self) -> NonNull<u8> {
+        self.0
+    }
 
-fn var_ref_is_detached(ptr: NonNull<u8>) -> bool {
-    let header_word = unsafe {
-        // SAFETY: ptr points at a readable memblock header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-    };
-    let header = VarRefHeader::from(MbHeader::from_word(header_word));
-    header.is_detached()
+    unsafe fn value_ptr(self) -> *mut JSValue {
+        unsafe { Self::value_ptr_from_raw(self.0) }
+    }
+
+    unsafe fn value_ptr_from_raw(ptr: NonNull<u8>) -> *mut JSValue {
+        unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue }
+    }
+
+    unsafe fn read_value_slot(self) -> JSValue {
+        unsafe { ptr::read_unaligned(self.value_ptr()) }
+    }
+
+    unsafe fn write_value_slot(self, value: JSValue) {
+        unsafe { ptr::write_unaligned(self.value_ptr(), value) }
+    }
+
+    unsafe fn pvalue_ptr(self) -> *mut *mut JSValue {
+        unsafe { Self::pvalue_ptr_from_raw(self.0) }
+    }
+
+    unsafe fn pvalue_ptr_from_raw(ptr: NonNull<u8>) -> *mut *mut JSValue {
+        unsafe { ptr.as_ptr().add(size_of::<JSWord>() + size_of::<JSValue>()) as *mut *mut JSValue }
+    }
+
+    unsafe fn pvalue(self) -> *mut JSValue {
+        unsafe { ptr::read_unaligned(self.pvalue_ptr()) }
+    }
+
+    unsafe fn next(self) -> JSValue {
+        unsafe { self.read_value_slot() }
+    }
 }
 
 fn var_ref_get(val: JSValue) -> Result<JSValue, InterpreterError> {
-    let ptr = var_ref_ptr(val)?;
-    if var_ref_is_detached(ptr) {
+    let var_ref = VarRefPtr::from_value(val)?;
+    if var_ref.is_detached() {
         let value = unsafe {
             // SAFETY: detached varref stores the value at the payload slot.
-            ptr::read_unaligned(var_ref_value_ptr(ptr))
+            var_ref.read_value_slot()
         };
         return Ok(value);
     }
-    let pvalue = unsafe { var_ref_pvalue(ptr) };
+    let pvalue = unsafe { var_ref.pvalue() };
     if pvalue.is_null() {
         return Err(InterpreterError::InvalidValue("varref pvalue"));
     }
@@ -972,15 +990,15 @@ fn var_ref_get(val: JSValue) -> Result<JSValue, InterpreterError> {
 }
 
 fn var_ref_set(val: JSValue, new_value: JSValue) -> Result<(), InterpreterError> {
-    let ptr = var_ref_ptr(val)?;
-    if var_ref_is_detached(ptr) {
+    let var_ref = VarRefPtr::from_value(val)?;
+    if var_ref.is_detached() {
         unsafe {
             // SAFETY: detached varref stores the value at the payload slot.
-            ptr::write_unaligned(var_ref_value_ptr(ptr), new_value);
+            var_ref.write_value_slot(new_value);
         }
         return Ok(());
     }
-    let pvalue = unsafe { var_ref_pvalue(ptr) };
+    let pvalue = unsafe { var_ref.pvalue() };
     if pvalue.is_null() {
         return Err(InterpreterError::InvalidValue("varref pvalue"));
     }
@@ -1002,8 +1020,8 @@ fn alloc_var_ref_attached(
     unsafe {
         // SAFETY: ptr points at a writable var ref allocation.
         ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), MbHeader::from(header).word());
-        ptr::write_unaligned(var_ref_value_ptr(ptr), next);
-        ptr::write_unaligned(var_ref_pvalue_ptr(ptr), pvalue);
+        ptr::write_unaligned(VarRefPtr::value_ptr_from_raw(ptr), next);
+        ptr::write_unaligned(VarRefPtr::pvalue_ptr_from_raw(ptr), pvalue);
     }
     Ok(JSValue::from_ptr(ptr))
 }
@@ -1018,15 +1036,15 @@ fn get_var_ref(
         ptr::read_unaligned(first_var_ref)
     };
     while val != JSValue::JS_NULL {
-        let ptr = var_ref_ptr(val)?;
-        if var_ref_is_detached(ptr) {
+        let var_ref = VarRefPtr::from_value(val)?;
+        if var_ref.is_detached() {
             return Err(InterpreterError::InvalidValue("detached varref in list"));
         }
-        let cur_pvalue = unsafe { var_ref_pvalue(ptr) };
+        let cur_pvalue = unsafe { var_ref.pvalue() };
         if cur_pvalue == pvalue {
             return Ok(val);
         }
-        val = unsafe { var_ref_next(ptr) };
+        val = unsafe { var_ref.next() };
     }
     let new_ref = alloc_var_ref_attached(ctx, val, pvalue)?;
     unsafe {
@@ -1039,12 +1057,12 @@ fn get_var_ref(
 fn detach_var_refs(first_var_ref: JSValue) -> Result<(), InterpreterError> {
     let mut current = first_var_ref;
     while current != JSValue::JS_NULL {
-        let ptr = var_ref_ptr(current)?;
-        if var_ref_is_detached(ptr) {
+        let var_ref = VarRefPtr::from_value(current)?;
+        if var_ref.is_detached() {
             return Err(InterpreterError::InvalidValue("varref already detached"));
         }
-        let next = unsafe { var_ref_next(ptr) };
-        let pvalue = unsafe { var_ref_pvalue(ptr) };
+        let next = unsafe { var_ref.next() };
+        let pvalue = unsafe { var_ref.pvalue() };
         if pvalue.is_null() {
             return Err(InterpreterError::InvalidValue("varref pvalue"));
         }
@@ -1054,12 +1072,14 @@ fn detach_var_refs(first_var_ref: JSValue) -> Result<(), InterpreterError> {
         };
         unsafe {
             // SAFETY: payload slot is writable.
-            ptr::write_unaligned(var_ref_value_ptr(ptr), value);
-            let header_word = ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>());
+            var_ref.write_value_slot(value);
+            let header_word = var_ref.header_word();
             let detached_word = header_word | ((1 as JSWord) << JS_MTAG_BITS);
-            ptr::write_unaligned(ptr.as_ptr().cast::<JSWord>(), detached_word);
+            ptr::write_unaligned(var_ref.raw().as_ptr().cast::<JSWord>(), detached_word);
             let shrink_ptr = NonNull::new_unchecked(
-                ptr.as_ptr()
+                var_ref
+                    .raw()
+                    .as_ptr()
                     .add(size_of::<JSWord>() + size_of::<JSValue>()),
             );
             set_free_block(shrink_ptr, size_of::<JSValue>());
@@ -1418,7 +1438,7 @@ pub fn call_with_this_flags(
     };
     let header_word = unsafe {
         // SAFETY: obj_ptr points at a readable object header word.
-        ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
+        read_mblock_header(obj_ptr.as_ptr()).word()
     };
     let header = ObjectHeader::from_word(header_word);
     match header.class_id() {

@@ -15,7 +15,7 @@ use crate::gc_runtime::{gc_collect, GcRuntimeRoots};
 use crate::heap::{mblock_size, HeapLayout, JS_MIN_CRITICAL_FREE_SIZE, JS_MIN_FREE_SIZE, JS_STACK_SLACK};
 use crate::jsvalue::{JSValue, JSWord};
 use crate::function_bytecode::{FunctionBytecode, FunctionBytecodeFields, FunctionBytecodeHeader};
-use crate::memblock::{Float64Header, MbHeader, MTag};
+use crate::memblock::{read_mblock_header, Float64Header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
 use crate::parser::pc2line::find_line_col;
 use crate::parser::parse_state::JSParseState;
@@ -317,11 +317,10 @@ impl RomClassView {
             rom_table.base_ptr().add(offset)
         };
         let base = NonNull::new(base).ok_or(ContextError::InvalidRomClassValue)?;
-        let header_word = unsafe {
+        let header = unsafe {
             // SAFETY: base points to readable ROM table memory.
-            ptr::read_unaligned(base.as_ptr().cast::<JSWord>())
+            read_mblock_header(base.as_ptr())
         };
-        let header = MbHeader::from_word(header_word);
         if header.tag() != MTag::Object {
             return Err(ContextError::InvalidRomClass { tag: header.tag() });
         }
@@ -1249,11 +1248,10 @@ impl JSContext {
                 len: rom_table.bytes_len(),
             });
         }
-        let header_word = unsafe {
+        let header = unsafe {
             // SAFETY: ptr is within the ROM table bounds.
-            ptr::read_unaligned(ptr.cast::<JSWord>())
+            read_mblock_header(ptr)
         };
-        let header = MbHeader::from_word(header_word);
         if header.tag() != MTag::String {
             return Err(ContextError::InvalidRomString {
                 offset,
@@ -1323,11 +1321,11 @@ impl JSContext {
                             // SAFETY: offset is within the ROM table bounds.
                             rom_base_ptr.add(offset)
                         };
-                        let header_word = unsafe {
+                        let header = unsafe {
                             // SAFETY: header_ptr points within the ROM table.
-                            ptr::read_unaligned(header_ptr.cast::<JSWord>())
+                            read_mblock_header(header_ptr)
                         };
-                        if MbHeader::from_word(header_word).tag() == MTag::Object {
+                        if header.tag() == MTag::Object {
                             val = self.stdlib_init_class(image, val)?;
                         }
                     }
@@ -1485,7 +1483,7 @@ impl JSContext {
         let obj_ptr = obj.to_ptr::<u8>().ok_or(ContextError::InvalidRomClassValue)?;
         let header_word = unsafe {
             // SAFETY: pointer is expected to reference an object header word.
-            ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>())
+            read_mblock_header(obj_ptr.as_ptr()).word()
         };
         let header = ObjectHeader::from_word(header_word);
         if header.tag() != MTag::Object {
@@ -1709,7 +1707,10 @@ impl JSContext {
     /// Resizes an array to a new length, allocating more space if needed.
     pub fn array_resize(&mut self, arr: JSValue, new_len: usize) -> Result<(), ContextError> {
         let obj_ptr = arr.to_ptr::<Object>().ok_or(ContextError::InvalidRomClassValue)?;
-        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        let header_word = unsafe {
+            // SAFETY: obj_ptr points at a readable object header.
+            read_mblock_header(obj_ptr.as_ptr()).word()
+        };
         let header = ObjectHeader::from_word(header_word);
         if header.tag() != MTag::Object || header.class_id() != JSObjectClass::Array as u8 {
             return Err(ContextError::InvalidRomClassValue);
@@ -1772,7 +1773,10 @@ impl JSContext {
     /// Sets the length of an array.
     pub fn array_set_length(&mut self, arr: JSValue, new_len: u32) -> Result<(), ContextError> {
         let obj_ptr = arr.to_ptr::<Object>().ok_or(ContextError::InvalidRomClassValue)?;
-        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        let header_word = unsafe {
+            // SAFETY: obj_ptr points at a readable object header.
+            read_mblock_header(obj_ptr.as_ptr()).word()
+        };
         let header = ObjectHeader::from_word(header_word);
         if header.tag() != MTag::Object || header.class_id() != JSObjectClass::Array as u8 {
             return Err(ContextError::InvalidRomClassValue);
@@ -1957,7 +1961,10 @@ impl JSContext {
         let Some(obj_ptr) = val.to_ptr::<Object>() else {
             return false;
         };
-        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        let header_word = unsafe {
+            // SAFETY: obj_ptr points at a readable object header.
+            read_mblock_header(obj_ptr.as_ptr()).word()
+        };
         let header = ObjectHeader::from_word(header_word);
         header.tag() == MTag::Object && header.class_id() == JSObjectClass::Error as u8
     }
@@ -1976,7 +1983,10 @@ impl JSContext {
         let Some(obj_ptr) = func_obj.to_ptr::<Object>() else {
             return ("<anonymous>".to_string(), None);
         };
-        let header_word = unsafe { ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>()) };
+        let header_word = unsafe {
+            // SAFETY: obj_ptr points at a readable object header.
+            read_mblock_header(obj_ptr.as_ptr()).word()
+        };
         let header = ObjectHeader::from_word(header_word);
         if header.tag() != MTag::Object {
             return ("<anonymous>".to_string(), None);
@@ -2190,13 +2200,12 @@ impl JSContext {
                 // SAFETY: ptr is within the heap and points at a memblock header.
                 mblock_size(NonNull::new_unchecked(ptr))
             };
-            let header_word = unsafe {
+            let header = unsafe {
                 // SAFETY: ptr points to a readable header word.
-                ptr::read_unaligned(ptr.cast::<JSWord>())
+                read_mblock_header(ptr)
             };
-            let header = MbHeader::from_word(header_word);
             if header.tag() == MTag::Object {
-                let obj_header = ObjectHeader::from_word(header_word);
+                let obj_header = ObjectHeader::from_word(header.word());
                 let class_id = obj_header.class_id();
                 let base_id = JSObjectClass::User as u8;
                 if class_id >= base_id {
@@ -2273,11 +2282,10 @@ impl ByteArrayView {
 
 fn byte_array_view(val: JSValue) -> Option<ByteArrayView> {
     let ptr = val.to_ptr::<u8>()?;
-    let header_word = unsafe {
+    let header = unsafe {
         // SAFETY: ptr points at a readable memblock header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+        read_mblock_header(ptr.as_ptr())
     };
-    let header = MbHeader::from_word(header_word);
     if header.tag() != MTag::ByteArray {
         return None;
     }
@@ -2288,11 +2296,10 @@ fn byte_array_view(val: JSValue) -> Option<ByteArrayView> {
 
 fn function_bytecode_ptr(val: JSValue) -> Option<NonNull<FunctionBytecode>> {
     let ptr = val.to_ptr::<FunctionBytecode>()?;
-    let header_word = unsafe {
+    let header = unsafe {
         // SAFETY: ptr points at a readable function bytecode header word.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+        read_mblock_header(ptr.as_ptr())
     };
-    let header = MbHeader::from_word(header_word);
     if header.tag() != MTag::FunctionBytecode {
         return None;
     }
@@ -2605,11 +2612,10 @@ mod tests {
             .empty_props()
             .to_ptr::<u8>()
             .expect("empty_props ptr");
-        let header_word = unsafe {
+        let header = unsafe {
             // SAFETY: ptr points to a readable ValueArray header.
-            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+            ValueArrayHeader::from(read_mblock_header(ptr.as_ptr()))
         };
-        let header = ValueArrayHeader::from(MbHeader::from_word(header_word));
         assert_eq!(header.size(), 3);
 
         let arr = unsafe {
@@ -2637,11 +2643,10 @@ mod tests {
             .minus_zero()
             .to_ptr::<u8>()
             .expect("minus_zero ptr");
-        let header_word = unsafe {
+        let header = unsafe {
             // SAFETY: ptr points to a readable Float64 header.
-            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+            Float64Header::from(read_mblock_header(ptr.as_ptr()))
         };
-        let header = Float64Header::from(MbHeader::from_word(header_word));
         assert_eq!(header.header().tag(), MTag::Float64);
         let payload = unsafe {
             // SAFETY: payload lies within the Float64 allocation.
@@ -2734,11 +2739,10 @@ mod tests {
         let string_val = ctx.new_string_len(b"ab").expect("string");
         assert!(string_val.is_ptr());
         let ptr = string_val.to_ptr::<u8>().expect("string ptr");
-        let header_word = unsafe {
+        let header = unsafe {
             // SAFETY: ptr points to a readable String header.
-            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+            StringHeader::from(read_mblock_header(ptr.as_ptr()))
         };
-        let header = StringHeader::from(MbHeader::from_word(header_word));
         assert_eq!(header.len(), 2);
         let bytes = unsafe {
             // SAFETY: string payload lies within the allocation.
@@ -2891,7 +2895,7 @@ mod tests {
             let obj_ptr = obj.to_ptr::<Object>().expect("object ptr");
             unsafe {
                 // SAFETY: obj_ptr points at a valid object payload.
-                let header_word = ptr::read_unaligned(obj_ptr.as_ptr().cast::<JSWord>());
+                let header_word = read_mblock_header(obj_ptr.as_ptr()).word();
                 let header = ObjectHeader::from_word(header_word);
                 let patched = ObjectHeader::new(JSObjectClass::User as u8, header.extra_size(), header.gc_mark());
                 ptr::write_unaligned(obj_ptr.as_ptr().cast::<JSWord>(), patched.header().word());

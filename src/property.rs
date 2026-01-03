@@ -8,7 +8,7 @@ use crate::conversion;
 use crate::enums::{JSObjectClass, JSPropType};
 use crate::interpreter::{call_with_this, InterpreterError};
 use crate::jsvalue::{JSValue, JSWord};
-use crate::memblock::{MbHeader, MTag};
+use crate::memblock::{read_mblock_header, MbHeader, MTag};
 use crate::object::{Object, ObjectHeader};
 use crate::string::runtime::string_view;
 use crate::typed_array::TypedArray;
@@ -110,6 +110,51 @@ pub enum PropertyError {
 // - arr[prop_base..]: JSProperty entries packed into 3 JSValue slots each.
 //   Deleted entries have key == JSValue::JS_UNINITIALIZED.
 //   If last entry key == JSValue::JS_UNINITIALIZED, its hash_next encodes first_free << 1.
+#[derive(Copy, Clone)]
+struct ValueArrayPtr(NonNull<u8>);
+
+impl ValueArrayPtr {
+    fn from_value(value: JSValue) -> Result<Self, PropertyError> {
+        let ptr = value.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
+        Self::from_ptr(ptr)
+    }
+
+    fn from_ptr(base: NonNull<u8>) -> Result<Self, PropertyError> {
+        let header = unsafe {
+            // SAFETY: base points to a readable ValueArray header word.
+            read_mblock_header(base.as_ptr())
+        };
+        if header.tag() != MTag::ValueArray {
+            return Err(PropertyError::InvalidValueArray);
+        }
+        Ok(Self(base))
+    }
+
+    fn raw(self) -> NonNull<u8> {
+        self.0
+    }
+
+    fn header(self) -> ValueArrayHeader {
+        let header = unsafe {
+            // SAFETY: ValueArrayPtr guarantees a readable header word.
+            read_mblock_header(self.0.as_ptr())
+        };
+        ValueArrayHeader::from(header)
+    }
+
+    fn size(self) -> usize {
+        self.header().size() as usize
+    }
+
+    fn payload(self) -> NonNull<JSValue> {
+        let ptr = unsafe { self.0.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
+        unsafe {
+            // SAFETY: header tag ensures the payload follows the header word.
+            NonNull::new_unchecked(ptr)
+        }
+    }
+}
+
 struct ValueArrayRaw {
     base: NonNull<u8>,
     arr: NonNull<JSValue>,
@@ -118,21 +163,19 @@ struct ValueArrayRaw {
 
 impl ValueArrayRaw {
     unsafe fn from_value(value: JSValue) -> Result<Self, PropertyError> {
-        let ptr = value.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
-        unsafe { Self::from_ptr(ptr) }
+        let ptr = ValueArrayPtr::from_value(value)?;
+        unsafe { Self::from_ptr(ptr.raw()) }
     }
 
     unsafe fn from_ptr(base: NonNull<u8>) -> Result<Self, PropertyError> {
-        let header_word = unsafe { ptr::read_unaligned(base.as_ptr().cast::<JSWord>()) };
-        let header = MbHeader::from_word(header_word);
-        if header.tag() != MTag::ValueArray {
-            return Err(PropertyError::InvalidValueArray);
-        }
-        let header = ValueArrayHeader::from(header);
-        let size = header.size() as usize;
-        let arr_ptr = unsafe { base.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
-        let arr = NonNull::new(arr_ptr).ok_or(PropertyError::InvalidValueArray)?;
-        Ok(Self { base, arr, size })
+        let ptr = ValueArrayPtr::from_ptr(base)?;
+        let size = ptr.size();
+        let arr = ptr.payload();
+        Ok(Self {
+            base: ptr.raw(),
+            arr,
+            size,
+        })
     }
 
     fn size(&self) -> usize {
@@ -157,11 +200,10 @@ impl ValueArrayRaw {
 
     fn set_size(&mut self, size: usize) {
         debug_assert!(size <= JS_VALUE_ARRAY_SIZE_MAX as usize);
-        let header_word = unsafe {
+        let header = unsafe {
             // SAFETY: base points to a readable ValueArray header word.
-            ptr::read_unaligned(self.base.as_ptr().cast::<JSWord>())
+            read_mblock_header(self.base.as_ptr())
         };
-        let header = MbHeader::from_word(header_word);
         let gc_mark = header.gc_mark();
         let new_header = ValueArrayHeader::new(size as JSWord, gc_mark);
         unsafe {
@@ -314,48 +356,130 @@ fn get_prop_hash_size_log2(prop_count: usize) -> usize {
     (u32::BITS - value.leading_zeros() - 1) as usize
 }
 
-fn object_ptr(value: JSValue) -> Result<NonNull<Object>, PropertyError> {
-    let ptr = value.to_ptr::<u8>().ok_or(PropertyError::NotObject)?;
-    let header_word = unsafe {
-        // SAFETY: ptr points to a readable memblock header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-    };
-    let header = ObjectHeader::from_word(header_word);
-    if header.tag() != MTag::Object {
-        return Err(PropertyError::NotObject);
+#[derive(Copy, Clone)]
+struct ObjectPtr(NonNull<Object>);
+
+impl ObjectPtr {
+    fn from_value(value: JSValue) -> Result<Self, PropertyError> {
+        let ptr = value.to_ptr::<Object>().ok_or(PropertyError::NotObject)?;
+        let header = unsafe {
+            // SAFETY: ptr points to a readable object header word.
+            read_mblock_header(ptr.as_ptr())
+        };
+        let header = ObjectHeader::from_word(header.word());
+        if header.tag() != MTag::Object {
+            return Err(PropertyError::NotObject);
+        }
+        Ok(Self(ptr))
     }
-    Ok(unsafe {
-        // SAFETY: header tag confirms ptr is an Object allocation.
-        NonNull::new_unchecked(ptr.as_ptr() as *mut Object)
-    })
+
+    fn raw(self) -> NonNull<Object> {
+        self.0
+    }
+
+    fn header(self) -> ObjectHeader {
+        let header = unsafe {
+            // SAFETY: ObjectPtr guarantees a readable object header word.
+            read_mblock_header(self.0.as_ptr())
+        };
+        let header = ObjectHeader::from_word(header.word());
+        debug_assert!(header.tag() == MTag::Object);
+        header
+    }
 }
 
-fn object_header(ptr: NonNull<Object>) -> ObjectHeader {
-    let header_word = unsafe {
-        // SAFETY: ptr points to a readable Object header word.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-    };
-    ObjectHeader::from_word(header_word)
+#[derive(Copy, Clone)]
+struct ByteArrayPtr(NonNull<u8>);
+
+impl ByteArrayPtr {
+    fn from_value(value: JSValue) -> Option<Self> {
+        let ptr = value.to_ptr::<u8>()?;
+        let header = unsafe {
+            // SAFETY: ptr points to a readable memblock header.
+            read_mblock_header(ptr.as_ptr())
+        };
+        if header.tag() != MTag::ByteArray {
+            return None;
+        }
+        Some(Self(ptr))
+    }
+
+    fn header(self) -> ByteArrayHeader {
+        let header = unsafe {
+            // SAFETY: ByteArrayPtr guarantees a readable header word.
+            read_mblock_header(self.0.as_ptr())
+        };
+        ByteArrayHeader::from(header)
+    }
+
+    fn size(self) -> usize {
+        self.header().size() as usize
+    }
+
+    fn payload(self) -> NonNull<u8> {
+        let ptr = unsafe { self.0.as_ptr().add(size_of::<JSWord>()) };
+        unsafe {
+            // SAFETY: header tag ensures the payload follows the header word.
+            NonNull::new_unchecked(ptr)
+        }
+    }
 }
 
-fn object_proto(ptr: NonNull<Object>) -> JSValue {
+#[derive(Copy, Clone)]
+struct VarRefPtr(NonNull<u8>);
+
+impl VarRefPtr {
+    fn from_value(value: JSValue) -> Result<Self, PropertyError> {
+        let ptr = value.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
+        let header = unsafe {
+            // SAFETY: ptr points to a readable memblock header.
+            read_mblock_header(ptr.as_ptr())
+        };
+        if header.tag() != MTag::VarRef {
+            return Err(PropertyError::InvalidValueArray);
+        }
+        Ok(Self(ptr))
+    }
+
+    unsafe fn value_ptr(self) -> *mut JSValue {
+        unsafe { self.0.as_ptr().add(size_of::<JSWord>()) as *mut JSValue }
+    }
+
+    unsafe fn read_value(self) -> JSValue {
+        unsafe { ptr::read_unaligned(self.value_ptr()) }
+    }
+
+    unsafe fn write_value(self, value: JSValue) {
+        unsafe { ptr::write_unaligned(self.value_ptr(), value) }
+    }
+}
+
+fn object_ptr(value: JSValue) -> Result<ObjectPtr, PropertyError> {
+    ObjectPtr::from_value(value)
+}
+
+fn object_header(ptr: ObjectPtr) -> ObjectHeader {
+    ptr.header()
+}
+
+fn object_proto(ptr: ObjectPtr) -> JSValue {
     unsafe {
         // SAFETY: ptr points to a readable Object proto field.
-        ptr::read_unaligned(Object::proto_ptr(ptr.as_ptr()))
+        ptr::read_unaligned(Object::proto_ptr(ptr.raw().as_ptr()))
     }
 }
 
-fn object_props(ptr: NonNull<Object>) -> JSValue {
+fn object_props(ptr: ObjectPtr) -> JSValue {
     unsafe {
         // SAFETY: ptr points to a readable Object props field.
-        ptr::read_unaligned(Object::props_ptr(ptr.as_ptr()))
+        ptr::read_unaligned(Object::props_ptr(ptr.raw().as_ptr()))
     }
 }
 
-fn set_object_props(ptr: NonNull<Object>, value: JSValue) {
+fn set_object_props(ptr: ObjectPtr, value: JSValue) {
     unsafe {
         // SAFETY: ptr points to a writable Object props field.
-        ptr::write_unaligned(Object::props_ptr(ptr.as_ptr()), value);
+        ptr::write_unaligned(Object::props_ptr(ptr.raw().as_ptr()), value);
     }
 }
 
@@ -373,51 +497,39 @@ pub(crate) fn prealloc_object_props(
     Ok(())
 }
 
-fn array_data_ptr(ptr: NonNull<Object>) -> *mut ArrayData {
+fn array_data_ptr(ptr: ObjectPtr) -> *mut ArrayData {
     let payload = unsafe {
         // SAFETY: ptr points to a valid Object payload.
-        Object::payload_ptr(ptr.as_ptr())
+        Object::payload_ptr(ptr.raw().as_ptr())
     };
     unsafe { ptr::addr_of_mut!((*payload).array) }
 }
 
-fn typed_array_ptr(ptr: NonNull<Object>) -> *mut TypedArray {
+fn typed_array_ptr(ptr: ObjectPtr) -> *mut TypedArray {
     let payload = unsafe {
         // SAFETY: ptr points to a valid Object payload.
-        Object::payload_ptr(ptr.as_ptr())
+        Object::payload_ptr(ptr.raw().as_ptr())
     };
     unsafe { ptr::addr_of_mut!((*payload).typed_array) }
 }
 
-fn array_buffer_ptr(ptr: NonNull<Object>) -> *mut ArrayBuffer {
+fn array_buffer_ptr(ptr: ObjectPtr) -> *mut ArrayBuffer {
     let payload = unsafe {
         // SAFETY: ptr points to a valid Object payload.
-        Object::payload_ptr(ptr.as_ptr())
+        Object::payload_ptr(ptr.raw().as_ptr())
     };
     unsafe { ptr::addr_of_mut!((*payload).array_buffer) }
 }
 
 // Get pointer to byte array data from ArrayBuffer's byte_buffer field
 fn get_byte_array_ptr(byte_buffer: JSValue) -> Option<NonNull<u8>> {
-    let ptr = byte_buffer.to_ptr::<u8>()?;
-    let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
-    let header = MbHeader::from_word(header_word);
-    if header.tag() != MTag::ByteArray {
-        return None;
-    }
-    // Payload starts after the header
-    let data_ptr = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) };
-    NonNull::new(data_ptr)
+    let ptr = ByteArrayPtr::from_value(byte_buffer)?;
+    Some(ptr.payload())
 }
 
 fn get_byte_array_size(byte_buffer: JSValue) -> Option<u32> {
-    let ptr = byte_buffer.to_ptr::<u8>()?;
-    let header_word = unsafe { ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>()) };
-    let header = MbHeader::from_word(header_word);
-    if header.tag() != MTag::ByteArray {
-        return None;
-    }
-    Some(ByteArrayHeader::from(header).size() as u32)
+    let ptr = ByteArrayPtr::from_value(byte_buffer)?;
+    Some(ptr.size() as u32)
 }
 
 fn prop_is_bytes(prop: JSValue, bytes: &[u8]) -> bool {
@@ -448,10 +560,7 @@ fn typed_array_get_element_ctx(
     }
     
     // Get ArrayBuffer object
-    let ab_ptr = ta
-        .buffer()
-        .to_ptr::<Object>()
-        .ok_or(PropertyError::InvalidValueArray)?;
+    let ab_ptr = ObjectPtr::from_value(ta.buffer()).map_err(|_| PropertyError::InvalidValueArray)?;
     let ab_data = unsafe {
         ptr::read_unaligned(array_buffer_ptr(ab_ptr))
     };
@@ -555,10 +664,7 @@ fn typed_array_set_element(
     }
     
     // Get ArrayBuffer object
-    let ab_ptr = ta
-        .buffer()
-        .to_ptr::<Object>()
-        .ok_or(PropertyError::InvalidValueArray)?;
+    let ab_ptr = ObjectPtr::from_value(ta.buffer()).map_err(|_| PropertyError::InvalidValueArray)?;
     let ab_data = unsafe {
         ptr::read_unaligned(array_buffer_ptr(ab_ptr))
     };
@@ -635,11 +741,10 @@ fn is_numeric_property(prop: JSValue) -> bool {
     let Some(ptr) = prop.to_ptr::<u8>() else {
         return false;
     };
-    let header_word = unsafe {
+    let header = unsafe {
         // SAFETY: ptr points to a readable memblock header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+        read_mblock_header(ptr.as_ptr())
     };
-    let header = MbHeader::from_word(header_word);
     if header.tag() != MTag::String {
         return false;
     }
@@ -757,7 +862,7 @@ fn alloc_props(ctx: &mut JSContext, n: usize) -> Result<JSValue, PropertyError> 
     Ok(JSValue::from_ptr(ptr))
 }
 
-fn rehash_props(ctx: &JSContext, obj_ptr: NonNull<Object>, gc_rehash: bool) -> Result<(), PropertyError> {
+fn rehash_props(ctx: &JSContext, obj_ptr: ObjectPtr, gc_rehash: bool) -> Result<(), PropertyError> {
     let props = object_props(obj_ptr);
     let list = PropertyList::from_value(props)?;
     if ctx.is_rom_ptr(list.array.base) {
@@ -789,7 +894,7 @@ fn rehash_props(ctx: &JSContext, obj_ptr: NonNull<Object>, gc_rehash: bool) -> R
     Ok(())
 }
 
-fn compact_props(ctx: &mut JSContext, obj_ptr: NonNull<Object>) -> Result<(), PropertyError> {
+fn compact_props(ctx: &mut JSContext, obj_ptr: ObjectPtr) -> Result<(), PropertyError> {
     let mut props = object_props(obj_ptr);
     let list = PropertyList::from_value(props)?;
     let prop_count = list.prop_count();
@@ -1008,35 +1113,19 @@ fn alloc_var_ref(ctx: &mut JSContext, value: JSValue) -> Result<JSValue, Propert
 }
 
 fn read_var_ref_value(val: JSValue) -> Result<JSValue, PropertyError> {
-    let ptr = val.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
-    let header_word = unsafe {
-        // SAFETY: ptr points to a readable memblock header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-    };
-    if MbHeader::from_word(header_word).tag() != MTag::VarRef {
-        return Err(PropertyError::InvalidValueArray);
-    }
-    let value_ptr = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *const JSValue };
+    let var_ref = VarRefPtr::from_value(val)?;
     let value = unsafe {
-        // SAFETY: value_ptr lies within the var ref allocation.
-        ptr::read_unaligned(value_ptr)
+        // SAFETY: var ref payload starts after the header word.
+        var_ref.read_value()
     };
     Ok(value)
 }
 
 fn write_var_ref_value(val: JSValue, new_value: JSValue) -> Result<(), PropertyError> {
-    let ptr = val.to_ptr::<u8>().ok_or(PropertyError::InvalidValueArray)?;
-    let header_word = unsafe {
-        // SAFETY: ptr points to a readable memblock header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
-    };
-    if MbHeader::from_word(header_word).tag() != MTag::VarRef {
-        return Err(PropertyError::InvalidValueArray);
-    }
-    let value_ptr = unsafe { ptr.as_ptr().add(size_of::<JSWord>()) as *mut JSValue };
+    let var_ref = VarRefPtr::from_value(val)?;
     unsafe {
-        // SAFETY: value_ptr lies within the var ref allocation.
-        ptr::write_unaligned(value_ptr, new_value);
+        // SAFETY: var ref payload starts after the header word.
+        var_ref.write_value(new_value);
     }
     Ok(())
 }
@@ -1310,11 +1399,11 @@ pub fn get_property(
                     }
                 }
                 let ptr = current.to_ptr::<u8>().ok_or(PropertyError::NotObject)?;
-                let header_word = unsafe {
+                let header = unsafe {
                     // SAFETY: ptr points at a readable memblock header.
-                    ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+                    read_mblock_header(ptr.as_ptr())
                 };
-                match MbHeader::from_word(header_word).tag() {
+                match header.tag() {
                     MTag::Float64 => {
                         current = ctx.class_proto()[JSObjectClass::Number as usize];
                         continue;

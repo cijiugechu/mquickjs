@@ -1,4 +1,5 @@
 use crate::jsvalue::JSWord;
+use core::ptr;
 
 // C: mquickjs_priv.h `JS_MTAG_BITS` and `JS_MB_HEADER` bitfield layout.
 pub const JS_MTAG_BITS: u32 = 4;
@@ -159,6 +160,18 @@ impl MbHeader {
     pub const fn with_value_array_size(self, size: JSWord) -> Self {
         Self(self.0 | (size << JS_MTAG_BITS))
     }
+}
+
+/// Reads a memblock header word from a raw pointer.
+///
+/// # Safety
+/// Caller must ensure `ptr` is valid to read a `JSWord` header.
+pub unsafe fn read_mblock_header<T>(ptr: *const T) -> MbHeader {
+    let word = unsafe {
+        // SAFETY: caller ensures `ptr` is readable for a JSWord header.
+        ptr::read_unaligned(ptr.cast::<JSWord>())
+    };
+    MbHeader::from_word(word)
 }
 
 // C: `JSFreeBlock` header bitfields in mquickjs.c.

@@ -6,7 +6,7 @@ use crate::cutils::{get_u16, get_u32, utf8_get};
 use crate::enums::JSObjectClass;
 use crate::heap::JS_STACK_SLACK;
 use crate::jsvalue::{JSValue, JSWord};
-use crate::memblock::{MbHeader, MTag};
+use crate::memblock::{read_mblock_header, MTag};
 use crate::object::{Object, ObjectHeader, RegExp};
 use crate::opcode::{
     REOP_ANY, REOP_BACK_REFERENCE, REOP_BACK_REFERENCE_I, REOP_CHAR1, REOP_CHAR2, REOP_CHAR3,
@@ -96,11 +96,10 @@ struct ByteArrayView {
 impl ByteArrayView {
     unsafe fn from_value(val: JSValue) -> Result<Self, RegExpError> {
         let ptr = val.to_ptr::<u8>().ok_or(RegExpError::InvalidValue("byte array"))?;
-        let header_word = unsafe {
+        let header = unsafe {
             // SAFETY: ptr points to a readable memblock header.
-            ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+            read_mblock_header(ptr.as_ptr())
         };
-        let header = MbHeader::from_word(header_word);
         if header.tag() != MTag::ByteArray {
             return Err(RegExpError::InvalidValue("byte array tag"));
         }
@@ -292,7 +291,7 @@ fn regexp_object_ptr(obj: JSValue) -> Result<NonNull<Object>, RegExpError> {
     let ptr = obj.to_ptr::<Object>().ok_or(RegExpError::TypeError("not a regular expression"))?;
     let header_word = unsafe {
         // SAFETY: ptr points to a readable object header.
-        ptr::read_unaligned(ptr.as_ptr().cast::<JSWord>())
+        read_mblock_header(ptr.as_ptr()).word()
     };
     let header = ObjectHeader::from_word(header_word);
     if header.tag() != MTag::Object || header.class_id() != JSObjectClass::RegExp as u8 {
